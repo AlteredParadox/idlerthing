@@ -364,3 +364,86 @@ func TestNormDate(t *testing.T) {
 		}
 	}
 }
+
+// Batch J #6 — numeric corruption guards: huge floats → absent, not
+// implementation-defined negative ints.
+func TestMyJSONImplausibleNumbers(t *testing.T) {
+	recs, warnings, err := ParseMyJSON(strings.NewReader(`[
+	  {"hostname": "huge-bw", "bandwidth": 1e300, "active": 1},
+	  {"hostname": "huge-disk", "disk_as_gb": 1e300, "active": 1},
+	  {"hostname": "huge-tb-disk", "disks": [{"disk_size": 1e300, "disk_unit": "TB", "disk_media": "SSD"}], "active": 1},
+	  {"hostname": "v6-flag", "ips": [{"address": "2001:db8::5", "is_ipv4": 1}], "active": 1}
+	]`))
+	if err != nil {
+		t.Fatalf("ParseMyJSON: %v", err)
+	}
+	if len(recs) != 4 {
+		t.Fatalf("records: %d", len(recs))
+	}
+	if recs[0].BandwidthAsMB != nil {
+		t.Fatalf("1e300 bandwidth must be absent, got %d", *recs[0].BandwidthAsMB)
+	}
+	if len(recs[1].Disks) != 0 || len(recs[2].Disks) != 0 {
+		t.Fatalf("1e300 disk sizes must be skipped: %+v %+v", recs[1].Disks, recs[2].Disks)
+	}
+	// The file's is_ipv4=1 flag contradicts the v6 address — address wins.
+	if len(recs[3].IPs) != 1 || recs[3].IPs[0].IsIPv4 {
+		t.Fatalf("v6 address with is_ipv4=1 must stay v6: %+v", recs[3].IPs)
+	}
+	if len(warnings) < 3 {
+		t.Fatalf("expected ≥3 warnings (bw + 2 disks), got %v", warnings)
+	}
+
+	// Imported rows: NULL bandwidth, no negative garbage.
+	database := testDB(t)
+	sum, err := ImportMyIdlers(context.Background(), database, recs, warnings)
+	if err != nil {
+		t.Fatalf("ImportMyIdlers: %v", err)
+	}
+	if sum.Imported != 4 {
+		t.Fatalf("imported: %+v", sum)
+	}
+	var bw any
+	database.QueryRow("SELECT bandwidth_as_mb FROM servers WHERE hostname = 'huge-bw'").Scan(&bw)
+	if bw != nil {
+		t.Fatalf("bandwidth should be NULL, got %v", bw)
+	}
+	var is4 int
+	database.QueryRow("SELECT is_ipv4 FROM ips WHERE address = '2001:db8::5'").Scan(&is4)
+	if is4 != 0 {
+		t.Fatalf("v6 stored as v4: %d", is4)
+	}
+}
+
+func TestMyCSVGuards(t *testing.T) {
+	csvDoc := "hostname,server_type_name,bandwidth,disk_as_gb,pricing_price,pricing_currency,pricing_term,ips\n" +
+		`nan-bw,KVM,NaN,,,,,` + "\n" +
+		`inf-disk,KVM,,+Inf,,,,` + "\n" +
+		`lower-cur,KVM,,,5,eur,1,` + "\n" +
+		`bad-cur,KVM,,,5,U1,1,` + "\n" +
+		`v6-flag,KVM,,,,,,"[{""address"": ""2001:db8::9"", ""is_ipv4"": 1}]"` + "\n"
+	recs, warnings, err := ParseMyCSV(strings.NewReader(csvDoc))
+	if err != nil {
+		t.Fatalf("ParseMyCSV: %v", err)
+	}
+	if len(recs) != 5 {
+		t.Fatalf("records: %d", len(recs))
+	}
+	if recs[0].BandwidthAsMB != nil {
+		t.Fatalf("NaN bandwidth must be absent, got %d", *recs[0].BandwidthAsMB)
+	}
+	if len(recs[1].Disks) != 0 {
+		t.Fatalf("+Inf disk must be skipped: %+v", recs[1].Disks)
+	}
+	// CSV currency goes through the same normCurrency as JSON.
+	if recs[2].Pricing == nil || recs[2].Pricing.Currency != "EUR" {
+		t.Fatalf("lowercase currency should normalize: %+v", recs[2].Pricing)
+	}
+	if recs[3].Pricing != nil {
+		t.Fatalf("invalid currency must skip pricing: %+v", recs[3].Pricing)
+	}
+	if len(recs[4].IPs) != 1 || recs[4].IPs[0].IsIPv4 {
+		t.Fatalf("v6 with is_ipv4=1 must stay v6: %+v", recs[4].IPs)
+	}
+	_ = warnings
+}

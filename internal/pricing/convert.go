@@ -41,8 +41,9 @@ func NewRates() *Rates {
 }
 
 // Get returns rates (units per 1 USD) and whether they are usable.
-// Fresh cache hits and recent failures answer immediately; otherwise one
-// fetch runs while concurrent Gets wait on it (singleflight).
+// Fresh cache hits answer immediately; a concurrent cold fetch is joined
+// (singleflight) so followers receive the leader's result; otherwise one
+// fetch runs. Failed fetches back off for 60s (negative caching).
 func (r *Rates) Get(ctx context.Context) (map[string]float64, bool) {
 	r.mu.Lock()
 	if r.rates != nil && time.Since(r.fetchedAt) < ratesTTL {
@@ -50,19 +51,29 @@ func (r *Rates) Get(ctx context.Context) (map[string]float64, bool) {
 		r.mu.Unlock()
 		return cached, true
 	}
+	// Join an in-flight fetch FIRST — followers of a cold fetch must get the
+	// leader's fresh rates, not the pre-fetch stale/nil state.
+	if r.inFlight != nil {
+		ch := r.inFlight
+		r.mu.Unlock()
+		select {
+		case <-ch:
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.rates, r.rates != nil
+		case <-ctx.Done():
+			// Caller gave up waiting — fall through to whatever is cached.
+			r.mu.Lock()
+			stale := r.rates
+			r.mu.Unlock()
+			return stale, stale != nil
+		}
+	}
 	// Negative cache: a failed fetch backs off for 60s.
 	if time.Since(r.lastTry) < 60*time.Second && !r.lastTry.IsZero() {
 		stale := r.rates
 		r.mu.Unlock()
 		return stale, stale != nil
-	}
-	if r.inFlight != nil {
-		ch := r.inFlight
-		r.mu.Unlock()
-		<-ch // wait for the in-flight fetch to finish
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		return r.rates, r.rates != nil
 	}
 	r.inFlight = make(chan struct{})
 	r.lastTry = time.Now()

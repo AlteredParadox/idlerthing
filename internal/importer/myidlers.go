@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -205,27 +206,40 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 			s.ProviderName = j.Provider.Name
 		}
 
-		s.BandwidthAsMB = convertBandwidth(j.Bandwidth)
+		if bw, bad := convertBandwidth(j.Bandwidth); bad {
+			warnings = append(warnings, fmt.Sprintf("%s: implausible bandwidth — storing NULL", s.Hostname))
+		} else {
+			s.BandwidthAsMB = bw
+		}
 
 		for _, d := range j.Disks {
 			if mb := diskToMB(d.Size, d.Unit); mb > 0 {
 				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
+			} else if d.Size > 0 {
+				warnings = append(warnings, fmt.Sprintf("%s: implausible disk size — skipped", s.Hostname))
 			}
 		}
 		if len(s.Disks) == 0 && j.DiskAsGB != nil && *j.DiskAsGB > 0 {
 			// Legacy single-disk fallback.
-			s.Disks = append(s.Disks, myDisk{SizeMB: int64(*j.DiskAsGB * 1024), Media: "SSD"})
+			if mb := diskToMB(*j.DiskAsGB, "GB"); mb > 0 {
+				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: "SSD"})
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%s: implausible disk size — skipped", s.Hostname))
+			}
 		}
 
 		for _, ip := range j.IPs {
 			if ip.Address == "" {
 				continue
 			}
-			if _, err := netip.ParseAddr(ip.Address); err != nil {
+			// is_ipv4 is derived from the address itself — the file's flag
+			// is ignored when it contradicts (v6 with is_ipv4=1 stays v6).
+			addr, err := netip.ParseAddr(ip.Address)
+			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("%s: invalid ip %q — skipped", s.Hostname, ip.Address))
 				continue
 			}
-			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: ip.IsIPv4 != 0})
+			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
 		}
 		s.Labels = parseLabels(j.Labels)
 
@@ -357,7 +371,11 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 		if st := atoi(cell(row, "server_type")); st != nil && *st >= 1 && *st <= 7 {
 			s.ServerType = int(*st)
 		}
-		s.BandwidthAsMB = convertBandwidth(atof(cell(row, "bandwidth")))
+		if bw, bad := convertBandwidth(atof(cell(row, "bandwidth"))); bad {
+			warnings = append(warnings, fmt.Sprintf("row %d: implausible bandwidth — storing NULL", i+1))
+		} else {
+			s.BandwidthAsMB = bw
+		}
 
 		var disks []miJSONDisk
 		if raw := cell(row, "disks"); raw != "" {
@@ -368,11 +386,17 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 		for _, d := range disks {
 			if mb := diskToMB(d.Size, d.Unit); mb > 0 {
 				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
+			} else if d.Size > 0 {
+				warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+1))
 			}
 		}
 		if len(s.Disks) == 0 {
 			if gb := atof(cell(row, "disk_as_gb")); gb != nil && *gb > 0 {
-				s.Disks = append(s.Disks, myDisk{SizeMB: int64(*gb * 1024), Media: "SSD"})
+				if mb := diskToMB(*gb, "GB"); mb > 0 {
+					s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: "SSD"})
+				} else {
+					warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+1))
+				}
 			}
 		}
 
@@ -386,11 +410,13 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			if ip.Address == "" {
 				continue
 			}
-			if _, err := netip.ParseAddr(ip.Address); err != nil {
+			// is_ipv4 derived from the address, not the file's flag.
+			addr, err := netip.ParseAddr(ip.Address)
+			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", i+1, ip.Address))
 				continue
 			}
-			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: ip.IsIPv4 != 0})
+			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
 		}
 		s.Labels = parseLabels(json.RawMessage(cell(row, "labels")))
 
@@ -403,11 +429,15 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			if !dueOK {
 				warnings = append(warnings, fmt.Sprintf("row %d: invalid next_due_date %q — storing NULL", i+1, cell(row, "pricing_next_due_date")))
 			}
-			s.Pricing = &myPricing{
-				Currency:    cell(row, "pricing_currency"),
-				Price:       *price,
-				Term:        term,
-				NextDueDate: due,
+			if cur, ok := normCurrency(cell(row, "pricing_currency")); !ok {
+				warnings = append(warnings, fmt.Sprintf("row %d: invalid currency %q — pricing skipped", i+1, cell(row, "pricing_currency")))
+			} else {
+				s.Pricing = &myPricing{
+					Currency:    cur,
+					Price:       *price,
+					Term:        term,
+					NextDueDate: due,
+				}
 			}
 		}
 		out = append(out, s)
@@ -437,25 +467,49 @@ func normDate(s string) (string, bool) {
 
 func intBool(v *int) bool { return v != nil && *v != 0 }
 
-// convertBandwidth: my-idlers stores GB → MB (1024-based); 0/nil → NULL (unlimited).
-func convertBandwidth(gb *float64) *int64 {
-	if gb == nil || *gb <= 0 {
-		return nil
+// maxImportMB is the plausibility ceiling for float→MB conversions (1 PB in
+// MB); beyond it the value is corrupt, not big.
+const maxImportMB = int64(1) << 40
+
+// safeInt converts a JSON/CSV float to an int64 with bounds: non-finite,
+// negative, or over-max values are rejected (ok=false) instead of hitting
+// implementation-defined float→int conversion. Valid values are rounded.
+func safeInt(f float64, max int64) (int64, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > float64(max) {
+		return 0, false
 	}
-	mb := int64(*gb * 1024)
-	return &mb
+	return int64(f + 0.5), true
 }
 
-// diskToMB converts a disk size+unit to whole MB (1024-based).
+// convertBandwidth: my-idlers stores GB → MB (1024-based); 0/nil → NULL
+// (unlimited). bad=true means the input was present but implausible
+// (NaN/Inf/huge) — caller warns and stores NULL.
+func convertBandwidth(gb *float64) (mb *int64, bad bool) {
+	if gb == nil || *gb <= 0 {
+		return nil, false
+	}
+	v, ok := safeInt(*gb*1024, maxImportMB)
+	if !ok || v == 0 {
+		return nil, true
+	}
+	return &v, false
+}
+
+// diskToMB converts a disk size+unit to whole MB (1024-based); implausible
+// values collapse to 0 (callers skip non-positive sizes).
 func diskToMB(size float64, unit string) int64 {
+	factor := float64(1024) // GB and anything else
 	switch strings.ToUpper(unit) {
 	case "TB":
-		return int64(size * 1024 * 1024)
+		factor = 1024 * 1024
 	case "MB":
-		return int64(size)
-	default: // GB and anything else
-		return int64(size * 1024)
+		factor = 1
 	}
+	mb, ok := safeInt(size*factor, maxImportMB)
+	if !ok {
+		return 0
+	}
+	return mb
 }
 
 func diskMedia(media string) string {

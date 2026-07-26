@@ -35,11 +35,13 @@ type fsRow struct {
 	Meter *meterView
 }
 
-// liveMonCache caches the section per instance (60s).
+// liveMonCache caches the section per instance (60s), keyed by the
+// prometheus baseURL — a settings change to a new server invalidates it.
 type liveMonCache struct {
-	mu sync.Mutex
-	at map[string]time.Time
-	v  map[string]*liveMonView
+	mu      sync.Mutex
+	baseURL string
+	at      map[string]time.Time
+	v       map[string]*liveMonView
 }
 
 // liveMonEntry fetches + caches the section for one instance.
@@ -50,9 +52,10 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 	}
 
 	s.livemon.mu.Lock()
-	if s.livemon.at == nil {
+	if s.livemon.at == nil || s.livemon.baseURL != baseURL {
 		s.livemon.at = map[string]time.Time{}
 		s.livemon.v = map[string]*liveMonView{}
+		s.livemon.baseURL = baseURL
 	}
 	at, ok := s.livemon.at[instance]
 	cached := s.livemon.v[instance]
@@ -65,9 +68,22 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 		return cached
 	}
 
+	// Host batch and filesystems run CONCURRENTLY — sequentially they add
+	// up to ~22s worst case (12s host deadline + 10s filesystems).
 	client := prom.New(baseURL)
-	detail := client.HostDetail(r.Context(), instance)
-	filesystems, _ := client.Filesystems(r.Context(), instance) // tolerate failure
+	var detail *prom.Detail
+	var filesystems []prom.Filesystem
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		detail = client.HostDetail(r.Context(), instance)
+	}()
+	go func() {
+		defer wg.Done()
+		filesystems, _ = client.Filesystems(r.Context(), instance) // tolerate failure
+	}()
+	wg.Wait()
 	view := buildLiveMonView(detail, filesystems)
 
 	s.livemon.mu.Lock()

@@ -29,7 +29,7 @@ func TestImportRoundTripPreservesYabsAndLabels(t *testing.T) {
 		ServerID: 1, RunAt: sqlNs("2026-07-01"), CPU: sqlNs("AMD EPYC"),
 		GbSingle: sqlNi(1500), GbMulti: sqlNi(4000),
 	}, []model.YABSDiskSpeed{{BlockSize: "4k", ReadMbps: 88, WriteMbps: 90}},
-		[]model.YABSNetworkSpeed{{Location: "FRA", Provider: "Hetzner", SendMbps: 900, RecvMbps: 950, LatencyMs: 12.5}}, 0)
+		[]model.YABSNetworkSpeed{{Location: "FRA", Provider: "Hetzner", SendMbps: 900, RecvMbps: 950, LatencyMs: 12.5}})
 	if err != nil {
 		t.Fatal(err)
 	}

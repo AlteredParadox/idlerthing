@@ -163,11 +163,18 @@ func (s *PricingStore) Get(ctx context.Context, serviceType int, serviceID int64
 }
 
 // upsertPricingTx inserts or updates the pricing for a service within a
-// transaction. A nil pricing removes any existing row instead.
+// transaction. Semantics:
+//   - non-nil pricing: upsert the CURRENT row (an archived/inactive row for
+//     the same service is reactivated in place — "saving attaches current
+//     pricing").
+//   - nil (or empty-currency) pricing: remove only the ACTIVE row, if any.
+//     Inactive rows are pricing history and survive unrelated edits — the
+//     edit form sees nil for archived pricing (Get filters active=1), so
+//     deleting everything here would nuke the archive on any save.
 func upsertPricingTx(ctx context.Context, tx *sql.Tx, serviceType int, serviceID int64, p *Pricing) error {
 	if p == nil || p.Currency == "" {
 		_, err := tx.ExecContext(ctx,
-			"DELETE FROM pricings WHERE service_type = ? AND service_id = ?",
+			"DELETE FROM pricings WHERE service_type = ? AND service_id = ? AND active = 1",
 			serviceType, serviceID)
 		return err
 	}

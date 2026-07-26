@@ -259,11 +259,76 @@ func TestYABSCommandBaseURL(t *testing.T) {
 		t.Fatalf("base url not applied: %s", cmd)
 	}
 
-	// Without it, scheme+Host is used.
+	// Without it, scheme+Host is used (private host — see the https rule).
 	_, _, srv2 := newTestServerFull(t)
-	cmd = srv2.yabsCommand(req, 1)
-	if !strings.Contains(cmd, "-s 'http://internal:8080/api/yabs/1?sig=") {
+	reqLAN, _ := http.NewRequest("GET", "http://192.168.1.5:8080/servers/1", nil)
+	cmd = srv2.yabsCommand(reqLAN, 1)
+	if !strings.Contains(cmd, "-s 'http://192.168.1.5:8080/api/yabs/1?sig=") {
 		t.Fatalf("fallback host not applied: %s", cmd)
+	}
+}
+
+// Batch J #4 — the ingest command is withheld over plain http on routable
+// hosts; https always wins; http on loopback/RFC1918/link-local/ULA is fine.
+func TestYABSCommandHTTPSRule(t *testing.T) {
+	_, _, srv := newTestServerFull(t)
+	cmd := func(rawurl string) string {
+		req, _ := http.NewRequest("GET", rawurl, nil)
+		return srv.yabsCommand(req, 1)
+	}
+	if c := cmd("http://192.168.1.5:8080/servers/1"); c == "" {
+		t.Fatal("http + RFC1918 host should emit the command")
+	}
+	if c := cmd("http://10.0.0.2/servers/1"); c == "" {
+		t.Fatal("http + 10/8 host should emit the command")
+	}
+	if c := cmd("http://127.0.0.1:8080/servers/1"); c == "" {
+		t.Fatal("http + loopback should emit the command")
+	}
+	if c := cmd("http://localhost:8080/servers/1"); c == "" {
+		t.Fatal("http + localhost should emit the command")
+	}
+	if c := cmd("http://[fd00::1]/servers/1"); c == "" {
+		t.Fatal("http + ULA host should emit the command")
+	}
+	if c := cmd("http://idlers.example.com/servers/1"); c != "" {
+		t.Fatalf("http + public host must withhold the command, got %q", c)
+	}
+	if c := cmd("http://203.0.113.10/servers/1"); c != "" {
+		t.Fatalf("http + public IP must withhold the command, got %q", c)
+	}
+
+	// IDLER_BASE_URL: https wins, http public withholds.
+	srv.SetBaseURL("https://idlers.example.com")
+	if c := cmd("http://internal:8080/servers/1"); c == "" {
+		t.Fatal("https base URL should emit the command")
+	}
+	srv.SetBaseURL("http://idlers.example.com")
+	if c := cmd("http://192.168.1.5/servers/1"); c != "" {
+		t.Fatalf("http public IDLER_BASE_URL must withhold the command, got %q", c)
+	}
+
+	// Page level: the card shows the hint instead of a command. The Host
+	// override keeps the jar from sending the session cookie, so attach it.
+	ts, _, _ := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "hint-host")
+	req, _ := http.NewRequest("GET", ts.URL+"/servers/1", nil)
+	req.Host = "idlers.example.com"
+	for _, c := range client.Jar.Cookies(mustURL(t, ts.URL)) {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, "IDLER_BASE_URL=https://") {
+		t.Fatal("YABS card should show the https hint")
+	}
+	if strings.Contains(body, "copy-btn") {
+		t.Fatal("no copyable command may render over http on a public host")
 	}
 }
 

@@ -127,3 +127,28 @@ func TestParseAbsurdNumbers(t *testing.T) {
 		t.Fatalf("geekbench: single=%d multi=%d", r.GbSingle, r.GbMulti)
 	}
 }
+
+// Batch J #11 — huge-but-FINITE values beyond plausibility bounds are
+// treated as absent (not persisted).
+func TestParseHugeButFinite(t *testing.T) {
+	r, err := Parse([]byte(`{
+	  "disk": {"fio": [{"bs": "4k", "read": "2000000 MB/s", "write": "500 MB/s"}]},
+	  "network": {"iperf": [{"location": "L", "send": "2000 Gbits/sec", "recv": "1 Gbits/sec", "latency": "200000 ms"}]},
+	  "geekbench": {"version": 6, "single": 2000000, "multi": 5000}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	// 2e6 MB/s > 1e6 cap → 0; 500 MB/s fine.
+	if r.Disks[0].ReadMbps != 0 || r.Disks[0].WriteMbps != 500 {
+		t.Fatalf("disk caps: %+v", r.Disks[0])
+	}
+	// 2000 Gbit/s = 2e6 Mbit/s > cap → 0; latency 2e5 ms > 1e5 → 0.
+	if r.Network[0].SendMbps != 0 || r.Network[0].RecvMbps != 1000 || r.Network[0].LatencyMs != 0 {
+		t.Fatalf("network caps: %+v", r.Network[0])
+	}
+	// gb single 2e6 > 1e6 → 0; multi 5000 fine.
+	if r.GbSingle != 0 || r.GbMulti != 5000 {
+		t.Fatalf("gb caps: single=%d multi=%d", r.GbSingle, r.GbMulti)
+	}
+}

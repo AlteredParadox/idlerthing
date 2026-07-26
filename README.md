@@ -27,12 +27,14 @@ benchmarks. SQLite storage, no cgo, no external services required.
 
 ```sh
 make build
-IDLER_ADMIN_PASSWORD='changeme-not-this-one' ./idlerthing
+./idlerthing
 # open http://127.0.0.1:8080 — log in as admin@localhost
 ```
 
-On first run an admin user is created. With `IDLER_ADMIN_PASSWORD` unset, a
-random password is generated and printed to stderr **once**.
+On first run an admin user is created with a generated password, printed to
+stderr **once** (look for `First run: admin password is ...`). To choose the
+password instead, set `IDLER_ADMIN_PASSWORD` (min 8 chars) before the first
+start.
 
 ## systemd
 
@@ -42,10 +44,16 @@ random password is generated and printed to stderr **once**.
 sudo install -m 0755 idlerthing /usr/local/bin/idlerthing
 sudo install -m 0644 idlerthing.service /etc/systemd/system/idlerthing.service
 sudo install -d -m 0750 /etc/idlerthing
-printf 'IDLER_ADMIN_PASSWORD=changeme\n' | sudo tee /etc/idlerthing/idlerthing.env
-sudo chmod 0600 /etc/idlerthing/idlerthing.env
+sudo install -m 0600 /dev/null /etc/idlerthing/idlerthing.env
 sudo systemctl daemon-reload
 sudo systemctl enable --now idlerthing
+```
+
+The env file stays empty unless you want to set variables explicitly. On
+first start a generated admin password is printed once — retrieve it with:
+
+```sh
+sudo journalctl -u idlerthing | grep 'admin password'
 ```
 
 The database lands in `/var/lib/idlerthing/data/` (default `IDLER_DB` is

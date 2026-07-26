@@ -76,34 +76,34 @@ func scanYABS(row interface{ Scan(...any) error }) (*YABS, error) {
 	return &y, nil
 }
 
-// ErrCapConsumed means the signed (server_id, ts) capability was used before.
-var ErrCapConsumed = errors.New("capability already consumed")
-
 // ErrDuplicatePayload means an identical payload already exists (race-safe).
 var ErrDuplicatePayload = errors.New("duplicate payload")
 
+// ConsumeCap atomically consumes the (server_id, ts) ingest capability in
+// its OWN transaction (never rolled back by a later failure). Returns false
+// when the capability was already consumed. Consuming BEFORE payload parsing
+// means a stolen URL dies here regardless of what body it carries.
+func (st *YABSStore) ConsumeCap(ctx context.Context, serverID, ts int64) (bool, error) {
+	res, err := st.DB.ExecContext(ctx,
+		"INSERT OR IGNORE INTO yabs_caps (server_id, ts, consumed_at) VALUES (?, ?, ?)",
+		serverID, ts, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // Create inserts a run with its speed rows in one transaction, and flips
-// servers.has_yabs on. When capTS > 0 the (server_id, ts) capability is
-// consumed atomically in the same transaction (second use → ErrCapConsumed);
-// a payload-hash unique-index violation maps to ErrDuplicatePayload.
-func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed, capTS int64) (int64, error) {
+// servers.has_yabs on. A payload-hash/gb_url unique-index violation maps to
+// ErrDuplicatePayload. Capability consumption is the caller's job (see
+// ConsumeCap) so a rollback here can never un-consume it.
+func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed) (int64, error) {
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-
-	if capTS > 0 {
-		res, err := tx.ExecContext(ctx,
-			"INSERT OR IGNORE INTO yabs_caps (server_id, ts, consumed_at) VALUES (?, ?, ?)",
-			y.ServerID, capTS, time.Now().UTC().Format(time.RFC3339))
-		if err != nil {
-			return 0, err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return 0, ErrCapConsumed
-		}
-	}
 
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO yabs (server_id, run_at, cpu, cpu_cores, ram, swap, distro,

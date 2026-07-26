@@ -102,10 +102,14 @@
       <a class="field-hint" href="/servers/{{$v.Server.ID}}/yabs">{{len $v.YABSRuns}} runs →</a>
     </div>
     {{end}}
+    {{if $v.YABSCommand}}
     <div class="cmd-block">
       <code class="mono">{{$v.YABSCommand}}</code>
       <button class="icon-btn copy-btn" type="button" data-copy="{{$v.YABSCommand}}" title="Copy">⧉</button>
     </div>
+    {{else}}
+    <div class="empty-sub">Set <code class="mono">IDLER_BASE_URL=https://…</code> to enable the ingest command.</div>
+    {{end}}
   </section>
 </div>
 

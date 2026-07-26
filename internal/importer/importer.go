@@ -283,9 +283,12 @@ func (imp *importer) topLevelPricings(ctx context.Context, doc map[string]any) e
 		// Timestamps apply even when the insert was IGNOREd (the inlined
 		// service pricing created the row first, without timestamps).
 		var pid int64
-		imp.tx.QueryRowContext(ctx,
+		err = imp.tx.QueryRowContext(ctx,
 			"SELECT id FROM pricings WHERE service_id = ? AND service_type = ?",
 			newService, serviceType).Scan(&pid)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
 		if pid > 0 {
 			if err := imp.fixTimestamps(ctx, "pricings", pid, pm); err != nil {
 				return err

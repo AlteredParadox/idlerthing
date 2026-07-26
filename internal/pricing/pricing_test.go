@@ -274,3 +274,32 @@ func TestAdvanceDueDatesBumpsUpdatedAt(t *testing.T) {
 		t.Fatalf("updated_at not bumped: %q", updatedAt)
 	}
 }
+
+// Batch J #7 — followers of a COLD fetch receive the leader's successful
+// result (not the pre-fetch nil/stale state).
+func TestRatesColdFetchSharedWithFollowers(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(100 * time.Millisecond) // slow cold fetch
+		w.Write([]byte(`{"base":"USD","rates":{"EUR":0.9}}`))
+	}))
+	defer ts.Close()
+
+	r := &Rates{BaseURL: ts.URL}
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rates, ok := r.Get(context.Background())
+			if !ok || rates["EUR"] != 0.9 {
+				t.Errorf("follower should see the leader's rates: %v %v", rates, ok)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("expected 1 fetch, got %d", n)
+	}
+}

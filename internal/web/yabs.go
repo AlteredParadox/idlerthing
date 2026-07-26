@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +54,11 @@ func (s *Server) validYABSSig(serverID int64, ts int64, sig string) bool {
 // shell command and the ingest would fail with a 403. IDLER_BASE_URL wins
 // when set (validated http(s), no single-quote chars); otherwise the
 // request's Host is used, https when TLS or behind a TLS proxy.
+//
+// Returns "" when the effective URL is plain http on a routable host: an
+// on-path attacker could alter the unsigned first submission, so the command
+// is withheld and the card shows a hint instead. http stays allowed on
+// loopback/RFC1918/link-local/ULA hosts (LAN-only installs).
 func (s *Server) yabsCommand(r *http.Request, serverID int64) string {
 	ts := time.Now().Unix()
 	base := s.baseURL
@@ -62,9 +69,36 @@ func (s *Server) yabsCommand(r *http.Request, serverID int64) string {
 		}
 		base = scheme + "://" + r.Host
 	}
+	if !ingestURLOK(base) {
+		return ""
+	}
 	return fmt.Sprintf("curl -fsSL --proto '=https' https://yabs.sh | bash -s -- -s %s",
 		shellQuote(fmt.Sprintf("%s/api/yabs/%d?sig=%s&ts=%d",
 			base, serverID, s.signYABS(serverID, ts), ts)))
+}
+
+// ingestURLOK reports whether an ingest URL over this base is safe to show:
+// https always; http only for loopback, RFC1918, link-local, or ULA hosts.
+func ingestURLOK(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false // routable hostname over plain http
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // shellQuote single-quotes a string for POSIX shells (' → '"'"').
@@ -102,8 +136,8 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 
 	st := &model.YABSStore{DB: s.db}
 
-	// Byte-identical retry? Answer WITHOUT parsing — but still consume the
-	// capability if it's unused, so a replay can't be re-parsed for hours.
+	// (a) Byte-identical retry? Answer WITHOUT parsing — but make sure the
+	// capability is consumed, so the URL can't be re-parsed for hours.
 	hash := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(hash[:])
 	dup, err := st.IsDuplicate(r.Context(), serverID, "", hashHex)
@@ -112,9 +146,7 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dup {
-		if _, err := s.db.ExecContext(r.Context(),
-			"INSERT OR IGNORE INTO yabs_caps (server_id, ts, consumed_at) VALUES (?, ?, ?)",
-			serverID, ts, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		if _, err := st.ConsumeCap(r.Context(), serverID, ts); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -122,14 +154,28 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// (b) Novel payload: consume the capability in its OWN committed
+	// transaction BEFORE parsing — a later rollback (e.g. gb_url unique
+	// violation) can never un-consume it, and a stolen URL gets 403 here
+	// without its body ever being parsed.
+	consumed, err := st.ConsumeCap(r.Context(), serverID, ts)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !consumed {
+		writeAPIError(w, http.StatusForbidden, "capability consumed")
+		return
+	}
+
+	// (c) Only now parse + insert. gb_url duplicates surface as a
+	// unique-index violation at insert time (migration 0010) and map to
+	// duplicate inside Create; the cap stays consumed either way.
 	result, err := yabs.Parse(body)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid yabs JSON")
 		return
 	}
-
-	// gb_url duplicates surface as a unique-index violation at insert time
-	// (migration 0010) and map to duplicate inside Create.
 
 	run := &model.YABS{
 		ServerID:         serverID,
@@ -171,14 +217,11 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	id, err := st.Create(r.Context(), run, disks, network, ts)
+	id, err := st.Create(r.Context(), run, disks, network)
 	if err != nil {
-		switch {
-		case errors.Is(err, model.ErrCapConsumed):
-			writeAPIError(w, http.StatusForbidden, "capability consumed")
-		case errors.Is(err, model.ErrDuplicatePayload):
+		if errors.Is(err, model.ErrDuplicatePayload) {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
-		default:
+		} else {
 			writeAPIError(w, http.StatusInternalServerError, "internal error")
 		}
 		return

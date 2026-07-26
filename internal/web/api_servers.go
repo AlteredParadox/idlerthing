@@ -180,8 +180,15 @@ func (s *Server) apiServerPayload(r *http.Request, id int64) (map[string]any, er
 	if err != nil {
 		return nil, err
 	}
-	labels, _ := (&model.LabelStore{DB: s.db}).ListFor(r.Context(), id, model.ServiceServer)
-	ips, _ := (&model.IPStore{DB: s.db}).ListFor(r.Context(), id, model.ServiceServer)
+	// Relation errors propagate — a partial 200 would look like "no labels".
+	labels, err := (&model.LabelStore{DB: s.db}).ListFor(r.Context(), id, model.ServiceServer)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := (&model.IPStore{DB: s.db}).ListFor(r.Context(), id, model.ServiceServer)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"data":    flatten(srv),
 		"disks":   flattenSlice(disks),

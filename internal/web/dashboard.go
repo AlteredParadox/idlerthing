@@ -98,6 +98,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		if n, err := pricing.AdvanceDueDates(r.Context(), s.db); err == nil && n > 0 {
 			s.touchDashboard()
 		}
+		// Capture the generation BEFORE computing: a mutation landing
+		// during compute bumps gen, so the new view is stale on arrival
+		// and gets rebuilt on the next request rather than served fresh
+		// for 60s. (Benign residual window: a mutation between the
+		// freshness check and this capture is covered by the 60s TTL.)
+		s.dash.mu.Lock()
+		gen := s.dash.gen
+		s.dash.mu.Unlock()
 		var err error
 		view, err = s.computeDashboard(r)
 		if err != nil {
@@ -106,7 +114,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		s.dash.mu.Lock()
 		s.dash.view = view
-		s.dash.viewGen = s.dash.gen
+		s.dash.viewGen = gen
 		s.dash.at = time.Now()
 		s.dash.mu.Unlock()
 	}
@@ -177,7 +185,10 @@ func (s *Server) computeDashboard(r *http.Request) (*dashboardView, error) {
 	}
 	if monthly, ok := pricing.ConvertUSD(monthlyUSD, settings.currency, rates); ok && settings.currency != "USD" {
 		view.MonthlyCost = priceDisplay(settings.currency, monthly, model.TermMonthly)
-		view.YearlyCost = priceDisplay(settings.currency, monthly*12, model.TermAnnual)
+		// Yearly converts the RAW usd sum × 12 once — multiplying the
+		// already-rounded converted monthly would drift.
+		yearly, _ := pricing.ConvertUSD(monthlyUSD*12, settings.currency, rates)
+		view.YearlyCost = priceDisplay(settings.currency, yearly, model.TermAnnual)
 	} else {
 		view.MonthlyCost = fmt.Sprintf("$%.2f/mo", monthlyUSD)
 		view.YearlyCost = fmt.Sprintf("$%.2f/yr", monthlyUSD*12)

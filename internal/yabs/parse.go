@@ -45,6 +45,22 @@ type NetworkSpeed struct {
 	LatencyMs float64
 }
 
+// Plausibility bounds for normalized values — beyond these the payload is
+// corrupt, not fast (100 GB/s is beyond any real fio/iperf run).
+const (
+	maxSpeedMbps = 1e6
+	maxLatencyMs = 1e5
+	maxGBScore   = 1e6
+)
+
+// capped returns v, or 0 when |v| exceeds the plausibility bound.
+func capped(v, max float64) float64 {
+	if math.Abs(v) > max {
+		return 0
+	}
+	return v
+}
+
 // Parse decodes a yabs.sh JSON body. Sections are optional; unknown shapes
 // degrade to empty values rather than errors. Only invalid JSON is an error.
 func Parse(body []byte) (*Result, error) {
@@ -74,6 +90,12 @@ func Parse(body []byte) (*Result, error) {
 	r.GeekbenchVersion = firstInt(gb, "version")
 	r.GbSingle = firstInt(gb, "single", "single_core", "singlecore", "score")
 	r.GbMulti = firstInt(gb, "multi", "multi_core", "multicore")
+	if r.GbSingle > maxGBScore {
+		r.GbSingle = 0
+	}
+	if r.GbMulti > maxGBScore {
+		r.GbMulti = 0
+	}
 	r.GbURL = firstString(gb, "url", "link")
 
 	for _, arr := range digArrays(m, "disk.fio", "fio", "disk", "disk_speed") {
@@ -108,7 +130,7 @@ func Parse(body []byte) (*Result, error) {
 				Provider:  firstString(row, "provider", "isp", "host", "sponsor"),
 				SendMbps:  speedToMBps(firstAny(row, "send", "send_speed", "upload", "up")),
 				RecvMbps:  speedToMBps(firstAny(row, "recv", "receive", "recv_speed", "download", "down")),
-				LatencyMs: numberToFloat(firstAny(row, "latency", "latency_ms", "ping", "rtt")),
+				LatencyMs: capped(numberToFloat(firstAny(row, "latency", "latency_ms", "ping", "rtt")), maxLatencyMs),
 			}
 			if ns.Location == "" && ns.Provider == "" && ns.SendMbps == 0 && ns.RecvMbps == 0 {
 				continue
@@ -280,13 +302,14 @@ func unitFactor(s string) float64 {
 	return 1
 }
 
-// speedToMBps normalizes disk speeds to MB/s.
+// speedToMBps normalizes disk speeds to MB/s, capped at the plausibility
+// bound (raw numbers are assumed MB/s already).
 func speedToMBps(v any) float64 {
 	if f, ok := v.(float64); ok {
-		return f // raw numbers are assumed MB/s already
+		return capped(f, maxSpeedMbps)
 	}
 	if s, ok := v.(string); ok {
-		return parseNumberWithUnit(s) * unitFactor(s)
+		return capped(parseNumberWithUnit(s)*unitFactor(s), maxSpeedMbps)
 	}
 	return 0
 }

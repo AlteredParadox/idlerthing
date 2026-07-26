@@ -106,6 +106,9 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 				m["updated_at"] = ua
 				items = append(items, m)
 			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
 			return items, nil
 		})
 		addKey("ips", func() (any, error) {
@@ -140,6 +143,9 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 				items = append(items, map[string]any{
 					"label_id": labelID, "service_id": serviceID, "service_type": serviceType,
 				})
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
 			}
 			return items, nil
 		})
@@ -284,9 +290,6 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 	r = r.WithContext(ctx)
 
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-
 	files := []struct {
 		name    string
 		headers []string
@@ -330,10 +333,18 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		computed = append(computed, csvFile{name: f.name, headers: f.headers, rows: rows})
 	}
 
+	// Close the snapshot BEFORE compressing — zip building must not pin the
+	// single SQLite connection.
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
 	for _, f := range computed {
 		fw, err := zw.Create(f.name)
 		if err != nil {
-			tx.Rollback()
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -345,12 +356,6 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		cw.Flush()
 	}
 	if err := zw.Close(); err != nil {
-		tx.Rollback()
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	// Close the snapshot BEFORE writing the zip out.
-	if err := tx.Commit(); err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

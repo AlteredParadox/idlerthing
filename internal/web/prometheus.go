@@ -33,9 +33,11 @@ func validPromURL(u string) bool {
 
 // promCache caches the last successful ServerMetrics batch and the last
 // fetch ATTEMPT time (failures back off refetches instead of re-running
-// ~40s of queries on every request).
+// ~40s of queries on every request). Keyed by baseURL: a settings change
+// to a different Prometheus must not serve the old server's data.
 type promCache struct {
 	mu      sync.Mutex
+	baseURL string
 	at      time.Time
 	metrics *prom.Metrics
 	lastTry time.Time
@@ -54,6 +56,12 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 	// prometheus must not serialize every page behind ~40s of queries),
 	// then re-lock to store. A rare duplicate fetch is acceptable.
 	s.prom.mu.Lock()
+	if s.prom.baseURL != baseURL {
+		s.prom.baseURL = baseURL
+		s.prom.metrics = nil
+		s.prom.at = time.Time{}
+		s.prom.lastTry = time.Time{}
+	}
 	cached := s.prom.metrics
 	fresh := cached != nil && time.Since(s.prom.at) < 45*time.Second
 	backoff := time.Since(s.prom.lastTry) < 30*time.Second
@@ -208,12 +216,14 @@ type liveView struct {
 	Uptime     string
 }
 
-// uptimeCache caches 30-day uptime per instance (60s success, 30s failure).
+// uptimeCache caches 30-day uptime per instance (60s success, 30s failure),
+// keyed by the prometheus baseURL.
 type uptimeCache struct {
-	mu     sync.Mutex
-	at     map[string]time.Time
-	v      map[string]float64
-	failed map[string]bool
+	mu      sync.Mutex
+	baseURL string
+	at      map[string]time.Time
+	v       map[string]float64
+	failed  map[string]bool
 }
 
 // buildLive builds the Live card for one server (nil when not matched).
@@ -244,10 +254,11 @@ func (s *Server) uptime30d(r *http.Request, instance string) string {
 	}
 
 	s.uptime.mu.Lock()
-	if s.uptime.at == nil {
+	if s.uptime.at == nil || s.uptime.baseURL != baseURL {
 		s.uptime.at = map[string]time.Time{}
 		s.uptime.v = map[string]float64{}
 		s.uptime.failed = map[string]bool{}
+		s.uptime.baseURL = baseURL
 	}
 	at, ok := s.uptime.at[instance]
 	cached := s.uptime.v[instance]

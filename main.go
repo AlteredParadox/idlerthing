@@ -136,13 +136,15 @@ func run() error {
 		slog.Info("applied migration", "version", v)
 	}
 
-	if err := seedAdmin(database, cfg.AdminPassword); err != nil {
-		return fmt.Errorf("seed admin: %w", err)
-	}
-
+	// Validate config-level secrets before mutating any state, so a fatal
+	// config error can't leave a half-initialized database behind.
 	secret, err := loadSecret(cfg)
 	if err != nil {
 		return fmt.Errorf("load secret: %w", err)
+	}
+
+	if err := seedAdmin(database, cfg.AdminPassword); err != nil {
+		return fmt.Errorf("seed admin: %w", err)
 	}
 
 	webServer, err := web.New(database)
@@ -185,27 +187,61 @@ func run() error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// loadSecret returns the HMAC secret for yabs ingest URLs. IDLER_SECRET wins;
-// otherwise a random secret is generated once and persisted next to the DB.
+// loadSecret returns the HMAC secret for yabs ingest URLs. IDLER_SECRET wins
+// (≥16 bytes required — a weak key defeats the single-use capability
+// design); otherwise a random secret is generated once and persisted next to
+// the DB. Anything that undermines the file's confidentiality is fatal.
 func loadSecret(cfg config.Config) ([]byte, error) {
 	if cfg.Secret != "" {
+		if len(cfg.Secret) < 16 {
+			return nil, fmt.Errorf("IDLER_SECRET must be at least 16 bytes")
+		}
 		return []byte(cfg.Secret), nil
 	}
 	path := cfg.DBPath + ".secret"
-	if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
-		// Tighten an existing secret file (best-effort, warn only).
+	fi, statErr := os.Lstat(path)
+	if statErr == nil {
+		if !fi.Mode().IsRegular() { // symlink, device, socket, ...
+			return nil, fmt.Errorf("secret file %s is not a regular file", path)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read secret: %w", err)
+		}
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("secret file %s is empty", path)
+		}
+		// Failure to enforce confidentiality is fatal (same rule as db.Open).
 		if err := os.Chmod(path, 0o600); err != nil {
-			slog.Warn("chmod secret file failed", "path", path, "err", err)
+			return nil, fmt.Errorf("chmod secret file: %w", err)
 		}
 		return raw, nil
+	}
+	if !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("stat secret: %w", statErr)
 	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
-	// Written explicitly 0600 regardless of umask.
-	if err := os.WriteFile(path, secret, 0o600); err != nil {
-		return nil, fmt.Errorf("persist secret: %w", err)
+	// O_EXCL so a pre-existing (or raced) file is never reused/truncated;
+	// 0600 + chmod + Stat so the umask can never leak it.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("create secret: %w", err)
+	}
+	if _, err := f.Write(secret); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("write secret: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return nil, fmt.Errorf("write secret: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, fmt.Errorf("chmod secret: %w", err)
+	}
+	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+		return nil, fmt.Errorf("secret file %s must be 0600", path)
 	}
 	slog.Info("generated yabs ingest secret", "path", path)
 	return secret, nil

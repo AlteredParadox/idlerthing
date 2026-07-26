@@ -170,6 +170,29 @@ func TestYABSGbURLDuplicate(t *testing.T) {
 	if runs != 1 {
 		t.Fatalf("duplicate gb_url inserted: %d runs", runs)
 	}
+
+	// Batch J #3 — the "duplicate" answer consumed the capability in its OWN
+	// transaction: a novel payload on the same (stolen) URL is now dead.
+	code, body = post(1, `{"cpu": {"model": "C", "cores": 8}, "geekbench": {"url": "https://browser.geekbench.com/v6/cpu/novel1"}}`)
+	if code != http.StatusForbidden || !strings.Contains(body, "capability consumed") {
+		t.Fatalf("novel payload on consumed URL: %d %s", code, body)
+	}
+	database.QueryRow("SELECT COUNT(*) FROM yabs").Scan(&runs)
+	if runs != 1 {
+		t.Fatalf("consumed URL inserted a run: %d runs", runs)
+	}
+
+	// A consumed URL rejects WITHOUT parsing: invalid JSON → 403, not 400.
+	code, body = post(1, `{not json`)
+	if code != http.StatusForbidden {
+		t.Fatalf("consumed URL must reject before parsing: %d %s", code, body)
+	}
+
+	// A FRESH capability with invalid JSON → 400 (cap consumed first, then parse).
+	code, body = post(2, `{not json`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("fresh cap with bad JSON: %d %s", code, body)
+	}
 }
 
 // #10 — importer validation: bad currency/IP/numeric classes are skipped

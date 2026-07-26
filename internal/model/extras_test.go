@@ -276,7 +276,7 @@ func TestYABSDeleteRecomputesHasYabs(t *testing.T) {
 	}
 	st := &YABSStore{DB: database}
 	run := func() int64 {
-		rid, err := st.Create(ctx, &YABS{ServerID: id, RunAt: sql.NullString{String: "2026-01-01", Valid: true}}, nil, nil, 0)
+		rid, err := st.Create(ctx, &YABS{ServerID: id, RunAt: sql.NullString{String: "2026-01-01", Valid: true}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

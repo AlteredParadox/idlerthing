@@ -56,7 +56,7 @@ func TestExportImportEquivalence(t *testing.T) {
 		ServerID: srvID, RunAt: str("2026-07-01"), CPU: str("AMD EPYC"),
 		GbSingle: ref(1600), GbMulti: ref(4500),
 	}, []model.YABSDiskSpeed{{BlockSize: "4k", ReadMbps: 88, WriteMbps: 90}},
-		[]model.YABSNetworkSpeed{{Location: "FRA", SendMbps: 900, RecvMbps: 950, LatencyMs: 12}}, 0)
+		[]model.YABSNetworkSpeed{{Location: "FRA", SendMbps: 900, RecvMbps: 950, LatencyMs: 12}})
 
 	sharedSt := &model.SharedStore{DB: dbA}
 	sharedID, _ := sharedSt.Create(ctx, &model.SharedHosting{

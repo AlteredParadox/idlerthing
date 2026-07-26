@@ -30,7 +30,7 @@ type LabelCount struct {
 // Re-assigning an existing pair is a no-op.
 func (s *LabelStore) Assign(ctx context.Context, labelID, serviceID int64, serviceType int) error {
 	var already int
-	if err := s.DB.QueryRowContext(ctx,
+	if err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM labels_assigned WHERE label_id = ? AND service_id = ? AND service_type = ?",
 		labelID, serviceID, serviceType).Scan(&already); err != nil {
 		return err
@@ -56,7 +56,7 @@ func (s *LabelStore) Assign(ctx context.Context, labelID, serviceID int64, servi
 	if n, _ := res.RowsAffected(); n == 0 {
 		// Distinguish "target gone" from "cap reached".
 		var exists int
-		s.DB.QueryRowContext(ctx,
+		QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM "+table+" WHERE id = ?", serviceID).Scan(&exists)
 		if exists == 0 {
 			return sql.ErrNoRows
@@ -120,7 +120,7 @@ func (s *LabelStore) AllWithCounts(ctx context.Context) ([]LabelCount, error) {
 // FindOrCreate returns the ID of a label by name, creating it if needed.
 func (s *LabelStore) FindOrCreate(ctx context.Context, name string) (int64, error) {
 	var id int64
-	err := s.DB.QueryRowContext(ctx, "SELECT id FROM labels WHERE label = ?", name).Scan(&id)
+	err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx, "SELECT id FROM labels WHERE label = ?", name).Scan(&id)
 	if err == nil {
 		return id, nil
 	}

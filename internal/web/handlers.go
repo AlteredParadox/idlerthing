@@ -43,13 +43,36 @@ const countsTables = `SELECT
 	(SELECT COUNT(*) FROM yabs),
 	(SELECT COUNT(*) FROM notes)`
 
+// counts runs a cheap COUNT(*) per table. Cached across requests keyed to
+// the dashboard generation: only the first render after a write re-queries.
+// (dash is nil in tests that build a bare Server — then no caching.)
 func (s *Server) counts(r *http.Request) Counts {
+	var gen uint64
+	if s.dash != nil {
+		s.dash.mu.Lock()
+		gen = s.dash.gen
+		cached, ok := s.dash.counts, s.dash.countsOK
+		stale := !ok || s.dash.countsGen != gen
+		s.dash.mu.Unlock()
+		if !stale {
+			return cached
+		}
+	}
+
 	var c Counts
 	// One round trip for all 14 counts.
 	s.db.QueryRowContext(r.Context(), countsTables).Scan(
 		&c.Servers, &c.Shared, &c.Reseller, &c.Seedboxes, &c.Domains,
 		&c.Misc, &c.DNS, &c.IPs, &c.Locations, &c.OS, &c.Providers,
 		&c.Labels, &c.YABS, &c.Notes)
+
+	// Tag with the gen captured BEFORE the query: a write landing mid-query
+	// bumps gen, so the result is stale on arrival and re-queried next time.
+	if s.dash != nil {
+		s.dash.mu.Lock()
+		s.dash.countsGen, s.dash.counts, s.dash.countsOK = gen, c, true
+		s.dash.mu.Unlock()
+	}
 	return c
 }
 
@@ -75,7 +98,11 @@ func (s *Server) handleThemePref(w http.ResponseWriter, r *http.Request) {
 	if s.currentTheme(r) == "light" {
 		next = "dark"
 	}
-	s.db.ExecContext(r.Context(), "UPDATE settings SET theme = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", next)
+	if _, err := s.db.ExecContext(r.Context(),
+		"UPDATE settings SET theme = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", next); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	target := safeRedirectTarget(r.Referer(), "/")
 	http.Redirect(w, r, target, http.StatusSeeOther)

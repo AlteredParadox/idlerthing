@@ -20,6 +20,11 @@ type dashboardCache struct {
 	viewGen uint64
 	at      time.Time
 	view    *dashboardView
+	// Sidebar counts cached by the same generation counter — every write
+	// already bumps gen via touchDashboard, so staleness is impossible.
+	countsGen uint64
+	counts    Counts
+	countsOK  bool
 }
 
 // touchDashboard invalidates the dashboard cache.

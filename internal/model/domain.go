@@ -68,7 +68,7 @@ func (st *DomainStore) Create(ctx context.Context, d *Domain, pricing *Pricing) 
 
 // Get returns one domain with its pricing.
 func (st *DomainStore) Get(ctx context.Context, id int64) (*Domain, *Pricing, error) {
-	d, err := scanDomain(st.DB.QueryRowContext(ctx,
+	d, err := scanDomain(QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT "+domainColumns+" FROM domains WHERE id = ?", id))
 	if err != nil {
 		return nil, nil, err
@@ -139,8 +139,8 @@ func (st *DomainStore) List(ctx context.Context, opts ListOptions) ([]DomainList
 		where = append(where, "s.active = 1")
 	}
 	if opts.Q != "" {
-		like := "%" + opts.Q + "%"
-		where = append(where, "(s.domain LIKE ? OR s.extension LIKE ? OR prov_name LIKE ?)")
+		like := likePattern(opts.Q)
+		where = append(where, "(s.domain LIKE ? ESCAPE '\\' OR s.extension LIKE ? ESCAPE '\\' OR prov_name LIKE ? ESCAPE '\\')")
 		args = append(args, like, like, like)
 	}
 
@@ -206,7 +206,7 @@ func (st *DomainStore) List(ctx context.Context, opts ListOptions) ([]DomainList
 
 // StatusCounts returns active and inactive domain counts.
 func (st *DomainStore) StatusCounts(ctx context.Context) (active, inactive int, err error) {
-	err = st.DB.QueryRowContext(ctx,
+	err = QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COALESCE(SUM(active = 1), 0), COALESCE(SUM(active = 0), 0) FROM domains").
 		Scan(&active, &inactive)
 	return active, inactive, err
@@ -215,7 +215,7 @@ func (st *DomainStore) StatusCounts(ctx context.Context) (active, inactive int, 
 // DistinctProviders returns the number of distinct providers used by domains.
 func (st *DomainStore) DistinctProviders(ctx context.Context) (int, error) {
 	var n int
-	err := st.DB.QueryRowContext(ctx,
+	err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COUNT(DISTINCT provider_id) FROM domains WHERE provider_id IS NOT NULL").Scan(&n)
 	return n, err
 }

@@ -110,7 +110,7 @@ func (s *CatalogStore) UsageCount(ctx context.Context, kind CatalogKind, id int6
 	total := 0
 	for table, column := range kind.usageColumns {
 		var n int
-		if err := s.DB.QueryRowContext(ctx,
+		if err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM "+table+" WHERE "+column+" = ?", id).Scan(&n); err != nil {
 			return 0, err
 		}

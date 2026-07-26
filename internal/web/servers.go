@@ -14,14 +14,15 @@ import (
 	"idlerthing/internal/prom"
 )
 
-// currencySymbols maps currency codes to display symbols.
+// currencySymbols maps currency codes to display symbols; keys mirror
+// model.Currencies (unknown codes fall back to "CODE " in priceDisplay).
 var currencySymbols = map[string]string{
 	"USD": "$", "EUR": "€", "GBP": "£", "CAD": "CA$",
 	"AUD": "A$", "JPY": "¥", "CNY": "CN¥",
 }
 
 // currencies lists the options offered in pricing forms.
-var currencies = []string{"USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CNY"}
+var currencies = model.Currencies
 
 // networkTypes lists common network type options (free-ish select).
 var networkTypes = []string{"IPv4", "IPv6", "IPv4+IPv6", "IPv4 NAT", "IPv4 NAT + IPv6"}
@@ -87,14 +88,10 @@ type serversListView struct {
 func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	opts := model.ListOptions{
-		Status: q.Get("status"),
+		Status: normStatus(q.Get("status")),
 		Q:      strings.TrimSpace(q.Get("q")),
-		Sort:   q.Get("sort"),
-		Dir:    q.Get("dir"),
 	}
-	if opts.Status == "" {
-		opts.Status = "active"
-	}
+	// Sort/dir come from the per-user pref (listSort) — never from the query.
 	opts.Sort, opts.Dir = s.listSort(r, "servers", "hostname")
 
 	items, err := s.servers.List(r.Context(), opts)
@@ -296,6 +293,8 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	names := s.lookupNames(r, srv)
+	// One live-metrics fetch for both the Live card and the LiveMon section.
+	metrics := s.liveMetrics(r)
 	view := serverDetailView{
 		Server:      srv,
 		Disks:       disks,
@@ -305,10 +304,10 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 		Location:    names[2],
 		TypeLabel:   model.ServerTypeLabel(srv.ServerType),
 		Extras:      s.buildExtras(r, srv.ID, model.ServiceServer),
-		Live:        s.buildLive(r, srv.Hostname),
+		Live:        s.buildLive(r, metrics, srv.Hostname),
 		YABSCommand: s.yabsCommand(r, srv.ID),
 	}
-	if h := matchLive(s.liveMetrics(r), srv.Hostname); h != nil {
+	if h := matchLive(metrics, srv.Hostname); h != nil {
 		view.LiveMon = s.liveMonEntry(r, h.Instance)
 	}
 	runs, _ := (&model.YABSStore{DB: s.db}).ListFor(r.Context(), srv.ID)
@@ -447,7 +446,7 @@ func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", "Server "+srv.Hostname+" added.")
+	s.setFlash(w, r, "ok", "Server "+srv.Hostname+" added.")
 	http.Redirect(w, r, "/servers/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -468,11 +467,15 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.servers.Update(r.Context(), srv, disks, pricing); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", "Server "+srv.Hostname+" saved.")
+	s.setFlash(w, r, "ok", "Server "+srv.Hostname+" saved.")
 	http.Redirect(w, r, "/servers/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -488,7 +491,7 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", "Server deleted.")
+	s.setFlash(w, r, "ok", "Server deleted.")
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", "/servers")
 		w.WriteHeader(http.StatusNoContent)
@@ -571,10 +574,7 @@ func parsePricingForm(r *http.Request, errs map[string]string) *model.Pricing {
 		errs["price"] = "Price must be a number greater than 0."
 		return nil
 	}
-	currency := r.FormValue("currency")
-	if _, ok := currencySymbols[currency]; !ok {
-		currency = "USD"
-	}
+	currency := validCurrency(r.FormValue("currency"))
 	term := intFormValue(r, "term", model.TermMonthly)
 	if term < model.TermMonthly || term > model.TermOneTime {
 		term = model.TermMonthly

@@ -91,14 +91,21 @@ type section struct {
 // resolved by listSort (a per-user pref) at the call site.
 func parseListOptions(r *http.Request) model.ListOptions {
 	q := r.URL.Query()
-	opts := model.ListOptions{
-		Status: q.Get("status"),
+	return model.ListOptions{
+		Status: normStatus(q.Get("status")),
 		Q:      strings.TrimSpace(q.Get("q")),
 	}
-	if opts.Status == "" {
-		opts.Status = "active"
+}
+
+// normStatus whitelists the status filter — unknown values fall back to the
+// default, so a crafted ?status=bogus behaves as "active" and listnav hrefs
+// can only ever carry valid states.
+func normStatus(s string) string {
+	switch s {
+	case "inactive", "all":
+		return s
 	}
-	return opts
+	return "active"
 }
 
 // handleSectionList renders a generic service list page (or htmx partial).
@@ -162,7 +169,7 @@ func (s *Server) handleSectionDelete(w http.ResponseWriter, r *http.Request, sec
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", strings.TrimSuffix(sec.Title, "s")+" deleted.")
+	s.setFlash(w, r, "ok", strings.TrimSuffix(sec.Title, "s")+" deleted.")
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", sec.Base)
 		w.WriteHeader(http.StatusNoContent)

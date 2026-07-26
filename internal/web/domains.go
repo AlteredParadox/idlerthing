@@ -201,7 +201,7 @@ func (s *Server) handleDomainCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", d.Domain+" added.")
+	s.setFlash(w, r, "ok", d.Domain+" added.")
 	http.Redirect(w, r, "/domains/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -222,11 +222,15 @@ func (s *Server) handleDomainUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	st := &model.DomainStore{DB: s.db}
 	if err := st.Update(r.Context(), d, pricing); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", d.Domain+" saved.")
+	s.setFlash(w, r, "ok", d.Domain+" saved.")
 	http.Redirect(w, r, "/domains/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 

@@ -64,7 +64,7 @@ func (s *DNSStore) Create(ctx context.Context, d *DNSRecord) (int64, error) {
 
 // Get returns one DNS record.
 func (s *DNSStore) Get(ctx context.Context, id int64) (*DNSRecord, error) {
-	return scanDNS(s.DB.QueryRowContext(ctx,
+	return scanDNS(QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
 		"SELECT "+dnsColumns+" FROM dns WHERE id = ?", id))
 }
 
@@ -137,7 +137,7 @@ func (s *DNSStore) List(ctx context.Context) ([]DNSListItem, error) {
 
 // ListForServer returns DNS records linked to a server.
 func (s *DNSStore) ListForServer(ctx context.Context, serverID int64) ([]DNSListItem, error) {
-	rows, err := s.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
 		dnsListSelect+" WHERE a.server_id = ? ORDER BY a.hostname COLLATE NOCASE", serverID)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func (s *DNSStore) ListForServer(ctx context.Context, serverID int64) ([]DNSList
 
 // ListForDomain returns DNS records linked to a domain.
 func (s *DNSStore) ListForDomain(ctx context.Context, domainID int64) ([]DNSListItem, error) {
-	rows, err := s.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
 		dnsListSelect+" WHERE a.domain_id = ? ORDER BY a.hostname COLLATE NOCASE", domainID)
 	if err != nil {
 		return nil, err

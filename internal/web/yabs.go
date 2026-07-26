@@ -375,7 +375,7 @@ func (s *Server) handleServerYABSDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", "YABS run deleted.")
+	s.setFlash(w, r, "ok", "YABS run deleted.")
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", "/servers/"+strconv.FormatInt(serverID, 10)+"/yabs")
 		w.WriteHeader(http.StatusNoContent)

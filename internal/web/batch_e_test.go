@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,11 +129,12 @@ func TestSizeFormValueNaNOverflow(t *testing.T) {
 func TestLiveMetricsBackoffAndHealthyEmpty(t *testing.T) {
 	_, database, s := newTestServerFull(t)
 
-	var calls int
-	var fail = true
+	// Counters are atomic: prom.queryBatch fires 3 queries concurrently.
+	var calls int32
+	var fail int32 = 1
 	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		if fail {
+		atomic.AddInt32(&calls, 1)
+		if atomic.LoadInt32(&fail) == 1 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -143,15 +145,16 @@ func TestLiveMetricsBackoffAndHealthyEmpty(t *testing.T) {
 	database.Exec("UPDATE settings SET prometheus_enabled = 1, prometheus_url = ? WHERE id = 1", promSrv.URL)
 
 	// Prime STALE data (old timestamp) so the first request must refetch.
+	s.prom.baseURL = promSrv.URL
 	s.prom.metrics = promMetricsStub
 	s.prom.at = time.Now().Add(-time.Minute)
 
 	req, _ := http.NewRequest("GET", "/", nil)
 	_ = s.liveMetrics(req)
-	first := calls
+	first := atomic.LoadInt32(&calls)
 	_ = s.liveMetrics(req) // within backoff → no second fetch
-	if calls != first {
-		t.Fatalf("expected backoff (no refetch within 30s), got %d extra queries", calls-first)
+	if got := atomic.LoadInt32(&calls); got != first {
+		t.Fatalf("expected backoff (no refetch within 30s), got %d extra queries", got-first)
 	}
 	if first == 0 {
 		t.Fatal("first request should have fetched")
@@ -161,7 +164,7 @@ func TestLiveMetricsBackoffAndHealthyEmpty(t *testing.T) {
 	s.prom.mu.Lock()
 	s.prom.lastTry = time.Now().Add(-time.Minute)
 	s.prom.mu.Unlock()
-	fail = false
+	atomic.StoreInt32(&fail, 0)
 	m := s.liveMetrics(req)
 	if m == promMetricsStub {
 		t.Fatal("healthy-empty result should replace stale data")

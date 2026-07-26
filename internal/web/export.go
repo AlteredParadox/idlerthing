@@ -53,7 +53,11 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := map[string]any{}
+	out := map[string]any{
+		// Per-type exports omit the related tables (pricings/ips/dns/notes/
+		// labels_assigned/yabs) — the importer warns on these.
+		"partial": typeName != "",
+	}
 	if typeName == "" || typeName == "servers" {
 		servers, err := s.exportServers(r)
 		if err != nil {
@@ -214,35 +218,139 @@ func (s *Server) addJSONKey(r *http.Request, out map[string]any, key string, fn 
 }
 
 // exportServers returns servers with disks/pricing/labels/ips inlined.
+// Child tables are fetched ONCE each (constant query count regardless of
+// server count) and grouped in Go.
 func (s *Server) exportServers(r *http.Request) ([]any, error) {
 	items, err := s.servers.List(r.Context(), model.ListOptions{Status: "all"})
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]int64, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	disks, err := s.disksByServer(r, ids)
+	if err != nil {
+		return nil, err
+	}
+	labels, err := s.labelsByService(r, ids, model.ServiceServer)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := s.ipsByService(r, ids, model.ServiceServer)
+	if err != nil {
+		return nil, err
+	}
+
 	var out []any
 	for _, it := range items {
 		m := flatten(it).(map[string]any)
-		disks, err := s.servers.Disks(r.Context(), it.ID)
-		if err != nil {
-			return nil, err
-		}
-		m["disks"] = flattenSlice(disks)
-		labels, err := (&model.LabelStore{DB: s.db}).ListFor(r.Context(), it.ID, model.ServiceServer)
-		if err != nil {
-			return nil, err
-		}
-		m["labels"] = flattenSlice(labels)
-		ips, err := (&model.IPStore{DB: s.db}).ListFor(r.Context(), it.ID, model.ServiceServer)
-		if err != nil {
-			return nil, err
-		}
-		m["ips"] = flattenSlice(ips)
+		m["disks"] = flattenSlice(disks[it.ID])
+		m["labels"] = flattenSlice(labels[it.ID])
+		m["ips"] = flattenSlice(ips[it.ID])
 		out = append(out, m)
 	}
 	if out == nil {
 		out = []any{}
 	}
 	return out, nil
+}
+
+// queryIDChunks runs fn once per ≤500-id chunk (SQLite variable limit) with
+// an " IN (?,…)" clause and matching args, routed through QuerierFrom so the
+// export snapshot tx applies.
+func (s *Server) queryIDChunks(r *http.Request, ids []int64, fn func(q model.Querier, clause string, args []any) error) error {
+	const maxVars = 500
+	q := model.QuerierFrom(r.Context(), s.db)
+	for i := 0; i < len(ids); i += maxVars {
+		chunk := ids[i:min(i+maxVars, len(ids))]
+		args := make([]any, len(chunk))
+		for j, id := range chunk {
+			args[j] = id
+		}
+		if err := fn(q, " IN (?"+strings.Repeat(",?", len(chunk)-1)+")", args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// disksByServer batches server_disks for an export id set.
+func (s *Server) disksByServer(r *http.Request, ids []int64) (map[int64][]model.ServerDisk, error) {
+	out := map[int64][]model.ServerDisk{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(),
+			"SELECT id, server_id, size_as_mb, media FROM server_disks WHERE server_id "+clause+" ORDER BY server_id, id", args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d model.ServerDisk
+			if err := rows.Scan(&d.ID, &d.ServerID, &d.SizeAsMB, &d.Media); err != nil {
+				return err
+			}
+			out[d.ServerID] = append(out[d.ServerID], d)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// labelsByService batches label assignments for an export id set.
+func (s *Server) labelsByService(r *http.Request, ids []int64, serviceType int) (map[int64][]model.CatalogItem, error) {
+	out := map[int64][]model.CatalogItem{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(), `
+			SELECT a.service_id, l.id, l.label FROM labels l
+			JOIN labels_assigned a ON a.label_id = l.id
+			WHERE a.service_type = ? AND a.service_id `+clause+`
+			ORDER BY a.service_id, l.label COLLATE NOCASE`, append([]any{serviceType}, args...)...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var serviceID int64
+			var it model.CatalogItem
+			if err := rows.Scan(&serviceID, &it.ID, &it.Name); err != nil {
+				return err
+			}
+			out[serviceID] = append(out[serviceID], it)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// ipsByService batches ips for an export id set (same columns/order as
+// IPStore.ListFor).
+func (s *Server) ipsByService(r *http.Request, ids []int64, serviceType int) (map[int64][]model.IP, error) {
+	out := map[int64][]model.IP{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(), `
+			SELECT id, service_id, service_type, address, is_ipv4,
+				country, region, city, org, isp, asn, fetched_at, created_at, updated_at
+			FROM ips WHERE service_type = ? AND service_id `+clause+`
+			ORDER BY service_id, address`, append([]any{serviceType}, args...)...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ip model.IP
+			var v4 int
+			if err := rows.Scan(&ip.ID, &ip.ServiceID, &ip.ServiceType, &ip.Address, &v4,
+				&ip.Country, &ip.Region, &ip.City, &ip.Org, &ip.Isp, &ip.Asn,
+				&ip.FetchedAt, &ip.CreatedAt, &ip.UpdatedAt); err != nil {
+				return err
+			}
+			ip.IsIPv4 = v4 != 0
+			out[ip.ServiceID] = append(out[ip.ServiceID], ip)
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // exportService returns one service type's list (pricing already inlined
@@ -514,26 +622,80 @@ func (s *Server) csvMisc(r *http.Request) ([][]string, error) {
 	return out, nil
 }
 
-// exportYABS returns all yabs runs with nested speed rows.
+// exportYABS returns all yabs runs with nested speed rows. Speed tables are
+// fetched ONCE each and grouped by run (constant query count).
 func (s *Server) exportYABS(r *http.Request) (any, error) {
 	st := &model.YABSStore{DB: s.db}
 	items, err := st.ListAll(r.Context())
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]int64, len(items))
+	for i, it := range items {
+		ids[i] = it.ID
+	}
+	disks, err := s.yabsDisksByRun(r, ids)
+	if err != nil {
+		return nil, err
+	}
+	network, err := s.yabsNetworkByRun(r, ids)
+	if err != nil {
+		return nil, err
+	}
 	var out []any
 	for _, it := range items {
-		y, disks, network, err := st.Get(r.Context(), it.ID)
-		if err != nil {
-			return nil, err
-		}
-		m := flatten(y).(map[string]any)
-		m["disk_speed"] = flattenSlice(disks)
-		m["network_speed"] = flattenSlice(network)
+		y := it.YABS
+		m := flatten(&y).(map[string]any)
+		m["disk_speed"] = flattenSlice(disks[it.ID])
+		m["network_speed"] = flattenSlice(network[it.ID])
 		out = append(out, m)
 	}
 	if out == nil {
 		out = []any{}
 	}
 	return out, nil
+}
+
+// yabsDisksByRun batches yabs_disk_speed for an export id set.
+func (s *Server) yabsDisksByRun(r *http.Request, ids []int64) (map[int64][]model.YABSDiskSpeed, error) {
+	out := map[int64][]model.YABSDiskSpeed{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(),
+			"SELECT id, yabs_id, block_size, read_mbps, write_mbps FROM yabs_disk_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d model.YABSDiskSpeed
+			if err := rows.Scan(&d.ID, &d.YabsID, &d.BlockSize, &d.ReadMbps, &d.WriteMbps); err != nil {
+				return err
+			}
+			out[d.YabsID] = append(out[d.YabsID], d)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// yabsNetworkByRun batches yabs_network_speed for an export id set.
+func (s *Server) yabsNetworkByRun(r *http.Request, ids []int64) (map[int64][]model.YABSNetworkSpeed, error) {
+	out := map[int64][]model.YABSNetworkSpeed{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(),
+			"SELECT id, yabs_id, location, provider, send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var n model.YABSNetworkSpeed
+			if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
+				return err
+			}
+			out[n.YabsID] = append(out[n.YabsID], n)
+		}
+		return rows.Err()
+	})
+	return out, err
 }

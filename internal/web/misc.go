@@ -171,7 +171,7 @@ func (s *Server) handleMiscCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", m.Name+" added.")
+	s.setFlash(w, r, "ok", m.Name+" added.")
 	http.Redirect(w, r, "/misc/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -192,11 +192,15 @@ func (s *Server) handleMiscUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	st := &model.MiscStore{DB: s.db}
 	if err := st.Update(r.Context(), m, pricing); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", m.Name+" saved.")
+	s.setFlash(w, r, "ok", m.Name+" saved.")
 	http.Redirect(w, r, "/misc/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 

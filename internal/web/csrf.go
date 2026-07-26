@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,16 @@ func (s *Server) csrfProtect(next http.Handler) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		// Body hardening BEFORE any form parsing (the FormValue below parses
+		// the body): refuse multipart outright — the app has no legitimate
+		// multipart forms, and ParseMultipartForm would buffer 32MB in memory
+		// plus spill to disk — and cap urlencoded bodies at 1MB (the largest
+		// legit form, a server edit with 4 disks, is a few KB).
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+			http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		// Form field first, then the htmx header.
 		token := r.FormValue("csrf_token")
 		if token == "" {
@@ -42,7 +53,7 @@ func (s *Server) csrfProtect(next http.Handler) http.Handler {
 // issueLoginCSRF sets (or rotates) the double-submit cookie for the login
 // form and returns the token to embed in the form. The cookie is HttpOnly:
 // the server plants both copies, so script access is unnecessary.
-func (s *Server) issueLoginCSRF(w http.ResponseWriter) (string, error) {
+func (s *Server) issueLoginCSRF(w http.ResponseWriter, r *http.Request) (string, error) {
 	token, err := randomToken(32)
 	if err != nil {
 		return "", err
@@ -52,7 +63,7 @@ func (s *Server) issueLoginCSRF(w http.ResponseWriter) (string, error) {
 		Value:    token,
 		Path:     "/login",
 		HttpOnly: true,
-		Secure:   s.behindTLSProxy,
+		Secure:   s.cookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(30 * time.Minute),
 	})

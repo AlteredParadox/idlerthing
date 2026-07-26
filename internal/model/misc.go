@@ -50,7 +50,7 @@ func (st *MiscStore) Create(ctx context.Context, m *MiscService, pricing *Pricin
 func (st *MiscStore) Get(ctx context.Context, id int64) (*MiscService, *Pricing, error) {
 	var m MiscService
 	var active int
-	err := st.DB.QueryRowContext(ctx,
+	err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT "+miscColumns+" FROM misc_services WHERE id = ?", id).
 		Scan(&m.ID, &m.Name, &active, &m.OwnedSince, &m.CreatedAt, &m.UpdatedAt)
 	if err != nil {
@@ -118,8 +118,8 @@ func (st *MiscStore) List(ctx context.Context, opts ListOptions) ([]MiscListItem
 		where = append(where, "s.active = 1")
 	}
 	if opts.Q != "" {
-		where = append(where, "s.name LIKE ?")
-		args = append(args, "%"+opts.Q+"%")
+		where = append(where, "s.name LIKE ? ESCAPE '\\'")
+		args = append(args, likePattern(opts.Q))
 	}
 
 	orderBy := miscSortColumns["name"]
@@ -178,7 +178,7 @@ func (st *MiscStore) List(ctx context.Context, opts ListOptions) ([]MiscListItem
 
 // StatusCounts returns active and inactive misc service counts.
 func (st *MiscStore) StatusCounts(ctx context.Context) (active, inactive int, err error) {
-	err = st.DB.QueryRowContext(ctx,
+	err = QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COALESCE(SUM(active = 1), 0), COALESCE(SUM(active = 0), 0) FROM misc_services").
 		Scan(&active, &inactive)
 	return active, inactive, err

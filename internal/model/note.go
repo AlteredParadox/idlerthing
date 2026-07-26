@@ -56,7 +56,7 @@ func (s *NoteStore) Create(ctx context.Context, n *Note) (int64, error) {
 
 // ListFor returns notes attached to one service, newest first.
 func (s *NoteStore) ListFor(ctx context.Context, serviceID int64, serviceType int) ([]Note, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, `
 		SELECT id, service_id, service_type, ip_id, body, created_at, updated_at
 		FROM notes WHERE service_id = ? AND service_type = ?
 		ORDER BY created_at DESC, id DESC`, serviceID, serviceType)

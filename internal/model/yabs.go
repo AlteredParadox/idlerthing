@@ -79,6 +79,10 @@ func scanYABS(row interface{ Scan(...any) error }) (*YABS, error) {
 // ErrDuplicatePayload means an identical payload already exists (race-safe).
 var ErrDuplicatePayload = errors.New("duplicate payload")
 
+// capTTL matches the 2h signature window: older cap rows can never affect
+// an ingest decision again, so they are pruned opportunistically.
+const capTTL = 2 * time.Hour
+
 // ConsumeCap atomically consumes the (server_id, ts) ingest capability in
 // its OWN transaction (never rolled back by a later failure). Returns false
 // when the capability was already consumed. Consuming BEFORE payload parsing
@@ -90,6 +94,9 @@ func (st *YABSStore) ConsumeCap(ctx context.Context, serverID, ts int64) (bool, 
 	if err != nil {
 		return false, err
 	}
+	// Prune rows past the signature window (best-effort — a prune failure
+	// must not break ingest).
+	st.DB.ExecContext(ctx, "DELETE FROM yabs_caps WHERE ts < ?", time.Now().Add(-capTTL).Unix())
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
@@ -148,7 +155,7 @@ func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed,
 func (st *YABSStore) IsDuplicate(ctx context.Context, serverID int64, gbURL, payloadHash string) (bool, error) {
 	if gbURL != "" {
 		var n int
-		if err := st.DB.QueryRowContext(ctx,
+		if err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM yabs WHERE server_id = ? AND gb_url = ?", serverID, gbURL).Scan(&n); err != nil {
 			return false, err
 		}
@@ -158,7 +165,7 @@ func (st *YABSStore) IsDuplicate(ctx context.Context, serverID int64, gbURL, pay
 	}
 	if payloadHash != "" {
 		var n int
-		if err := st.DB.QueryRowContext(ctx,
+		if err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM yabs WHERE server_id = ? AND payload_hash = ?", serverID, payloadHash).Scan(&n); err != nil {
 			return false, err
 		}

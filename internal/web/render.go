@@ -52,12 +52,7 @@ type templates struct {
 // pricing labels, form pre-fill helpers).
 var templateFuncs = template.FuncMap{
 	// dateFmt renders an ISO date/datetime string as YYYY-MM-DD.
-	"dateFmt": func(s string) string {
-		if len(s) >= 10 {
-			return s[:10]
-		}
-		return s
-	},
+	"dateFmt": dateOnly,
 	// nstr unwraps a sql.NullString for form values.
 	"nstr": func(n sql.NullString) string { return n.String },
 	// nint unwraps a sql.NullInt64 for form values ("" when NULL).
@@ -213,12 +208,13 @@ func (s *Server) newPageData(w http.ResponseWriter, r *http.Request, title, nav 
 
 // setFlash plants a one-time flash cookie (survives exactly one redirect).
 // The value is URL-escaped since cookie values must be ASCII.
-func setFlash(w http.ResponseWriter, kind, message string) {
+func (s *Server) setFlash(w http.ResponseWriter, r *http.Request, kind, message string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     flashCookieName,
 		Value:    url.QueryEscape(kind + ":" + message),
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   s.cookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }

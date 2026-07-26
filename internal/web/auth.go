@@ -57,7 +57,7 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	token, err := s.issueLoginCSRF(w)
+	token, err := s.issueLoginCSRF(w, r)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -80,7 +80,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.issueLoginCSRF(w) // rotate on every attempt
+	token, err := s.issueLoginCSRF(w, r) // rotate on every attempt
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -153,6 +153,13 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// cookieSecure reports whether cookies must carry the Secure attribute:
+// direct TLS, or an HTTPS-terminating proxy in front (IDLER_BEHIND_TLS_PROXY).
+// One rule for session, flash, and login-CSRF cookies.
+func (s *Server) cookieSecure(r *http.Request) bool {
+	return r.TLS != nil || s.behindTLSProxy
+}
+
 // createSession inserts a new session row and sets the session cookie.
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID int) error {
 	token, err := randomToken(32)
@@ -175,7 +182,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID in
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
-		Secure:   r.TLS != nil || s.behindTLSProxy,
+		Secure:   s.cookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return nil

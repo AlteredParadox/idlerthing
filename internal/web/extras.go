@@ -120,19 +120,19 @@ func (s *Server) handleLabelAssign(w http.ResponseWriter, r *http.Request) {
 		labelID, err = formInt64(r, "label_id")
 	}
 	if err != nil || labelID <= 0 {
-		setFlash(w, "err", "Pick or create a label first.")
+		s.setFlash(w, r, "err", "Pick or create a label first.")
 		redirectBack(w, r, "/")
 		return
 	}
 
 	if err := labels.Assign(r.Context(), labelID, serviceID, int(serviceType)); err != nil {
 		if errors.Is(err, model.ErrTooManyLabels) {
-			setFlash(w, "err", fmt.Sprintf("Maximum of %d labels per service.", model.MaxLabelsPerService))
+			s.setFlash(w, r, "err", fmt.Sprintf("Maximum of %d labels per service.", model.MaxLabelsPerService))
 		} else {
-			setFlash(w, "err", "Could not assign label.")
+			s.setFlash(w, r, "err", "Could not assign label.")
 		}
 	} else {
-		setFlash(w, "ok", "Label assigned.")
+		s.setFlash(w, r, "ok", "Label assigned.")
 	}
 	s.touchDashboard()
 	redirectBack(w, r, "/")
@@ -149,7 +149,7 @@ func (s *Server) handleLabelUnassign(w http.ResponseWriter, r *http.Request) {
 	}
 	labels := &model.LabelStore{DB: s.db}
 	if err := labels.Unassign(r.Context(), labelID, serviceID, int(serviceType)); err != nil {
-		setFlash(w, "err", "Could not remove label.")
+		s.setFlash(w, r, "err", "Could not remove label.")
 	}
 	redirectBack(w, r, "/")
 }
@@ -162,7 +162,7 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	serviceType, err2 := formInt64(r, "service_type")
 	body := strings.TrimSpace(r.FormValue("body"))
 	if err1 != nil || err2 != nil || serviceType < 1 || serviceType > 6 || body == "" {
-		setFlash(w, "err", "Note body is required.")
+		s.setFlash(w, r, "err", "Note body is required.")
 		redirectBack(w, r, "/notes")
 		return
 	}
@@ -176,9 +176,9 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		ServiceType: sqlNullInt(serviceType),
 		Body:        body,
 	}); err != nil {
-		setFlash(w, "err", "Could not save note.")
+		s.setFlash(w, r, "err", "Could not save note.")
 	} else {
-		setFlash(w, "ok", "Note added.")
+		s.setFlash(w, r, "ok", "Note added.")
 	}
 	redirectBack(w, r, "/notes")
 }
@@ -192,7 +192,7 @@ func (s *Server) handleNoteDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	notes := &model.NoteStore{DB: s.db}
 	if err := notes.Delete(r.Context(), id); err != nil {
-		setFlash(w, "err", "Could not delete note.")
+		s.setFlash(w, r, "err", "Could not delete note.")
 	}
 	redirectBack(w, r, "/notes")
 }
@@ -219,8 +219,10 @@ func (s *Server) handleNotesIndex(w http.ResponseWriter, r *http.Request) {
 	var rows []noteIndexRow
 	for _, n := range all {
 		body := n.Body
-		if len(body) > 120 {
-			body = body[:120] + "…"
+		// Rune-wise truncation: byte-slicing could split a multibyte
+		// character and leak U+FFFD into the page.
+		if runes := []rune(body); len(runes) > 120 {
+			body = string(runes[:120]) + "…"
 		}
 		st := int(n.ServiceType.Int64)
 		rows = append(rows, noteIndexRow{
@@ -258,7 +260,7 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimSpace(r.FormValue("address"))
 	addr, err := netip.ParseAddr(raw)
 	if err != nil {
-		setFlash(w, "err", "Invalid IP address.")
+		s.setFlash(w, r, "err", "Invalid IP address.")
 		redirectBack(w, r, "/ips")
 		return
 	}
@@ -269,11 +271,11 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 		Address:     addr.String(),
 		IsIPv4:      addr.Is4(),
 	}); err != nil {
-		setFlash(w, "err", "That IP is already attached.")
+		s.setFlash(w, r, "err", "That IP is already attached.")
 		redirectBack(w, r, "/ips")
 		return
 	}
-	setFlash(w, "ok", "IP added.")
+	s.setFlash(w, r, "ok", "IP added.")
 	redirectBack(w, r, "/ips")
 }
 
@@ -286,7 +288,7 @@ func (s *Server) handleIPDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	ips := &model.IPStore{DB: s.db}
 	if err := ips.Delete(r.Context(), id); err != nil {
-		setFlash(w, "err", "Could not delete IP.")
+		s.setFlash(w, r, "err", "Could not delete IP.")
 	}
 	redirectBack(w, r, "/ips")
 }
@@ -383,19 +385,19 @@ func (s *Server) handleIPWhois(w http.ResponseWriter, r *http.Request) {
 	data, err := s.fetchWhois(r.Context(), ip.Address)
 	if err != nil {
 		if errors.Is(err, errWhoisThrottled) {
-			setFlash(w, "err", "Slow down — one whois refresh per second.")
+			s.setFlash(w, r, "err", "Slow down — one whois refresh per second.")
 		} else {
-			setFlash(w, "err", "Whois refresh failed — keeping old data.")
+			s.setFlash(w, r, "err", "Whois refresh failed — keeping old data.")
 		}
 		redirectBack(w, r, "/ips")
 		return
 	}
 	if err := ips.UpdateWhois(r.Context(), id, data); err != nil {
-		setFlash(w, "err", "Could not save whois data.")
+		s.setFlash(w, r, "err", "Could not save whois data.")
 		redirectBack(w, r, "/ips")
 		return
 	}
-	setFlash(w, "ok", "Whois refreshed for "+ip.Address+".")
+	s.setFlash(w, r, "ok", "Whois refreshed for "+ip.Address+".")
 	redirectBack(w, r, "/ips")
 }
 

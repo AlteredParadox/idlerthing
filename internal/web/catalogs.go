@@ -1,6 +1,7 @@
 package web
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 	"strconv"
@@ -88,7 +89,14 @@ func (s *Server) handleCatalogUpdate(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		errMsg = "Name is required."
 	} else if err := s.catalogs.Update(r.Context(), kind, id, name); err != nil {
-		errMsg = "That name already exists."
+		switch {
+		case err == sql.ErrNoRows:
+			errMsg = "That entry no longer exists — it may have been deleted."
+		case strings.Contains(err.Error(), "UNIQUE constraint failed"):
+			errMsg = "That name already exists."
+		default:
+			errMsg = "Save failed."
+		}
 	}
 	s.respondCatalogMutation(w, r, kindStr, kind, errMsg)
 }
@@ -126,10 +134,10 @@ func (s *Server) handleCatalogDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) respondCatalogMutation(w http.ResponseWriter, r *http.Request, kindStr string, kind model.CatalogKind, errMsg string) {
 	if r.Header.Get("HX-Request") != "true" {
 		if errMsg != "" {
-			setFlash(w, "err", errMsg)
+			s.setFlash(w, r, "err", errMsg)
 		} else {
 			s.touchDashboard()
-			setFlash(w, "ok", "Saved.")
+			s.setFlash(w, r, "ok", "Saved.")
 		}
 		http.Redirect(w, r, "/catalogs/"+kindStr, http.StatusSeeOther)
 		return

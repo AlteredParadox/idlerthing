@@ -114,7 +114,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(errs) > 0 {
-		setFlash(w, "err", "Please fix the errors below.")
+		s.setFlash(w, r, "err", "Please fix the errors below.")
 		s.renderSettings(w, r, settingsView{Errors: errs})
 		return
 	}
@@ -132,7 +132,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", "Settings saved.")
+	s.setFlash(w, r, "ok", "Settings saved.")
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
@@ -166,17 +166,17 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
-		setFlash(w, "err", "Current password is wrong.")
+		s.setFlash(w, r, "err", "Current password is wrong.")
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
 	if len(newPass) < 8 {
-		setFlash(w, "err", "New password must be at least 8 characters.")
+		s.setFlash(w, r, "err", "New password must be at least 8 characters.")
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
 	if newPass != confirm {
-		setFlash(w, "err", "New passwords do not match.")
+		s.setFlash(w, r, "err", "New passwords do not match.")
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
@@ -215,7 +215,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	setFlash(w, "ok", "Password changed. All sessions were rotated and the API token was revoked.")
+	s.setFlash(w, r, "ok", "Password changed. All sessions were rotated and the API token was revoked.")
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
@@ -259,13 +259,13 @@ func boolToIntWeb(b bool) int {
 func (s *Server) handlePrometheusTest(w http.ResponseWriter, r *http.Request) {
 	_, baseURL := s.promSettings(r)
 	if baseURL == "" {
-		setFlash(w, "err", "No Prometheus URL configured — save settings first.")
+		s.setFlash(w, r, "err", "No Prometheus URL configured — save settings first.")
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
 	samples, err := prom.New(baseURL).Query(r.Context(), "up")
 	if err != nil {
-		setFlash(w, "err", "Connection failed: "+err.Error())
+		s.setFlash(w, r, "err", "Connection failed: "+err.Error())
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
@@ -275,6 +275,6 @@ func (s *Server) handlePrometheusTest(w http.ResponseWriter, r *http.Request) {
 			up++
 		}
 	}
-	setFlash(w, "ok", "Connected — "+strconv.Itoa(up)+" of "+strconv.Itoa(len(samples))+" targets up.")
+	s.setFlash(w, r, "ok", "Connected — "+strconv.Itoa(up)+" of "+strconv.Itoa(len(samples))+" targets up.")
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

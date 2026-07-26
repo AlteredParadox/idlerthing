@@ -222,8 +222,10 @@ func TestRatesSingleflightAndBackoff(t *testing.T) {
 	}
 }
 
-// Batch I #8 — archived (active=0) pricings are invisible to PricingStore.Get.
-func TestPricingStoreArchivedInvisible(t *testing.T) {
+// Batch L D1 — the single pricing row per service is always returned by
+// PricingStore.Get (active is import-fidelity state); cost queries still
+// exclude inactive rows.
+func TestPricingStoreInactiveVisible(t *testing.T) {
 	database := testDB(t)
 	ctx := context.Background()
 	st := &model.PricingStore{DB: database}
@@ -238,6 +240,8 @@ func TestPricingStoreArchivedInvisible(t *testing.T) {
 		t.Fatalf("active pricing should be visible: %v %v", p, err)
 	}
 
+	// Imported inactive row: Get returns it (the app treats the single row
+	// as current), Active flag intact.
 	if _, err := database.Exec("UPDATE pricings SET active = 0 WHERE service_id = 1"); err != nil {
 		t.Fatal(err)
 	}
@@ -245,8 +249,8 @@ func TestPricingStoreArchivedInvisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if p != nil {
-		t.Fatalf("archived pricing must be invisible, got %+v", p)
+	if p == nil || p.Price != 10 || p.Active {
+		t.Fatalf("inactive row should be returned with Active=false: %+v", p)
 	}
 }
 

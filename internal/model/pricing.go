@@ -49,6 +49,11 @@ func PricingActiveServiceSQL() string {
 	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
+// Currencies lists the supported currency codes — the single source for UI
+// selects and validation (web forms, settings). Display symbols live in the
+// web package keyed to these codes.
+var Currencies = []string{"USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CNY"}
+
 // Pricing terms.
 const (
 	TermMonthly    = 1
@@ -141,16 +146,16 @@ type PricingStore struct {
 	DB *sql.DB
 }
 
-// Get returns the CURRENT pricing for a service, or nil when none exists.
-// Inactive pricings are archives — the app only ever reads/writes current
-// pricing, so archived rows are invisible here. Saving (upsert) still
-// reactivates per the documented "saving attaches current pricing" rule.
+// Get returns the pricing for a service, or nil when none exists.
+// active is import-fidelity state: imports may preserve inactive rows; the
+// app treats the single row per service (UNIQUE(service_id, service_type))
+// as current pricing, and cost queries exclude inactive.
 func (s *PricingStore) Get(ctx context.Context, serviceType int, serviceID int64) (*Pricing, error) {
 	p := &Pricing{}
 	var active int
-	err := s.DB.QueryRowContext(ctx, `
+	err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx, `
 		SELECT id, service_id, service_type, currency, price, term, next_due_date, active
-		FROM pricings WHERE service_type = ? AND service_id = ? AND active = 1`, serviceType, serviceID).
+		FROM pricings WHERE service_type = ? AND service_id = ?`, serviceType, serviceID).
 		Scan(&p.ID, &p.ServiceID, &p.ServiceType, &p.Currency, &p.Price, &p.Term, &p.NextDueDate, &active)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -163,14 +168,12 @@ func (s *PricingStore) Get(ctx context.Context, serviceType int, serviceID int64
 }
 
 // upsertPricingTx inserts or updates the pricing for a service within a
-// transaction. Semantics:
-//   - non-nil pricing: upsert the CURRENT row (an archived/inactive row for
-//     the same service is reactivated in place — "saving attaches current
-//     pricing").
-//   - nil (or empty-currency) pricing: remove only the ACTIVE row, if any.
-//     Inactive rows are pricing history and survive unrelated edits — the
-//     edit form sees nil for archived pricing (Get filters active=1), so
-//     deleting everything here would nuke the archive on any save.
+// transaction. active is import-fidelity state (see PricingStore.Get).
+// Semantics:
+//   - non-nil pricing: upsert the single row (an imported inactive row is
+//     reactivated in place — "saving attaches current pricing").
+//   - nil (or empty-currency) pricing: remove only the ACTIVE row, if any;
+//     an imported inactive row survives unrelated edits.
 func upsertPricingTx(ctx context.Context, tx *sql.Tx, serviceType int, serviceID int64, p *Pricing) error {
 	if p == nil || p.Currency == "" {
 		_, err := tx.ExecContext(ctx,

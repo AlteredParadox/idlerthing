@@ -143,7 +143,7 @@ func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk
 
 // Get returns one server with its disks and pricing.
 func (st *ServerStore) Get(ctx context.Context, id int64) (*Server, []ServerDisk, *Pricing, error) {
-	s, err := scanServer(st.DB.QueryRowContext(ctx,
+	s, err := scanServer(QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT "+serverColumns+" FROM servers WHERE id = ?", id))
 	if err != nil {
 		return nil, nil, nil, err
@@ -248,6 +248,14 @@ type ListOptions struct {
 	Dir    string // "asc" (default) or "desc"
 }
 
+// likePattern wraps a user search term for a LIKE ... ESCAPE '\' clause:
+// %, _, and the escape char itself are escaped so a literal "%" or "_" in
+// the search box can't act as a wildcard.
+func likePattern(q string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(q) + "%"
+}
+
 // ServerListItem is one row of the server list view.
 type ServerListItem struct {
 	Server
@@ -289,8 +297,8 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 		where = append(where, "s.active = 1")
 	}
 	if opts.Q != "" {
-		like := "%" + opts.Q + "%"
-		where = append(where, "(s.hostname LIKE ? OR s.cpu_model LIKE ? OR prov_name LIKE ? OR os_name LIKE ?)")
+		like := likePattern(opts.Q)
+		where = append(where, "(s.hostname LIKE ? ESCAPE '\\' OR s.cpu_model LIKE ? ESCAPE '\\' OR prov_name LIKE ? ESCAPE '\\' OR os_name LIKE ? ESCAPE '\\')")
 		args = append(args, like, like, like, like)
 	}
 
@@ -368,7 +376,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 
 // StatusCounts returns active and inactive server counts.
 func (st *ServerStore) StatusCounts(ctx context.Context) (active, inactive int, err error) {
-	err = st.DB.QueryRowContext(ctx,
+	err = QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COALESCE(SUM(active = 1), 0), COALESCE(SUM(active = 0), 0) FROM servers").
 		Scan(&active, &inactive)
 	return active, inactive, err
@@ -377,7 +385,7 @@ func (st *ServerStore) StatusCounts(ctx context.Context) (active, inactive int, 
 // DistinctLocations returns the number of distinct locations used by servers.
 func (st *ServerStore) DistinctLocations(ctx context.Context) (int, error) {
 	var n int
-	err := st.DB.QueryRowContext(ctx,
+	err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COUNT(DISTINCT location_id) FROM servers WHERE location_id IS NOT NULL").Scan(&n)
 	return n, err
 }

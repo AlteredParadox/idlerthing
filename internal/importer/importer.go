@@ -41,7 +41,7 @@ type Summary struct {
 }
 
 // Import decodes an export document from r and inserts it into db.
-// When force is false and any service table is non-empty, it refuses.
+// When force is false and any content table is non-empty, it refuses.
 func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary, error) {
 	var doc map[string]any
 	if err := json.NewDecoder(r).Decode(&doc); err != nil {
@@ -49,13 +49,17 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	}
 
 	if !force {
-		for _, table := range []string{"servers", "shared_hosting", "reseller_hosting", "seedboxes", "domains", "misc_services"} {
+		for _, table := range []string{
+			"servers", "shared_hosting", "reseller_hosting", "seedboxes", "domains", "misc_services",
+			// Content tables too — importing duplicates them with NULL parents.
+			"dns", "notes", "ips",
+		} {
 			var n int
 			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n); err != nil {
 				return nil, err
 			}
 			if n > 0 {
-				return nil, fmt.Errorf("%s is not empty (%d rows) — importing duplicates services; re-run with --force", table, n)
+				return nil, fmt.Errorf("%s is not empty (%d rows) — importing duplicates records; re-run with --force", table, n)
 			}
 		}
 	}
@@ -92,6 +96,12 @@ func (imp *importer) run(ctx context.Context, doc map[string]any) error {
 	imp.ipMaps = map[int64]int64{}
 	for i := range imp.idMaps {
 		imp.idMaps[i] = map[int64]int64{}
+	}
+
+	// Partial (per-type) exports omit the related tables — say so loudly.
+	if partial, _ := doc["partial"].(bool); partial {
+		imp.sum.Warnings = append(imp.sum.Warnings,
+			"partial export: related records (pricings/ips/dns/notes/labels/yabs) were not included and cannot be restored")
 	}
 
 	// Catalogs first (dependency order).
@@ -448,6 +458,9 @@ func validImportPrice(f float64) bool {
 }
 
 // normCurrency validates + uppercases a currency code (^3 ASCII letters).
+// Deliberately a FORMAT check, not membership in model.Currencies: imports
+// (especially my-idlers) may carry codes outside the app's select list, and
+// keeping them loses nothing — displays fall back to a "CODE " prefix.
 func normCurrency(c string) (string, bool) {
 	c = strings.ToUpper(strings.TrimSpace(c))
 	if len(c) != 3 {
@@ -523,12 +536,18 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 		if s == nil {
 			continue
 		}
+		serverType := int64(fget(s, "server_type"))
+		if serverType < model.TypeKVM || serverType > model.TypeNAT {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"server %q: server_type %d out of range — storing %d (KVM)", sget(s, "hostname"), serverType, model.TypeKVM))
+			serverType = model.TypeKVM
+		}
 		res, err := imp.tx.ExecContext(ctx, `
 			INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
 				ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
 				ssh_port, active, show_public, was_promo, transferrable, owned_since)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sget(s, "hostname"), int64(fget(s, "server_type")),
+			sget(s, "hostname"), serverType,
 			imp.remapCatalog("os", nget(s, "os_id")),
 			imp.remapCatalog("providers", nget(s, "provider_id")),
 			imp.remapCatalog("locations", nget(s, "location_id")),
@@ -557,7 +576,13 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 				continue
 			}
 			media := sget(dm, "media")
-			if media == "" {
+			switch media {
+			case "SSD", "HDD", "NVMe":
+			case "":
+				media = "SSD"
+			default:
+				imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+					"server %q: invalid disk media %q — storing SSD", sget(s, "hostname"), media))
 				media = "SSD"
 			}
 			if _, err := imp.tx.ExecContext(ctx,
@@ -862,11 +887,26 @@ func (imp *importer) dns(ctx context.Context, doc map[string]any) error {
 			if newID, ok := imp.idMaps[serviceType][old.Int64]; ok {
 				return sql.NullInt64{Int64: newID, Valid: true}
 			}
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"dns %q: parent %s=%d not in document — storing NULL", sget(d, "hostname"), key, old.Int64))
 			return sql.NullInt64{}
 		}
 		dnsType := sget(d, "dns_type")
 		if dnsType == "" {
 			dnsType = "A"
+		} else {
+			valid := false
+			for _, t := range model.DNSTypes {
+				if dnsType == t {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+					"dns %q: invalid dns_type %q — storing A", sget(d, "hostname"), dnsType))
+				dnsType = "A"
+			}
 		}
 		dres, err := imp.tx.ExecContext(ctx, `
 			INSERT INTO dns (hostname, dns_type, address, server_id, domain_id, shared_id, reseller_id)

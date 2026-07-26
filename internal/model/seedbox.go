@@ -78,7 +78,7 @@ func (st *SeedboxStore) Create(ctx context.Context, b *Seedbox, pricing *Pricing
 
 // Get returns one seedbox with its pricing.
 func (st *SeedboxStore) Get(ctx context.Context, id int64) (*Seedbox, *Pricing, error) {
-	b, err := scanSeedbox(st.DB.QueryRowContext(ctx,
+	b, err := scanSeedbox(QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT "+seedboxColumns+" FROM seedboxes WHERE id = ?", id))
 	if err != nil {
 		return nil, nil, err
@@ -157,8 +157,8 @@ func (st *SeedboxStore) List(ctx context.Context, opts ListOptions) ([]SeedboxLi
 		where = append(where, "s.active = 1")
 	}
 	if opts.Q != "" {
-		like := "%" + opts.Q + "%"
-		where = append(where, "(s.hostname LIKE ? OR s.title LIKE ? OR prov_name LIKE ?)")
+		like := likePattern(opts.Q)
+		where = append(where, "(s.hostname LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' OR prov_name LIKE ? ESCAPE '\\')")
 		args = append(args, like, like, like)
 	}
 
@@ -229,7 +229,7 @@ func (st *SeedboxStore) List(ctx context.Context, opts ListOptions) ([]SeedboxLi
 
 // StatusCounts returns active and inactive seedbox counts.
 func (st *SeedboxStore) StatusCounts(ctx context.Context) (active, inactive int, err error) {
-	err = st.DB.QueryRowContext(ctx,
+	err = QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COALESCE(SUM(active = 1), 0), COALESCE(SUM(active = 0), 0) FROM seedboxes").
 		Scan(&active, &inactive)
 	return active, inactive, err

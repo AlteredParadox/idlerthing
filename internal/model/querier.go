@@ -17,6 +17,11 @@ type txCtxKey struct{}
 
 // WithTx returns a context carrying tx; read paths honor it (used by the
 // export snapshot build).
+//
+// GUARD: the pool has a single connection, so EVERY read reachable from a
+// WithTx caller must go through QuerierFrom — a direct db.Query* would wait
+// on the very connection tx holds, deadlocking forever. All model reads are
+// routed accordingly; keep it that way when adding new ones.
 func WithTx(ctx context.Context, tx *sql.Tx) context.Context {
 	return context.WithValue(ctx, txCtxKey{}, tx)
 }

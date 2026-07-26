@@ -75,7 +75,9 @@ in-app ping tool.
 ## Backup & restore
 
 - Export in the UI (JSON per type or full, CSV zip) or via
-  `GET /export/json`.
+  `GET /export/json`. Per-type JSON exports are **partial** — they omit
+  related records (pricings/ips/dns/notes/labels/yabs) and are marked
+  `"partial": true`; only a full export restores everything.
 - Restore: `idlerthing import [--force] backup.json` — imports the app's own
   export format. Catalogs are merged by name; services are always inserted
   fresh, so importing into a non-empty database requires `--force` (and

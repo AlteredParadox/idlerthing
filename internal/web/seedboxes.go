@@ -230,7 +230,7 @@ func (s *Server) handleSeedboxCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", b.Hostname+" added.")
+	s.setFlash(w, r, "ok", b.Hostname+" added.")
 	http.Redirect(w, r, "/seedboxes/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -251,11 +251,15 @@ func (s *Server) handleSeedboxUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	st := &model.SeedboxStore{DB: s.db}
 	if err := st.Update(r.Context(), b, pricing); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", b.Hostname+" saved.")
+	s.setFlash(w, r, "ok", b.Hostname+" saved.")
 	http.Redirect(w, r, "/seedboxes/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 

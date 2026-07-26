@@ -160,12 +160,59 @@ type dnsFormView struct {
 	Errors  map[string]string
 }
 
+// dnsParentError enforces the link rules: at most ONE parent service, and
+// it must exist. Returns "" when the links are valid.
+func (s *Server) dnsParentError(r *http.Request, d *model.DNSRecord) string {
+	// Table names are compile-time constants here.
+	parents := []struct {
+		table string
+		id    sql.NullInt64
+	}{
+		{"servers", d.ServerID},
+		{"domains", d.DomainID},
+		{"shared_hosting", d.SharedID},
+		{"reseller_hosting", d.ResellerID},
+	}
+	var set int
+	var table string
+	var id int64
+	for _, p := range parents {
+		if p.id.Valid {
+			set++
+			table, id = p.table, p.id.Int64
+		}
+	}
+	if set > 1 {
+		return "Link at most one service."
+	}
+	if set == 1 {
+		var n int
+		if err := s.db.QueryRowContext(r.Context(),
+			"SELECT COUNT(*) FROM "+table+" WHERE id = ?", id).Scan(&n); err != nil || n == 0 {
+			return "Linked service does not exist."
+		}
+	}
+	return ""
+}
+
+// dnsFormError flashes the first form error and redirects back to /dns.
+func (s *Server) dnsFormError(w http.ResponseWriter, r *http.Request, errs map[string]string) {
+	msg := "Hostname and address are required."
+	if e, ok := errs["link"]; ok {
+		msg = e
+	}
+	s.setFlash(w, r, "err", msg)
+	redirectBack(w, r, "/dns")
+}
+
 // handleDNSCreate handles POST /dns.
 func (s *Server) handleDNSCreate(w http.ResponseWriter, r *http.Request) {
 	rec, errs := parseDNSForm(r)
+	if msg := s.dnsParentError(r, rec); msg != "" {
+		errs["link"] = msg
+	}
 	if len(errs) > 0 {
-		setFlash(w, "err", "Hostname and address are required.")
-		redirectBack(w, r, "/dns")
+		s.dnsFormError(w, r, errs)
 		return
 	}
 	st := &model.DNSStore{DB: s.db}
@@ -173,7 +220,7 @@ func (s *Server) handleDNSCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	setFlash(w, "ok", "DNS record added.")
+	s.setFlash(w, r, "ok", "DNS record added.")
 	http.Redirect(w, r, "/dns", http.StatusSeeOther)
 }
 
@@ -210,17 +257,23 @@ func (s *Server) handleDNSUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	rec, errs := parseDNSForm(r)
 	rec.ID = id
+	if msg := s.dnsParentError(r, rec); msg != "" {
+		errs["link"] = msg
+	}
 	if len(errs) > 0 {
-		setFlash(w, "err", "Hostname and address are required.")
-		redirectBack(w, r, "/dns")
+		s.dnsFormError(w, r, errs)
 		return
 	}
 	st := &model.DNSStore{DB: s.db}
 	if err := st.Update(r.Context(), rec); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	setFlash(w, "ok", "DNS record saved.")
+	s.setFlash(w, r, "ok", "DNS record saved.")
 	http.Redirect(w, r, "/dns", http.StatusSeeOther)
 }
 
@@ -233,7 +286,7 @@ func (s *Server) handleDNSDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	st := &model.DNSStore{DB: s.db}
 	if err := st.Delete(r.Context(), id); err != nil {
-		setFlash(w, "err", "Could not delete record.")
+		s.setFlash(w, r, "err", "Could not delete record.")
 	}
 	redirectBack(w, r, "/dns")
 }

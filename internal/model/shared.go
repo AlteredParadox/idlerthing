@@ -102,7 +102,7 @@ func (st *hostingStore) create(ctx context.Context, h *SharedHosting, pricing *P
 
 func (st *hostingStore) get(ctx context.Context, id int64) (*SharedHosting, *Pricing, error) {
 	h := &SharedHosting{}
-	err := scanHosting(st.DB.QueryRowContext(ctx,
+	err := scanHosting(QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT "+hostingColumns(st.typeCol)+" FROM "+st.table+" WHERE id = ?", id),
 		&h.SharedType, h)
 	if err != nil {
@@ -181,8 +181,8 @@ func (st *hostingStore) list(ctx context.Context, opts ListOptions) ([]HostingLi
 		where = append(where, "s.active = 1")
 	}
 	if opts.Q != "" {
-		like := "%" + opts.Q + "%"
-		where = append(where, "(s.main_domain LIKE ? OR type_val LIKE ? OR prov_name LIKE ?)")
+		like := likePattern(opts.Q)
+		where = append(where, "(s.main_domain LIKE ? ESCAPE '\\' OR type_val LIKE ? ESCAPE '\\' OR prov_name LIKE ? ESCAPE '\\')")
 		args = append(args, like, like, like)
 	}
 
@@ -255,7 +255,7 @@ func (st *hostingStore) list(ctx context.Context, opts ListOptions) ([]HostingLi
 }
 
 func (st *hostingStore) statusCounts(ctx context.Context) (active, inactive int, err error) {
-	err = st.DB.QueryRowContext(ctx,
+	err = QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COALESCE(SUM(active = 1), 0), COALESCE(SUM(active = 0), 0) FROM "+st.table).
 		Scan(&active, &inactive)
 	return active, inactive, err
@@ -263,7 +263,7 @@ func (st *hostingStore) statusCounts(ctx context.Context) (active, inactive int,
 
 func (st *hostingStore) distinctProviders(ctx context.Context) (int, error) {
 	var n int
-	err := st.DB.QueryRowContext(ctx,
+	err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT COUNT(DISTINCT provider_id) FROM "+st.table+" WHERE provider_id IS NOT NULL").Scan(&n)
 	return n, err
 }

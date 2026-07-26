@@ -226,9 +226,10 @@ type uptimeCache struct {
 	failed  map[string]bool
 }
 
-// buildLive builds the Live card for one server (nil when not matched).
-func (s *Server) buildLive(r *http.Request, hostname string) *liveView {
-	h := matchLive(s.liveMetrics(r), hostname)
+// buildLive builds the Live card for one server from pre-fetched metrics
+// (nil when not matched).
+func (s *Server) buildLive(r *http.Request, m *prom.Metrics, hostname string) *liveView {
+	h := matchLive(m, hostname)
 	if h == nil {
 		return nil
 	}

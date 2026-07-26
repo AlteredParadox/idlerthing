@@ -85,7 +85,7 @@ func (s *IPStore) Create(ctx context.Context, ip *IP) (int64, error) {
 
 // Get returns one IP.
 func (s *IPStore) Get(ctx context.Context, id int64) (*IP, error) {
-	return scanIP(s.DB.QueryRowContext(ctx, "SELECT "+ipColumns+" FROM ips WHERE id = ?", id))
+	return scanIP(QuerierFrom(ctx, s.DB).QueryRowContext(ctx, "SELECT "+ipColumns+" FROM ips WHERE id = ?", id))
 }
 
 // ListFor returns IPs attached to one service.

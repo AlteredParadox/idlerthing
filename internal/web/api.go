@@ -66,13 +66,17 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 		var stored *string
 		err := s.db.QueryRowContext(r.Context(),
 			"SELECT api_token_hash FROM users WHERE api_token_hash IS NOT NULL LIMIT 1").Scan(&stored)
-		if err == sql.ErrNoRows || stored == nil ||
-			subtle.ConstantTimeCompare([]byte(given), []byte(*stored)) != 1 {
+		switch {
+		case err == sql.ErrNoRows:
 			writeAPIError(w, http.StatusUnauthorized, "unauthorized")
 			return
-		}
-		if err != nil {
+		case err != nil:
+			// A DB error must surface as 500 — masking it as 401 would send
+			// operators chasing tokens while the database is broken.
 			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			return
+		case stored == nil || subtle.ConstantTimeCompare([]byte(given), []byte(*stored)) != 1:
+			writeAPIError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)

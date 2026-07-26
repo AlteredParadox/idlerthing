@@ -313,7 +313,7 @@ func (s *Server) handleHostingCreate(w http.ResponseWriter, r *http.Request, cfg
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", h.MainDomain+" added.")
+	s.setFlash(w, r, "ok", h.MainDomain+" added.")
 	http.Redirect(w, r, cfg.base+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -335,11 +335,15 @@ func (s *Server) handleHostingUpdate(w http.ResponseWriter, r *http.Request, cfg
 		return
 	}
 	if err := cfg.store.Update(r.Context(), h, pricing); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
-	setFlash(w, "ok", h.MainDomain+" saved.")
+	s.setFlash(w, r, "ok", h.MainDomain+" saved.")
 	http.Redirect(w, r, cfg.base+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 

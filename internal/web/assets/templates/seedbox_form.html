@@ -1,0 +1,93 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$b := $v.Seedbox}}
+<header class="page-head">
+  <div>
+    <h1>{{.Title}}</h1>
+    {{if $v.IsEdit}}<div class="page-sub mono">{{$b.Hostname}}</div>{{end}}
+  </div>
+</header>
+
+<form method="post" action="{{$v.Action}}" class="form-sections">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <section class="panel form-section">
+    <h2 class="section-title">Basics</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Title</span>
+        <input type="text" name="title" value="{{nstr $b.Title}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Hostname *</span>
+        <input type="text" name="hostname" value="{{$b.Hostname}}" required>
+        {{with index $v.Errors "hostname"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Seedbox type</span>
+        <input type="text" name="seed_box_type" value="{{nstr $b.SeedBoxType}}" placeholder="e.g. ruTorrent, Deluge">
+      </label>
+      <label class="field">
+        <span class="field-label">Owned since</span>
+        <input type="date" name="owned_since" value="{{nstr $b.OwnedSince}}">
+        {{with index $v.Errors "owned_since"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      {{template "flags_field" $b}}
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Resources</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Port speed (mbps)</span>
+        <input type="number" name="port_speed" min="0" value="{{nint $b.PortSpeed}}">
+        {{with index $v.Errors "port_speed"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Disk</span>
+        {{template "size_input" dict "name" "disk_as_mb" "val" $b.DiskAsMB}}
+        {{with index $v.Errors "disk_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Bandwidth</span>
+        {{template "size_input" dict "name" "bandwidth_as_mb" "val" $b.BandwidthAsMB "unlimited" true}}
+        {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Classification</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select name="provider_id">
+          <option value="">—</option>
+          {{range $v.Providers}}
+          <option value="{{.ID}}" {{if eq $b.ProviderID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        <a class="field-hint" href="/catalogs/providers" target="_blank">+ New provider</a>
+      </label>
+      <label class="field">
+        <span class="field-label">Location</span>
+        <select name="location_id">
+          <option value="">—</option>
+          {{range $v.Locations}}
+          <option value="{{.ID}}" {{if eq $b.LocationID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        <a class="field-hint" href="/catalogs/locations" target="_blank">+ New location</a>
+      </label>
+    </div>
+  </section>
+
+  {{template "pricing_fields" $v}}
+
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">{{if $v.IsEdit}}Save changes{{else}}Add seedbox{{end}}</button>
+    <a class="btn" href="{{$v.CancelURL}}">Cancel</a>
+  </div>
+</form>
+{{end}}

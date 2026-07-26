@@ -1,0 +1,84 @@
+package pricing
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"idlerthing/internal/model"
+)
+
+// AdvanceDueDates lazily rolls past-due recurring pricings forward: any
+// active pricing whose next_due_date is before today (and whose term is not
+// one-time) is advanced by its term until it lands on or after today. Month
+// arithmetic is clamped (Jan 31 + 1 month → Feb 28/29), matching PHP's
+// addMonthsNoOverflow. Returns the number of rows updated.
+func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
+	today := time.Now().Format("2006-01-02")
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, term, next_due_date FROM pricings
+		WHERE active = 1 AND next_due_date IS NOT NULL AND next_due_date < ?
+		  AND term != ?`, today, model.TermOneTime)
+	if err != nil {
+		return 0, err
+	}
+	type dueRow struct {
+		id   int64
+		term int
+		due  string
+	}
+	var pending []dueRow
+	for rows.Next() {
+		var dr dueRow
+		if err := rows.Scan(&dr.id, &dr.term, &dr.due); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		pending = append(pending, dr)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	// Compare against the SAME local "today" the SELECT used, not UTC
+	// midnight — otherwise early-morning rows in UTC+N zones get selected
+	// but never advanced.
+	todayStart, _ := time.Parse("2006-01-02", today)
+	for _, dr := range pending {
+		due, err := time.Parse("2006-01-02", dr.due)
+		if err != nil {
+			continue // unparseable stored value — leave it alone
+		}
+		months := model.TermMonths(dr.term)
+		if months == 0 {
+			continue
+		}
+		for due.Before(todayStart) {
+			due = AddMonthsClamped(due, months)
+		}
+		if _, err := db.ExecContext(ctx,
+			"UPDATE pricings SET next_due_date = ? WHERE id = ?",
+			due.Format("2006-01-02"), dr.id); err != nil {
+			return updated, err
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+// AddMonthsClamped adds months to t, clamping the day of month when the
+// target month is shorter (Jan 31 + 1 month → Feb 28/29).
+func AddMonthsClamped(t time.Time, months int) time.Time {
+	y, m, d := t.Date()
+	// First of the target month, then find its length.
+	first := time.Date(y, m+time.Month(months), 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+	lastDay := first.AddDate(0, 1, -1).Day()
+	if d > lastDay {
+		d = lastDay
+	}
+	return time.Date(first.Year(), first.Month(), d,
+		t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
+}

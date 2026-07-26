@@ -1,0 +1,141 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>Settings</h1>
+  </div>
+</header>
+
+<div class="form-sections">
+  <form method="post" action="/settings" class="form-sections">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <section class="panel form-section">
+      <h2 class="section-title">General</h2>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Default currency</span>
+          <select name="default_currency">
+            {{range $v.Currencies}}
+            <option value="{{.}}" {{if eq $v.DefaultCurrency .}}selected{{end}}>{{.}}</option>
+            {{end}}
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Dashboard currency</span>
+          <select name="dashboard_currency">
+            {{range $v.Currencies}}
+            <option value="{{.}}" {{if eq $v.DashboardCurrency .}}selected{{end}}>{{.}}</option>
+            {{end}}
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Due soon (days)</span>
+          <input type="number" name="due_soon_amount" min="1" max="365" value="{{$v.DueSoon}}">
+          {{with index $v.Errors "due_soon_amount"}}<span class="field-err">{{.}}</span>{{end}}
+        </label>
+        <label class="field">
+          <span class="field-label">Recently added (rows)</span>
+          <input type="number" name="recently_added_amount" min="1" max="100" value="{{$v.RecentlyAdded}}">
+          {{with index $v.Errors "recently_added_amount"}}<span class="field-err">{{.}}</span>{{end}}
+        </label>
+      </div>
+    </section>
+
+    <section class="panel form-section">
+      <h2 class="section-title">Display</h2>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Theme</span>
+          <select name="theme">
+            <option value="dark" {{if eq $v.Theme "dark"}}selected{{end}}>Dark</option>
+            <option value="light" {{if eq $v.Theme "light"}}selected{{end}}>Light</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Accent color</span>
+          <div class="input-group">
+            <input type="color" name="accent_picker" value="{{$v.AccentColor}}" class="color-swatch" tabindex="-1">
+            <input type="text" name="accent_color" value="{{$v.AccentColor}}" pattern="#[0-9a-fA-F]{6}" class="mono">
+          </div>
+          {{with index $v.Errors "accent_color"}}<span class="field-err">{{.}}</span>{{end}}
+        </label>
+        <div class="field">
+          <span class="field-label">Public page</span>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" name="servers_public" {{if $v.ServersPublic}}checked{{end}}> Show servers publicly</label>
+          </div>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" name="compact_mode" {{if $v.Compact}}checked{{end}}> Compact tables</label>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions mt-section">
+        <button class="btn btn-primary" type="submit">Save settings</button>
+      </div>
+    </section>
+
+    <section class="panel form-section">
+      <h2 class="section-title">Prometheus</h2>
+      <div class="form-grid">
+        <div class="field">
+          <span class="field-label">Live monitoring</span>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" name="prometheus_enabled" {{if $v.PrometheusEnabled}}checked{{end}}> Enable Prometheus metrics</label>
+          </div>
+        </div>
+        <label class="field span-2">
+          <span class="field-label">Prometheus URL</span>
+          <input type="text" name="prometheus_url" value="{{$v.PrometheusURL}}" placeholder="http://localhost:9090">
+          {{with index $v.Errors "prometheus_url"}}<span class="field-err">{{.}}</span>{{end}}
+        </label>
+      </div>
+      <div class="form-actions mt-section">
+        <button class="btn btn-primary" type="submit">Save settings</button>
+        <button class="btn" type="submit" formaction="/settings/prometheus/test">Test connection</button>
+      </div>
+    </section>
+  </form>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Change password</h2>
+    <form method="post" action="/settings/account" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <input type="hidden" name="action" value="password">
+      <label class="field">
+        <span class="field-label">Current password</span>
+        <input type="password" name="current_password" required autocomplete="current-password">
+      </label>
+      <label class="field">
+        <span class="field-label">New password</span>
+        <input type="password" name="new_password" required autocomplete="new-password">
+      </label>
+      <label class="field">
+        <span class="field-label">Confirm new password</span>
+        <input type="password" name="confirm_password" required autocomplete="new-password">
+      </label>
+      <div class="field">
+        <span class="field-label">&nbsp;</span>
+        <button class="btn btn-primary" type="submit">Change password</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">API token</h2>
+    {{if $v.RevealedToken}}
+    <div class="flash flash-ok">
+      Your new API token — copy it now, it will not be shown again:
+      <div class="token-reveal mono">{{$v.RevealedToken}}</div>
+    </div>
+    {{end}}
+    <p class="empty-sub">
+      {{if $v.TokenSet}}A token is currently set. Generating a new one replaces it.{{else}}No token set. The API is disabled until you generate one.{{end}}
+    </p>
+    <form method="post" action="/settings/account">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <input type="hidden" name="action" value="token">
+      <button class="btn" type="submit">Generate new token</button>
+    </form>
+  </section>
+</div>
+{{end}}

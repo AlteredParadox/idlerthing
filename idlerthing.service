@@ -1,0 +1,79 @@
+# idlerthing — lightweight self-hosted server/service inventory.
+#
+# Expects: the binary at /usr/local/bin/idlerthing and an environment file
+# at /etc/idlerthing/idlerthing.env (mode 0600, owned by root) with any of:
+#
+#   IDLER_ADDR=127.0.0.1:8080        # listen address (default shown)
+#   IDLER_DB=./data/idlerthing.db    # relative to WorkingDirectory
+#   IDLER_ADMIN_PASSWORD=...         # only used on first-run seeding
+#   IDLER_SECRET=...                 # YABS ingest HMAC secret (auto-generated
+#                                    # and persisted next to the DB if unset)
+#   IDLER_BEHIND_TLS_PROXY=1         # behind an HTTPS-terminating reverse
+#                                    # proxy: Secure session cookies + trust
+#                                    # the last X-Forwarded-For IP
+#   IDLER_BASE_URL=https://idlers.example.com
+#                                    # external URL shown in the YABS
+#                                    # ingest command (default: request Host)
+#
+# No user setup needed — DynamicUser allocates one at runtime, and
+# StateDirectory creates /var/lib/idlerthing with correct ownership. With the
+# default IDLER_DB, the SQLite database lands at
+# /var/lib/idlerthing/data/idlerthing.db. EnvironmentFile is root-only, so
+# the env secrets stay off the wire and out of world-readable unit files
+# (systemd %-specifiers like %S expand in unit directives only, never inside
+# the env file itself — spell any absolute paths there literally).
+
+[Unit]
+Description=idlerthing server inventory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=idlerthing
+WorkingDirectory=%S/idlerthing
+EnvironmentFile=/etc/idlerthing/idlerthing.env
+
+# Measured at ~24 MB idle / ~33 MB under load with a real dataset.
+# GOMEMLIMIT is a soft limit the runtime aims for; MemoryMax is the kernel's
+# hard ceiling that actually contains the process (OOM-kills it) if
+# something runs away. Headroom absorbs non-heap RSS and transient spikes.
+Environment=GOMEMLIMIT=64MiB
+MemoryMax=128M
+
+ExecStart=/usr/local/bin/idlerthing
+Restart=on-failure
+RestartSec=5
+
+# Hardening. Note DynamicUser=yes already implies NoNewPrivileges,
+# PrivateTmp, ProtectSystem=strict, ProtectHome=read-only, RemoveIPC,
+# and RestrictSUIDSGID — the lines below keep the stricter/explicit
+# settings and everything DynamicUser does not cover.
+#
+# Caveat: the web UI's ping tool execs the system `ping` binary, which
+# needs CAP_NET_RAW; the hardening below (CapabilityBoundingSet= plus
+# DynamicUser's NoNewPrivileges) blocks that, so ping results will show
+# "ping n/a" in the UI. Everything else (HTTP, Prometheus, exchange
+# rates, whois, YABS ingest) works unrestricted. To enable ping, add:
+#   AmbientCapabilities=CAP_NET_RAW
+ProtectHome=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+# AF_NETLINK is kept for the system resolver's/route lookup path during
+# socket setup (and for the ping tool if CAP_NET_RAW is enabled above);
+# removing it can break outbound networking on some setups with EAFNOSUPPORT.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

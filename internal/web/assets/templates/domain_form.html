@@ -1,0 +1,75 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$d := $v.Domain}}
+<header class="page-head">
+  <div>
+    <h1>{{.Title}}</h1>
+    {{if $v.IsEdit}}<div class="page-sub mono">{{$d.Domain}}</div>{{end}}
+  </div>
+</header>
+
+<form method="post" action="{{$v.Action}}" class="form-sections">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <section class="panel form-section">
+    <h2 class="section-title">Domain</h2>
+    <div class="form-grid">
+      <label class="field span-2">
+        <span class="field-label">Domain *</span>
+        <input type="text" name="domain" value="{{$d.Domain}}" placeholder="example.com" required>
+        {{with index $v.Errors "domain"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Extension</span>
+        <input type="text" name="extension" value="{{nstr $d.Extension}}" placeholder=".com">
+      </label>
+      <label class="field">
+        <span class="field-label">NS1</span>
+        <input type="text" name="ns1" value="{{nstr $d.Ns1}}">
+      </label>
+      <label class="field">
+        <span class="field-label">NS2</span>
+        <input type="text" name="ns2" value="{{nstr $d.Ns2}}">
+      </label>
+      <label class="field">
+        <span class="field-label">NS3</span>
+        <input type="text" name="ns3" value="{{nstr $d.Ns3}}">
+      </label>
+      <label class="field">
+        <span class="field-label">Owned since</span>
+        <input type="date" name="owned_since" value="{{nstr $d.OwnedSince}}">
+        {{with index $v.Errors "owned_since"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <div class="field">
+        <span class="field-label">Flags</span>
+        <div class="check-row">
+          <label class="check"><input type="checkbox" name="active" {{if $d.Active}}checked{{end}}> Active</label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Classification</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select name="provider_id">
+          <option value="">—</option>
+          {{range $v.Providers}}
+          <option value="{{.ID}}" {{if eq $d.ProviderID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        <a class="field-hint" href="/catalogs/providers" target="_blank">+ New provider</a>
+      </label>
+    </div>
+  </section>
+
+  {{template "pricing_fields" $v}}
+
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">{{if $v.IsEdit}}Save changes{{else}}Add domain{{end}}</button>
+    <a class="btn" href="{{$v.CancelURL}}">Cancel</a>
+  </div>
+</form>
+{{end}}

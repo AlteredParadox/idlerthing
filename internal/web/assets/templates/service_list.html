@@ -1,0 +1,93 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>{{$v.Title}}</h1>
+    <div class="page-sub">{{$v.Sub}}</div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="/export/json{{$v.Base}}">JSON</a>
+    <a class="btn" href="/export/csv">CSV</a>
+    <a class="btn btn-primary" href="{{$v.Base}}/new">{{$v.AddLabel}}</a>
+  </div>
+</header>
+
+<div class="stat-grid">
+  {{range $v.Cards}}
+  <div class="stat-card">
+    <div class="stat-label">{{.Label}}</div>
+    <div class="stat-value mono">{{.Value}}</div>
+  </div>
+  {{end}}
+</div>
+
+<div class="list-controls">
+  <div class="tabs">
+    <a class="pill{{if eq $v.Status "active"}} active{{end}}" href="{{$v.StatusLink "active"}}"
+       hx-get="{{$v.StatusLink "active"}}" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">Active ({{$v.ActiveCount}})</a>
+    <a class="pill{{if eq $v.Status "inactive"}} active{{end}}" href="{{$v.StatusLink "inactive"}}"
+       hx-get="{{$v.StatusLink "inactive"}}" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">Inactive ({{$v.InactiveCount}})</a>
+    <a class="pill{{if eq $v.Status "all"}} active{{end}}" href="{{$v.StatusLink "all"}}"
+       hx-get="{{$v.StatusLink "all"}}" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">All</a>
+  </div>
+  <input type="search" name="q" value="{{$v.Q}}" placeholder="{{$v.SearchHint}}"
+         class="search-input"
+         hx-get="{{$v.Base}}?status={{$v.Status}}&sort={{$v.Sort}}&dir={{$v.Dir}}"
+         hx-trigger="keyup changed delay:300ms" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">
+</div>
+
+<div id="list-table-wrap">
+  {{template "list_table" .}}
+</div>
+{{end}}
+
+{{define "list_table"}}
+{{$v := .Data}}
+{{if $v.Rows}}
+<table class="tbl">
+  <thead>
+    <tr>
+      {{range $v.Columns}}
+      {{if .Sortable}}
+      <th class="{{$v.SortClass .Key}}"><a href="{{$v.SortLink .Key}}" hx-get="{{$v.SortLink .Key}}" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">{{.Label}} <span class="arrow">{{$v.SortArrow .Key}}</span></a></th>
+      {{else}}
+      <th>{{.Label}}</th>
+      {{end}}
+      {{end}}
+      <th class="col-actions"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range $v.Rows}}
+    <tr class="row-link" data-href="{{.Link}}">
+      {{range .Cells}}
+      <td{{if .Class}} class="{{.Class}}"{{end}}>
+        {{if .Dot}}<span class="dot {{if eq .Dot "ok"}}dot-ok{{else}}dot-off{{end}}"></span> {{end}}
+        {{if .Link}}<a class="cell-title" href="{{.Link}}">{{.Main}}</a>
+        {{else if .Badge}}<span class="badge">{{.Main}}</span>
+        {{else}}{{.Main}}{{end}}
+        {{if .Sub}}<div class="cell-sub">{{.Sub}}</div>{{end}}
+      </td>
+      {{end}}
+      <td class="col-actions">
+        <div class="row-actions">
+          <a class="icon-btn" href="{{.EditURL}}" title="Edit">✎</a>
+          <form method="post" action="{{.DeleteURL}}" hx-post="{{.DeleteURL}}" hx-confirm="{{.DeleteConfirm}}">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{$v.RowCount}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">{{$v.EmptyTitle}}</div>
+  <div class="empty-sub">{{$v.EmptySub}}</div>
+  <a class="btn btn-primary" href="{{$v.Base}}/new">{{$v.AddLabel}}</a>
+</div>
+{{end}}
+{{end}}

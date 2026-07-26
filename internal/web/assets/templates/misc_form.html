@@ -1,0 +1,43 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$m := $v.Misc}}
+<header class="page-head">
+  <div>
+    <h1>{{.Title}}</h1>
+    {{if $v.IsEdit}}<div class="page-sub">{{$m.Name}}</div>{{end}}
+  </div>
+</header>
+
+<form method="post" action="{{$v.Action}}" class="form-sections">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <section class="panel form-section">
+    <h2 class="section-title">Service</h2>
+    <div class="form-grid">
+      <label class="field span-2">
+        <span class="field-label">Name *</span>
+        <input type="text" name="name" value="{{$m.Name}}" required>
+        {{with index $v.Errors "name"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Owned since</span>
+        <input type="date" name="owned_since" value="{{nstr $m.OwnedSince}}">
+        {{with index $v.Errors "owned_since"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <div class="field">
+        <span class="field-label">Flags</span>
+        <div class="check-row">
+          <label class="check"><input type="checkbox" name="active" {{if $m.Active}}checked{{end}}> Active</label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {{template "pricing_fields" $v}}
+
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">{{if $v.IsEdit}}Save changes{{else}}Add service{{end}}</button>
+    <a class="btn" href="{{$v.CancelURL}}">Cancel</a>
+  </div>
+</form>
+{{end}}

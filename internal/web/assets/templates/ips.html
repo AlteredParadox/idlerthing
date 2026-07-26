@@ -1,0 +1,59 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>IPs</h1>
+    <div class="page-sub">{{len $v.Rows}} addresses</div>
+  </div>
+</header>
+
+{{if $v.Rows}}
+<table class="tbl">
+  <thead>
+    <tr>
+      <th>Address</th><th>Type</th><th>Attached to</th><th>Country</th>
+      <th>Org/ISP</th><th>ASN</th><th>Fetched</th><th class="col-actions"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range $v.Rows}}
+    <tr>
+      <td class="mono">{{.Address}}</td>
+      <td><span class="badge badge-net">{{.TypeBadge}}</span></td>
+      <td><span class="badge">{{.TypeLabel}}</span> <a href="{{.TargetURL}}">{{.Target}}</a></td>
+      <td>{{.Country}}</td>
+      <td>{{.OrgISP}}</td>
+      <td class="mono">{{.ASN}}</td>
+      <td class="mono">{{.Fetched}}</td>
+      <td class="col-actions">
+        <div class="row-actions">
+          <span id="ping-ip-{{.ID}}"></span>
+          <form class="ping-form" hx-post="/tools/ping" hx-target="#ping-ip-{{.ID}}" hx-swap="innerHTML">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="host" value="{{.Address}}">
+            <button class="icon-btn" type="submit" title="Ping">⇄</button>
+          </form>
+          <form method="post" action="/ips/{{.ID}}/whois">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="back" value="/ips">
+            <button class="icon-btn" type="submit" title="Refresh whois">↻</button>
+          </form>
+          <form method="post" action="/ips/{{.ID}}/delete" hx-post="/ips/{{.ID}}/delete" hx-confirm="Delete {{.Address}}?">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="back" value="/ips">
+            <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{len $v.Rows}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">No IPs yet</div>
+  <div class="empty-sub">Attach IPs from any service detail page.</div>
+</div>
+{{end}}
+{{end}}

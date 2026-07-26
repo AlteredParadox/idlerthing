@@ -1,0 +1,191 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>Servers</h1>
+    <div class="page-sub">{{$v.ActiveCount}} active · {{$v.InactiveCount}} inactive · {{$v.Locations}} locations</div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="/export/json/servers">JSON</a>
+    <a class="btn" href="/export/csv">CSV</a>
+    <a class="btn btn-primary" href="/servers/new">＋ Add server</a>
+  </div>
+</header>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Total</div>
+    <div class="stat-value mono">{{$v.Total}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Active</div>
+    <div class="stat-value mono">{{$v.ActiveCount}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Monthly cost</div>
+    <div class="stat-value mono">{{$v.MonthlyUSD}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Yearly cost</div>
+    <div class="stat-value mono">{{$v.YearlyUSD}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Locations</div>
+    <div class="stat-value mono">{{$v.Locations}}</div>
+  </div>
+</div>
+
+<div class="list-controls">
+  <div class="tabs">
+    <a class="pill{{if eq $v.Status "active"}} active{{end}}" href="{{$v.StatusLink "active"}}"
+       hx-get="{{$v.StatusLink "active"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Active ({{$v.ActiveCount}})</a>
+    <a class="pill{{if eq $v.Status "inactive"}} active{{end}}" href="{{$v.StatusLink "inactive"}}"
+       hx-get="{{$v.StatusLink "inactive"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Inactive ({{$v.InactiveCount}})</a>
+    <a class="pill{{if eq $v.Status "all"}} active{{end}}" href="{{$v.StatusLink "all"}}"
+       hx-get="{{$v.StatusLink "all"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">All</a>
+    <form method="post" action="/prefs/short-hostnames" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button type="submit" class="pill{{if $v.ShortHostnames}} active{{end}}"
+              title="Toggle domain part of hostnames">Short names</button>
+    </form>
+  </div>
+  <div class="controls-right">
+    <input type="search" name="q" value="{{$v.Q}}" placeholder="Search hostname, model, provider, OS…"
+           class="search-input"
+           hx-get="/servers?status={{$v.Status}}&sort={{$v.Sort}}&dir={{$v.Dir}}"
+           hx-trigger="keyup changed delay:300ms" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">
+    <details class="col-chooser">
+      <summary class="btn">Columns {{$v.VisibleCount}}/{{$v.TotalCount}}</summary>
+      <form method="post" action="/prefs/servers-cols" class="chooser-panel">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        {{range $v.ChooserItems}}
+        <label class="check"><input type="checkbox" name="col_{{.Key}}" {{if .Visible}}checked{{end}}> {{.Label}}</label>
+        {{end}}
+        <button class="btn btn-primary chooser-apply" type="submit">Apply</button>
+      </form>
+    </details>
+  </div>
+</div>
+
+<div id="server-table-wrap">
+  {{template "server_table" .}}
+</div>
+{{end}}
+
+{{define "server_table"}}
+{{$v := .Data}}
+{{if $v.Rows}}
+<table class="tbl">
+  <thead>
+    <tr>
+      {{if $v.Col "hostname"}}<th class="{{$v.SortClass "hostname"}}"><a href="{{$v.SortLink "hostname"}}" hx-get="{{$v.SortLink "hostname"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Hostname <span class="arrow">{{$v.SortArrow "hostname"}}</span></a></th>{{end}}
+      {{if $v.Col "type"}}<th class="{{$v.SortClass "type"}}"><a href="{{$v.SortLink "type"}}" hx-get="{{$v.SortLink "type"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Type <span class="arrow">{{$v.SortArrow "type"}}</span></a></th>{{end}}
+      {{if $v.Col "os"}}<th class="{{$v.SortClass "os"}}"><a href="{{$v.SortLink "os"}}" hx-get="{{$v.SortLink "os"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">OS <span class="arrow">{{$v.SortArrow "os"}}</span></a></th>{{end}}
+      {{if $v.Col "cpu"}}<th class="{{$v.SortClass "cpu"}}"><a href="{{$v.SortLink "cpu"}}" hx-get="{{$v.SortLink "cpu"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">CPU <span class="arrow">{{$v.SortArrow "cpu"}}</span></a></th>{{end}}
+      {{if $v.Col "cpu_model"}}<th>CPU Model</th>{{end}}
+      {{if $v.Col "ram"}}<th class="{{$v.SortClass "ram"}}"><a href="{{$v.SortLink "ram"}}" hx-get="{{$v.SortLink "ram"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">RAM <span class="arrow">{{$v.SortArrow "ram"}}</span></a></th>{{end}}
+      {{if $v.Col "disk"}}<th class="{{$v.SortClass "disk"}}"><a href="{{$v.SortLink "disk"}}" hx-get="{{$v.SortLink "disk"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Disk <span class="arrow">{{$v.SortArrow "disk"}}</span></a></th>{{end}}
+      {{if $v.Col "bw"}}<th class="{{$v.SortClass "bw"}}"><a href="{{$v.SortLink "bw"}}" hx-get="{{$v.SortLink "bw"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">BW <span class="arrow">{{$v.SortArrow "bw"}}</span></a></th>{{end}}
+      {{if $v.Col "link_speed"}}<th>Link Speed</th>{{end}}
+      {{if $v.Col "net"}}<th>Net</th>{{end}}
+      {{if $v.Col "location"}}<th class="{{$v.SortClass "location"}}"><a href="{{$v.SortLink "location"}}" hx-get="{{$v.SortLink "location"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Location <span class="arrow">{{$v.SortArrow "location"}}</span></a></th>{{end}}
+      {{if $v.Col "provider"}}<th class="{{$v.SortClass "provider"}}"><a href="{{$v.SortLink "provider"}}" hx-get="{{$v.SortLink "provider"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Provider <span class="arrow">{{$v.SortArrow "provider"}}</span></a></th>{{end}}
+      {{if $v.Col "price"}}<th class="{{$v.SortClass "price"}}"><a href="{{$v.SortLink "price"}}" hx-get="{{$v.SortLink "price"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Price <span class="arrow">{{$v.SortArrow "price"}}</span></a></th>{{end}}
+      {{if $v.Col "price_yr"}}<th>Price/YR (USD)</th>{{end}}
+      {{if $v.Col "due"}}<th class="{{$v.SortClass "due"}}"><a href="{{$v.SortLink "due"}}" hx-get="{{$v.SortLink "due"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Due <span class="arrow">{{$v.SortArrow "due"}}</span></a></th>{{end}}
+      {{if $v.Col "since"}}<th>Since</th>{{end}}
+      {{if $v.Col "uptime"}}<th>Uptime</th>{{end}}
+      <th class="col-actions"></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range $v.Rows}}
+    <tr class="row-link" data-href="/servers/{{.ID}}">
+      {{if $v.Col "hostname"}}
+      <td>
+        <div class="cell-main">
+          {{if eq .Live 1}}<span class="dot dot-ok" title="up"></span>{{else if eq .Live 2}}<span class="dot dot-err" title="down"></span>{{else}}<span class="dot {{if .Active}}dot-ok{{else}}dot-off{{end}}"></span>{{end}}
+          <a class="mono cell-title" href="/servers/{{.ID}}"{{if .HostnameTitle}} title="{{.HostnameTitle}}"{{end}}>{{.Hostname}}</a>
+        </div>
+        {{if .PortNote}}<div class="cell-sub mono">{{.PortNote}}</div>{{end}}
+      </td>
+      {{end}}
+{{if $v.Col "type"}}      <td><span class="badge">{{.Type}}</span></td>{{end}}
+{{if $v.Col "os"}}      <td>{{.OS}}</td>{{end}}
+      {{if $v.Col "cpu"}}
+      <td>
+        <div class="mono">{{.CPU}}{{if .CPUMeter}} <span class="pct-inline">{{.CPUPct}}</span>{{template "meter-inline" .CPUMeter}}{{end}}</div>
+        {{if .CPUModel}}<div class="cell-sub">{{.CPUModel}}</div>{{end}}
+        {{if .CPUMeter}}{{template "meter" .CPUMeter}}{{end}}
+      </td>
+      {{end}}
+      {{if $v.Col "cpu_model"}}
+      <td class="col-muted">{{if .CPUModel}}{{.CPUModel}}{{else}}—{{end}}</td>
+      {{end}}
+      {{if $v.Col "ram"}}
+      <td class="mono">
+        <div>{{.RAM}}{{if .RAMMeter}} <span class="pct-inline">{{.RAMPct}}</span>{{template "meter-inline" .RAMMeter}}{{end}}</div>
+        {{if .RAMMeter}}{{template "meter" .RAMMeter}}{{end}}
+      </td>
+      {{end}}
+      {{if $v.Col "disk"}}
+      <td>
+        <div class="mono">{{.Disk}}{{if .DiskMeter}} <span class="pct-inline">{{.DiskPct}}</span>{{template "meter-inline" .DiskMeter}}{{end}}</div>
+        {{if .DiskMedia}}<div class="cell-sub">{{.DiskMedia}}</div>{{end}}
+        {{if .DiskMeter}}{{template "meter" .DiskMeter}}{{end}}
+      </td>
+      {{end}}
+      {{if $v.Col "bw"}}
+      <td class="mono">
+        <div>{{.BW}}</div>
+        {{if .Throughput}}<div class="cell-sub net-tput">{{.Throughput}}</div>{{end}}
+      </td>
+      {{end}}
+      {{if $v.Col "link_speed"}}
+      <td class="mono">
+        <div>{{.LinkSpeed}}{{if .LinkMeter}} <span class="pct-inline">{{.LinkUtilPct}}</span>{{template "meter-inline" .LinkMeter}}{{end}}</div>
+        {{if .LinkMeter}}{{template "meter" .LinkMeter}}{{end}}
+      </td>
+      {{end}}
+{{if $v.Col "net"}}      <td>{{if .Net}}<span class="badge badge-net">{{.Net}}</span>{{else}}—{{end}}</td>{{end}}
+{{if $v.Col "location"}}      <td>{{.Location}}</td>{{end}}
+{{if $v.Col "provider"}}      <td>{{.Provider}}</td>{{end}}
+{{if $v.Col "price"}}      <td class="mono">{{.Price}}</td>{{end}}
+      {{if $v.Col "price_yr"}}
+      <td class="mono">{{.PriceYr}}</td>
+      {{end}}
+{{if $v.Col "due"}}      <td class="mono {{.DueClass}}">{{.Due}}</td>{{end}}
+      {{if $v.Col "since"}}
+      <td class="mono">{{.Since}}</td>
+      {{end}}
+      {{if $v.Col "uptime"}}
+      <td class="mono">{{.Uptime}}</td>
+      {{end}}
+      <td class="col-actions">
+        <div class="row-actions">
+          <span id="ping-srv-{{.ID}}"></span>
+          <form class="ping-form" hx-post="/tools/ping" hx-target="#ping-srv-{{.ID}}" hx-swap="innerHTML">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="host" value="{{.Hostname}}">
+            <button class="icon-btn" type="submit" title="Ping">⇄</button>
+          </form>
+          <a class="icon-btn" href="/servers/{{.ID}}/edit" title="Edit">✎</a>
+          <form method="post" action="/servers/{{.ID}}/delete" hx-post="/servers/{{.ID}}/delete" hx-confirm="Delete {{.Hostname}}?">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{$v.RowCount}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">No servers yet</div>
+  <div class="empty-sub">Add your first one to start tracking your inventory.</div>
+  <a class="btn btn-primary" href="/servers/new">＋ Add server</a>
+</div>
+{{end}}
+{{end}}

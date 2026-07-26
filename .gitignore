@@ -1,0 +1,15 @@
+# binary
+idlerthing
+
+# local data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.db.secret
+
+# temp artifacts
+tmp-seed/
+
+# reference material (my-idlers fork, design mockups)
+ai_examples/

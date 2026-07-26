@@ -1,0 +1,41 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>Notes</h1>
+    <div class="page-sub">{{len $v.Rows}} notes</div>
+  </div>
+</header>
+
+{{if $v.Rows}}
+<table class="tbl">
+  <thead>
+    <tr><th>Note</th><th>Attached to</th><th>Created</th><th class="col-actions"></th></tr>
+  </thead>
+  <tbody>
+    {{range $v.Rows}}
+    <tr>
+      <td class="wrap">{{.Body}}</td>
+      <td><span class="badge">{{.TypeLabel}}</span> <a href="{{.TargetURL}}">{{.Target}}</a></td>
+      <td class="mono">{{.Created}}</td>
+      <td class="col-actions">
+        <div class="row-actions">
+          <form method="post" action="/notes/{{.ID}}/delete" hx-post="/notes/{{.ID}}/delete" hx-confirm="Delete note?">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="back" value="/notes">
+            <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{len $v.Rows}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">No notes yet</div>
+  <div class="empty-sub">Add notes from any service detail page.</div>
+</div>
+{{end}}
+{{end}}

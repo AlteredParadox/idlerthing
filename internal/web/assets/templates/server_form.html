@@ -1,0 +1,207 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$s := $v.Server}}
+<header class="page-head">
+  <div>
+    <h1>{{if $v.IsEdit}}Edit server{{else}}Add server{{end}}</h1>
+    {{if $v.IsEdit}}<div class="page-sub mono">{{$s.Hostname}}</div>{{end}}
+  </div>
+</header>
+
+<form method="post" action="{{$v.Action}}" class="form-sections">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <section class="panel form-section">
+    <h2 class="section-title">Basics</h2>
+    <div class="form-grid">
+      <label class="field span-2">
+        <span class="field-label">Hostname *</span>
+        <input type="text" name="hostname" value="{{$s.Hostname}}" required>
+        {{with index $v.Errors "hostname"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Type</span>
+        <select name="server_type">
+          <option value="1" {{if eq $s.ServerType 1}}selected{{end}}>KVM</option>
+          <option value="2" {{if eq $s.ServerType 2}}selected{{end}}>OVZ</option>
+          <option value="3" {{if eq $s.ServerType 3}}selected{{end}}>DEDI</option>
+          <option value="4" {{if eq $s.ServerType 4}}selected{{end}}>LXC</option>
+          <option value="5" {{if eq $s.ServerType 5}}selected{{end}}>SEMI-DEDI</option>
+          <option value="6" {{if eq $s.ServerType 6}}selected{{end}}>VMware</option>
+          <option value="7" {{if eq $s.ServerType 7}}selected{{end}}>NAT</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Owned since</span>
+        <input type="date" name="owned_since" value="{{nstr $s.OwnedSince}}">
+        {{with index $v.Errors "owned_since"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <div class="field span-2">
+        <span class="field-label">Flags</span>
+        <div class="check-row">
+          <label class="check"><input type="checkbox" name="active" {{if $s.Active}}checked{{end}}> Active</label>
+          <label class="check"><input type="checkbox" name="show_public" {{if $s.ShowPublic}}checked{{end}}> Public</label>
+          <label class="check"><input type="checkbox" name="was_promo" {{if $s.WasPromo}}checked{{end}}> Promo</label>
+          <label class="check"><input type="checkbox" name="transferrable" {{if $s.Transferrable}}checked{{end}}> Transferrable</label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Specs</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">CPU cores</span>
+        <input type="number" name="cpu" min="0" value="{{nint $s.CPU}}">
+        {{with index $v.Errors "cpu"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field span-2">
+        <span class="field-label">CPU model</span>
+        <input type="text" name="cpu_model" value="{{nstr $s.CPUModel}}" placeholder="AMD EPYC 7443P">
+      </label>
+      <label class="field">
+        <span class="field-label">RAM</span>
+        {{template "size_input" dict "name" "ram_as_mb" "val" $s.RamAsMB}}
+        {{with index $v.Errors "ram_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Bandwidth</span>
+        {{template "size_input" dict "name" "bandwidth_as_mb" "val" $s.BandwidthAsMB "unlimited" true}}
+        {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Link speed (mbps)</span>
+        <input type="number" name="link_speed" min="0" value="{{nint $s.LinkSpeed}}">
+        {{with index $v.Errors "link_speed"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Network type</span>
+        <select name="network_type">
+          <option value="">—</option>
+          {{range $v.NetworkTypes}}
+          <option value="{{.}}" {{if eq (nstr $s.NetworkType) .}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">NS1</span>
+        <input type="text" name="ns1" value="{{nstr $s.Ns1}}">
+      </label>
+      <label class="field">
+        <span class="field-label">NS2</span>
+        <input type="text" name="ns2" value="{{nstr $s.Ns2}}">
+      </label>
+      <label class="field">
+        <span class="field-label">SSH port</span>
+        <input type="number" name="ssh_port" min="0" max="65535" value="{{nint $s.SSHPort}}" placeholder="22">
+        {{with index $v.Errors "ssh_port"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Classification</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Provider</span>
+        <select name="provider_id">
+          <option value="">—</option>
+          {{range $v.Providers}}
+          <option value="{{.ID}}" {{if eq $s.ProviderID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        <a class="field-hint" href="/catalogs/providers" target="_blank">+ New provider</a>
+      </label>
+      <label class="field">
+        <span class="field-label">Location</span>
+        <select name="location_id">
+          <option value="">—</option>
+          {{range $v.Locations}}
+          <option value="{{.ID}}" {{if eq $s.LocationID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        <a class="field-hint" href="/catalogs/locations" target="_blank">+ New location</a>
+      </label>
+      <label class="field">
+        <span class="field-label">OS</span>
+        <select name="os_id">
+          <option value="">—</option>
+          {{range $v.OSes}}
+          <option value="{{.ID}}" {{if eq $s.OsID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+        <a class="field-hint" href="/catalogs/os" target="_blank">+ New OS</a>
+      </label>
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Disks</h2>
+    <div class="disk-rows">
+      {{range $i := seq4}}
+      {{$d := indexDisk $v.Disks $i}}
+      <div class="disk-row">
+        <label class="field">
+          <span class="field-label">Size</span>
+          {{if $d}}
+          {{template "size_input" dict "name" (printf "disk%d_size" $i) "val" $d.SizeAsMB}}
+          {{else}}
+          {{template "size_input" dict "name" (printf "disk%d_size" $i)}}
+          {{end}}
+        </label>
+        <label class="field">
+          <span class="field-label">Media</span>
+          <select name="disk{{$i}}_media">
+            {{range $m := $v.DiskMedia}}
+            <option value="{{$m}}" {{if $d}}{{if eq $d.Media $m}}selected{{end}}{{end}}>{{$m}}</option>
+            {{end}}
+          </select>
+        </label>
+      </div>
+      {{end}}
+    </div>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">Pricing</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Currency</span>
+        <select name="currency">
+          {{range $v.Currencies}}
+          <option value="{{.}}" {{if $v.Pricing}}{{if eq $v.Pricing.Currency .}}selected{{end}}{{else}}{{if eq . "USD"}}selected{{end}}{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Price</span>
+        <input type="number" name="price" min="0" step="0.01" value="{{if $v.Pricing}}{{$v.Pricing.Price}}{{end}}">
+        {{with index $v.Errors "price"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+      <label class="field">
+        <span class="field-label">Term</span>
+        <select name="term">
+          {{range $t := seqTerms}}
+          <option value="{{$t}}" {{if $v.Pricing}}{{if eq $v.Pricing.Term $t}}selected{{end}}{{end}}>{{termLabel $t}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Next due date</span>
+        <input type="date" name="next_due_date" value="{{if $v.Pricing}}{{nstr $v.Pricing.NextDueDate}}{{end}}">
+        {{with index $v.Errors "next_due_date"}}<span class="field-err">{{.}}</span>{{end}}
+      </label>
+    </div>
+  </section>
+
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">{{if $v.IsEdit}}Save changes{{else}}Add server{{end}}</button>
+    {{if $v.IsEdit}}
+    <a class="btn" href="/servers/{{$s.ID}}">Cancel</a>
+    {{else}}
+    <a class="btn" href="/servers">Cancel</a>
+    {{end}}
+  </div>
+</form>
+{{end}}

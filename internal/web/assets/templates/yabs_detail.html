@@ -1,0 +1,93 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$y := $v.Run}}
+<header class="page-head">
+  <div>
+    <h1>YABS · <span class="mono">{{$v.ServerName}}</span></h1>
+    <div class="page-sub mono">{{if $y.RunAt.Valid}}{{$y.RunAt.String}}{{else}}{{$y.CreatedAt}}{{end}}</div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="/servers/{{$v.ServerID}}/yabs">All runs</a>
+    <form method="post" action="/servers/{{$v.ServerID}}/yabs/{{$y.ID}}/delete"
+          hx-post="/servers/{{$v.ServerID}}/yabs/{{$y.ID}}/delete" hx-confirm="Delete this run?">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button class="btn btn-danger" type="submit">🗑 Delete</button>
+    </form>
+  </div>
+</header>
+
+<div class="card-grid">
+  <section class="panel info-card">
+    <h2 class="section-title">System</h2>
+    <dl class="kv">
+      <dt>CPU</dt><dd>{{if $y.CPU.Valid}}{{$y.CPU.String}}{{else}}—{{end}}</dd>
+      <dt>Cores</dt><dd class="mono">{{if $y.CPUCores.Valid}}{{$y.CPUCores.Int64}}{{else}}—{{end}}</dd>
+      <dt>RAM</dt><dd>{{if $y.RAM.Valid}}{{$y.RAM.String}}{{else}}—{{end}}</dd>
+      <dt>Swap</dt><dd>{{if $y.Swap.Valid}}{{$y.Swap.String}}{{else}}—{{end}}</dd>
+      <dt>Distro</dt><dd>{{if $y.Distro.Valid}}{{$y.Distro.String}}{{else}}—{{end}}</dd>
+      <dt>Kernel</dt><dd class="mono">{{if $y.Kernel.Valid}}{{$y.Kernel.String}}{{else}}—{{end}}</dd>
+      <dt>Uptime</dt><dd>{{if $y.Uptime.Valid}}{{$y.Uptime.String}}{{else}}—{{end}}</dd>
+    </dl>
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">Geekbench</h2>
+    {{if $y.GbSingle.Valid}}
+    <dl class="kv">
+      <dt>Version</dt><dd class="mono">{{if $y.GeekbenchVersion.Valid}}{{$y.GeekbenchVersion.Int64}}{{else}}—{{end}}</dd>
+      <dt>Single</dt><dd><span class="badge badge-ok mono">{{$y.GbSingle.Int64}}</span></dd>
+      <dt>Multi</dt><dd><span class="badge badge-ok mono">{{if $y.GbMulti.Valid}}{{$y.GbMulti.Int64}}{{else}}—{{end}}</span></dd>
+      {{if $y.GbURL.Valid}}
+      <dt>Result</dt><dd><a href="{{$y.GbURL.String}}" target="_blank" rel="noopener">view ↗</a></dd>
+      {{end}}
+    </dl>
+    {{else}}
+    <div class="empty-sub">No geekbench score in this run.</div>
+    {{end}}
+  </section>
+</div>
+
+<div class="dash-grid">
+  <section class="panel">
+    <h2 class="section-title">Disk speed (fio)</h2>
+    {{if $v.Disks}}
+    <table class="tbl mini">
+      <thead><tr><th>Block size</th><th>Read</th><th>Write</th></tr></thead>
+      <tbody>
+        {{range $v.Disks}}
+        <tr>
+          <td class="mono">{{.BlockSize}}</td>
+          <td class="mono">{{mbpsFmt .ReadMbps}}</td>
+          <td class="mono">{{mbpsFmt .WriteMbps}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty-sub">No disk results.</div>
+    {{end}}
+  </section>
+
+  <section class="panel">
+    <h2 class="section-title">Network speed (iperf)</h2>
+    {{if $v.Network}}
+    <table class="tbl mini">
+      <thead><tr><th>Location</th><th>Provider</th><th>Send</th><th>Recv</th><th>Latency</th></tr></thead>
+      <tbody>
+        {{range $v.Network}}
+        <tr>
+          <td>{{.Location}}</td>
+          <td>{{.Provider}}</td>
+          <td class="mono">{{mbpsFmt .SendMbps}}</td>
+          <td class="mono">{{mbpsFmt .RecvMbps}}</td>
+          <td class="mono">{{if .LatencyMs}}{{mbpsFmt .LatencyMs}} ms{{else}}—{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty-sub">No network results.</div>
+    {{end}}
+  </section>
+</div>
+{{end}}

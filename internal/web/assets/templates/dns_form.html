@@ -1,0 +1,57 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$d := $v.Record}}
+<header class="page-head">
+  <div>
+    <h1>Edit DNS record</h1>
+    <div class="page-sub mono">{{$d.Hostname}}</div>
+  </div>
+</header>
+
+<form method="post" action="/dns/{{$d.ID}}/update" class="form-sections">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <section class="panel form-section">
+    <h2 class="section-title">Record</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Hostname *</span>
+        <input type="text" name="hostname" value="{{$d.Hostname}}" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Type</span>
+        <select name="dns_type">
+          {{range dnsTypes}}
+          <option {{if eq $d.DNSType .}}selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Address *</span>
+        <input type="text" name="address" value="{{$d.Address}}" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Link to server</span>
+        <select name="server_id">
+          <option value="">—</option>
+          {{range $v.Servers}}
+          <option value="{{.ID}}" {{if eq $d.ServerID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Link to domain</span>
+        <select name="domain_id">
+          <option value="">—</option>
+          {{range $v.Domains}}
+          <option value="{{.ID}}" {{if eq $d.DomainID.Int64 .ID}}selected{{end}}>{{.Name}}</option>
+          {{end}}
+        </select>
+      </label>
+    </div>
+  </section>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Save changes</button>
+    <a class="btn" href="/dns">Cancel</a>
+  </div>
+</form>
+{{end}}

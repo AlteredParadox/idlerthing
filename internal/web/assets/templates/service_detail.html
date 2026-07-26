@@ -1,0 +1,38 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1{{if $v.Mono}} class="mono"{{end}}>{{$v.Title}}</h1>
+    <div class="badge-row">
+      {{range $v.Badges}}<span class="badge {{.Class}}">{{.Label}}</span>{{end}}
+    </div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="{{$v.EditURL}}">✎ Edit</a>
+    <form method="post" action="{{$v.DeleteURL}}" hx-post="{{$v.DeleteURL}}" hx-confirm="{{$v.DeleteConfirm}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button class="btn btn-danger" type="submit">🗑 Delete</button>
+    </form>
+  </div>
+</header>
+
+<div class="card-grid">
+  {{range $v.Cards}}
+  <section class="panel info-card">
+    <h2 class="section-title">{{.Title}}</h2>
+    {{if .Pairs}}
+    <dl class="kv">
+      {{range .Pairs}}
+      <dt>{{.K}}</dt>
+      <dd{{if .Mono}} class="mono"{{end}}>{{if .Badge}}<span class="badge">{{.V}}</span>{{else}}{{.V}}{{end}}</dd>
+      {{end}}
+    </dl>
+    {{else if .Empty}}
+    <div class="empty-sub">{{.Empty}}</div>
+    {{end}}
+  </section>
+  {{end}}
+</div>
+
+{{template "service_extras" .}}
+{{end}}

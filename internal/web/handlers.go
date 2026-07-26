@@ -1,0 +1,162 @@
+package web
+
+import (
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// Counts holds per-table row counts shown in the sidebar nav.
+type Counts struct {
+	Servers   int
+	Shared    int
+	Reseller  int
+	Seedboxes int
+	Domains   int
+	Misc      int
+	DNS       int
+	IPs       int
+	Locations int
+	OS        int
+	Providers int
+	Labels    int
+	YABS      int
+	Notes     int
+}
+
+// counts runs a cheap COUNT(*) per table. Fine at this app's scale.
+// countsTables maps Counts fields to tables in scan order.
+const countsTables = `SELECT
+	(SELECT COUNT(*) FROM servers),
+	(SELECT COUNT(*) FROM shared_hosting),
+	(SELECT COUNT(*) FROM reseller_hosting),
+	(SELECT COUNT(*) FROM seedboxes),
+	(SELECT COUNT(*) FROM domains),
+	(SELECT COUNT(*) FROM misc_services),
+	(SELECT COUNT(*) FROM dns),
+	(SELECT COUNT(*) FROM ips),
+	(SELECT COUNT(*) FROM locations),
+	(SELECT COUNT(*) FROM os),
+	(SELECT COUNT(*) FROM providers),
+	(SELECT COUNT(*) FROM labels),
+	(SELECT COUNT(*) FROM yabs),
+	(SELECT COUNT(*) FROM notes)`
+
+func (s *Server) counts(r *http.Request) Counts {
+	var c Counts
+	// One round trip for all 14 counts.
+	s.db.QueryRowContext(r.Context(), countsTables).Scan(
+		&c.Servers, &c.Shared, &c.Reseller, &c.Seedboxes, &c.Domains,
+		&c.Misc, &c.DNS, &c.IPs, &c.Locations, &c.OS, &c.Providers,
+		&c.Labels, &c.YABS, &c.Notes)
+	return c
+}
+
+// currentTheme reads the theme setting, defaulting to dark.
+func (s *Server) currentTheme(r *http.Request) string {
+	var theme string
+	err := s.db.QueryRowContext(r.Context(),
+		"SELECT theme FROM settings WHERE id = 1").Scan(&theme)
+	if err != nil || (theme != "dark" && theme != "light") {
+		return "dark"
+	}
+	return theme
+}
+
+// handleNotFound renders a styled 404 for unmatched routes.
+func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
+	data := s.newPageData(w, r, "Not found", "")
+	w.WriteHeader(http.StatusNotFound)
+	s.render(w, r, "notfound", data)
+}
+
+// handleThemePref flips settings.theme and redirects back to the referer.
+func (s *Server) handleThemePref(w http.ResponseWriter, r *http.Request) {
+	next := "light"
+	if s.currentTheme(r) == "light" {
+		next = "dark"
+	}
+	s.db.ExecContext(r.Context(), "UPDATE settings SET theme = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", next)
+
+	target := "/"
+	if ref, err := url.Parse(r.Referer()); err == nil && ref.Path != "" {
+		target = ref.Path // same-origin path only
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// shortHostnames reports whether the current user prefers hostnames
+// stripped to their first DNS label on the servers list (user_prefs).
+func (s *Server) shortHostnames(r *http.Request) bool {
+	u := userFromCtx(r.Context())
+	if u == nil {
+		return false
+	}
+	var v string
+	err := s.db.QueryRowContext(r.Context(),
+		"SELECT value FROM user_prefs WHERE user_id = ? AND key = 'short_hostnames'", u.ID).Scan(&v)
+	return err == nil && v == "1"
+}
+
+// listSort resolves the sort column and direction for a list page.
+// Explicit URL params win and are persisted per user (user_prefs key
+// "sort_<name>" = "col,dir"); absent params fall back to the saved pref,
+// then to the list's default. This keeps the chosen sort across tab
+// switches and page reloads.
+func (s *Server) listSort(r *http.Request, name, defaultSort string) (sort, dir string) {
+	q := r.URL.Query()
+	sort, dir = q.Get("sort"), q.Get("dir")
+	u := userFromCtx(r.Context())
+
+	if sort != "" {
+		if dir != "desc" {
+			dir = "asc"
+		}
+		if u != nil {
+			s.db.ExecContext(r.Context(),
+				`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'sort_' || ?, ?)
+				 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`,
+				u.ID, name, sort+","+dir)
+		}
+		return sort, dir
+	}
+
+	if u != nil {
+		var v string
+		err := s.db.QueryRowContext(r.Context(),
+			"SELECT value FROM user_prefs WHERE user_id = ? AND key = 'sort_' || ?", u.ID, name).Scan(&v)
+		if err == nil {
+			if col, d, ok := strings.Cut(v, ","); ok && col != "" {
+				if d != "desc" {
+					d = "asc"
+				}
+				return col, d
+			}
+		}
+	}
+	return defaultSort, "asc"
+}
+
+// handleShortHostnamesPref flips the short_hostnames user pref and
+// redirects back to the referer.
+func (s *Server) handleShortHostnamesPref(w http.ResponseWriter, r *http.Request) {
+	u := userFromCtx(r.Context())
+	if u != nil {
+		next := "1"
+		if s.shortHostnames(r) {
+			next = "0"
+		}
+		s.db.ExecContext(r.Context(),
+			`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'short_hostnames', ?)
+			 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`, u.ID, next)
+	}
+
+	target := "/servers"
+	if ref, err := url.Parse(r.Referer()); err == nil && ref.Path != "" {
+		target = ref.Path
+		if ref.RawQuery != "" {
+			target += "?" + ref.RawQuery
+		}
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}

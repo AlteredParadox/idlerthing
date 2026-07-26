@@ -1,0 +1,36 @@
+{{define "login"}}
+<!doctype html>
+<html lang="en" data-theme="{{.Theme}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · idlerthing</title>
+  <link rel="stylesheet" href="/static/app.css?v={{.AssetV}}">
+  <link rel="stylesheet" href="/static/accent.css?c={{.AccentC}}">
+</head>
+<body class="auth-body">
+  <div class="auth-card">
+    <div class="logo auth-logo">
+      <span class="logo-mark">i</span>
+      <span class="logo-word">idlerthing</span>
+    </div>
+    <h1 class="auth-title">Sign in</h1>
+    {{if .Error}}
+    <div class="flash flash-err">{{.Error}}</div>
+    {{end}}
+    <form method="post" action="/login" class="auth-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label class="field">
+        <span class="field-label">Email</span>
+        <input type="email" name="email" required autofocus autocomplete="username">
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input type="password" name="password" required autocomplete="current-password">
+      </label>
+      <button class="btn btn-primary auth-submit" type="submit">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>
+{{end}}

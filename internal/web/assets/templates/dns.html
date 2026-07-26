@@ -1,0 +1,83 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>DNS</h1>
+    <div class="page-sub">{{len $v.Rows}} records</div>
+  </div>
+</header>
+
+{{if $v.Rows}}
+<table class="tbl">
+  <thead>
+    <tr><th>Hostname</th><th>Type</th><th>Address</th><th>Linked to</th><th class="col-actions"></th></tr>
+  </thead>
+  <tbody>
+    {{range $v.Rows}}
+    <tr>
+      <td class="mono">{{.Hostname}}</td>
+      <td><span class="badge">{{.Type}}</span></td>
+      <td class="mono">{{.Address}}</td>
+      <td>{{if .LinkURL}}<a href="{{.LinkURL}}">{{.LinkName}}</a>{{else}}{{.LinkName}}{{end}}</td>
+      <td class="col-actions">
+        <div class="row-actions">
+          <a class="icon-btn" href="/dns/{{.ID}}/edit" title="Edit">✎</a>
+          <form method="post" action="/dns/{{.ID}}/delete" hx-post="/dns/{{.ID}}/delete" hx-confirm="Delete {{.Hostname}}?">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="back" value="/dns">
+            <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{len $v.Rows}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">No DNS records yet</div>
+  <div class="empty-sub">Add the first one below.</div>
+</div>
+{{end}}
+
+<section class="panel form-section mt-section">
+  <h2 class="section-title">Add record</h2>
+  <form method="post" action="/dns" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label class="field">
+      <span class="field-label">Hostname *</span>
+      <input type="text" name="hostname" required>
+    </label>
+    <label class="field">
+      <span class="field-label">Type</span>
+      <select name="dns_type">
+        <option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option>
+        <option>MX</option><option>NS</option><option>SRV</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Address *</span>
+      <input type="text" name="address" required>
+    </label>
+    <label class="field">
+      <span class="field-label">Link to server</span>
+      <select name="server_id">
+        <option value="">—</option>
+        {{range $v.Servers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Link to domain</span>
+      <select name="domain_id">
+        <option value="">—</option>
+        {{range $v.Domains}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <div class="field">
+      <span class="field-label">&nbsp;</span>
+      <button class="btn btn-primary" type="submit">Add record</button>
+    </div>
+  </form>
+</section>
+{{end}}

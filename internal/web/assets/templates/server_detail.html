@@ -1,0 +1,159 @@
+{{define "content"}}
+{{$v := .Data}}
+{{$s := $v.Server}}
+<header class="page-head">
+  <div>
+    <h1 class="mono">{{$s.Hostname}}</h1>
+    <div class="badge-row">
+      <span class="badge">{{$v.TypeLabel}}</span>
+      {{if $s.Active}}<span class="badge badge-ok">Active</span>{{else}}<span class="badge badge-off">Inactive</span>{{end}}
+      {{if $s.WasPromo}}<span class="badge badge-warn">Promo</span>{{end}}
+      {{if $s.Transferrable}}<span class="badge">Transferrable</span>{{end}}
+      {{if $s.ShowPublic}}<span class="badge">Public</span>{{end}}
+    </div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="/servers/{{$s.ID}}/edit">✎ Edit</a>
+    <form method="post" action="/servers/{{$s.ID}}/delete" hx-post="/servers/{{$s.ID}}/delete" hx-confirm="Delete {{$s.Hostname}}?">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button class="btn btn-danger" type="submit">🗑 Delete</button>
+    </form>
+  </div>
+</header>
+
+<div class="card-grid">
+  <section class="panel info-card">
+    <h2 class="section-title">Specs</h2>
+    <dl class="kv">
+      <dt>CPU</dt><dd>{{if $s.CPU.Valid}}{{$s.CPU.Int64}} cores{{else}}—{{end}}</dd>
+      <dt>CPU model</dt><dd>{{if $s.CPUModel.Valid}}{{$s.CPUModel.String}}{{else}}—{{end}}</dd>
+      <dt>RAM</dt><dd class="mono">{{fmtNullMB $s.RamAsMB}}</dd>
+      <dt>Bandwidth</dt><dd class="mono">{{bwDisplay $s.BandwidthAsMB}}</dd>
+      <dt>Link speed</dt><dd class="mono">{{if $s.LinkSpeed.Valid}}{{$s.LinkSpeed.Int64}} mbps{{else}}—{{end}}</dd>
+    </dl>
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">Network</h2>
+    <dl class="kv">
+      <dt>Type</dt><dd>{{if $s.NetworkType.Valid}}<span class="badge badge-net">{{$s.NetworkType.String}}</span>{{else}}—{{end}}</dd>
+      <dt>NS1</dt><dd class="mono">{{if $s.Ns1.Valid}}{{$s.Ns1.String}}{{else}}—{{end}}</dd>
+      <dt>NS2</dt><dd class="mono">{{if $s.Ns2.Valid}}{{$s.Ns2.String}}{{else}}—{{end}}</dd>
+      <dt>SSH port</dt><dd class="mono">{{if $s.SSHPort.Valid}}{{$s.SSHPort.Int64}}{{else}}22{{end}}</dd>
+    </dl>
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">Classification</h2>
+    <dl class="kv">
+      <dt>Provider</dt><dd>{{if $v.Provider}}{{$v.Provider}}{{else}}—{{end}}</dd>
+      <dt>Location</dt><dd>{{if $v.Location}}{{$v.Location}}{{else}}—{{end}}</dd>
+      <dt>OS</dt><dd>{{if $v.OS}}{{$v.OS}}{{else}}—{{end}}</dd>
+      <dt>Owned since</dt><dd class="mono">{{if $s.OwnedSince.Valid}}{{$s.OwnedSince.String}}{{else}}—{{end}}</dd>
+    </dl>
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">Pricing</h2>
+    {{if $v.Pricing}}
+    <dl class="kv">
+      <dt>Price</dt><dd class="mono">{{priceFmt $v.Pricing.Currency $v.Pricing.Price $v.Pricing.Term}}</dd>
+      <dt>Term</dt><dd>{{termLabel $v.Pricing.Term}}</dd>
+      <dt>Next due</dt><dd class="mono">{{if $v.Pricing.NextDueDate.Valid}}{{$v.Pricing.NextDueDate.String}}{{else}}—{{end}}</dd>
+    </dl>
+    {{else}}
+    <div class="empty-sub">No pricing attached.</div>
+    {{end}}
+  </section>
+
+  {{if $v.Live}}
+  <section class="panel info-card live-card">
+    <h2 class="section-title">Live</h2>
+    <dl class="kv">
+      <dt>Status</dt><dd>{{if $v.Live.Online}}<span class="badge badge-ok">up</span>{{else}}<span class="badge badge-off">down</span>{{end}}</dd>
+      <dt>CPU</dt><dd>{{template "meter" $v.Live.CPU}}</dd>
+      <dt>RAM</dt><dd>{{template "meter" $v.Live.RAM}}</dd>
+      <dt>Disk</dt><dd>{{template "meter" $v.Live.Disk}}</dd>
+      <dt>Network</dt><dd class="mono net-tput">{{$v.Live.Throughput}}</dd>
+      <dt>Uptime 30d</dt><dd class="mono">{{$v.Live.Uptime}}</dd>
+    </dl>
+  </section>
+  {{end}}
+
+  <section class="panel info-card">
+    <h2 class="section-title">Disks</h2>
+    {{if $v.Disks}}
+    <dl class="kv">
+      {{range $v.Disks}}
+      <dt class="mono">{{fmtMB .SizeAsMB}}</dt><dd><span class="badge">{{.Media}}</span></dd>
+      {{end}}
+    </dl>
+    {{else}}
+    <div class="empty-sub">No disks recorded.</div>
+    {{end}}
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">YABS</h2>
+    {{if $v.YABSRuns}}
+    <div class="kv-row">
+      <span class="badge badge-ok mono">single {{$v.LatestSingle}}</span>
+      <span class="badge badge-ok mono">multi {{$v.LatestMulti}}</span>
+      <a class="field-hint" href="/servers/{{$v.Server.ID}}/yabs">{{len $v.YABSRuns}} runs →</a>
+    </div>
+    {{end}}
+    <div class="cmd-block">
+      <code class="mono">{{$v.YABSCommand}}</code>
+      <button class="icon-btn copy-btn" type="button" data-copy="{{$v.YABSCommand}}" title="Copy">⧉</button>
+    </div>
+  </section>
+</div>
+
+{{template "service_extras" .}}
+
+{{$lm := $v.LiveMon}}
+{{if $lm}}
+<section class="livemon">
+  <h2 class="section-title">Live monitoring</h2>
+  {{if $lm.Unavailable}}
+  <div class="empty-sub">Live data unavailable right now.</div>
+  {{else}}
+  <div class="card-grid livemon-grid">
+    {{range $lm.Cards}}
+    <div class="panel metric-card">
+      <div class="metric-name">{{.Name}}</div>
+      {{if .NoData}}
+      <div class="empty-sub">no data</div>
+      {{else}}
+      <div class="metric-current mono {{.ColorClass}}-tx">{{.Current}}</div>
+      <svg class="spark {{.ColorClass}}" viewBox="0 0 200 36" preserveAspectRatio="none" aria-hidden="true">
+        <polyline class="spark-base" points="0,35 200,35" />
+        <polyline class="spark-line" points="{{.Points}}" />
+      </svg>
+      <div class="metric-stats">{{.AvgMax}}</div>
+      {{end}}
+    </div>
+    {{end}}
+  </div>
+  {{if $lm.Filesystems}}
+  <div class="panel fs-card">
+    <h3 class="section-title">Filesystems</h3>
+    <table class="tbl mini">
+      <thead><tr><th>Mount</th><th>Size</th><th>Avail</th><th>Used</th></tr></thead>
+      <tbody>
+        {{range $lm.Filesystems}}
+        <tr>
+          <td class="mono">{{.Mount}}</td>
+          <td class="mono">{{.Size}}</td>
+          <td class="mono">{{.Avail}}</td>
+          <td>{{template "meter" .Meter}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{end}}
+</section>
+{{end}}
+{{end}}

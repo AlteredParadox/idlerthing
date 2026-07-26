@@ -1,0 +1,53 @@
+{{define "public"}}
+<!doctype html>
+<html lang="en" data-theme="{{.Theme}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Servers · idlerthing</title>
+  <link rel="stylesheet" href="/static/app.css?v={{.AssetV}}">
+</head>
+<body>
+<div class="public-shell">
+  <header class="page-head">
+    <div>
+      <h1>Servers</h1>
+      <div class="page-sub">updated {{.Updated}}</div>
+    </div>
+  </header>
+  {{if .Rows}}
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>Hostname</th><th>Type</th><th>OS</th><th>CPU</th><th>RAM</th>
+        <th>Disk</th><th>BW</th><th>Location</th><th>Provider</th><th>Price</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td class="mono">{{.Hostname}}</td>
+        <td><span class="badge">{{.Type}}</span></td>
+        <td>{{.OS}}</td>
+        <td class="mono">{{.CPU}}</td>
+        <td class="mono">{{.RAM}}</td>
+        <td class="mono">{{.Disk}}</td>
+        <td class="mono">{{.BW}}</td>
+        <td>{{.Location}}</td>
+        <td>{{.Provider}}</td>
+        <td class="mono">{{.Price}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div class="table-foot">{{len .Rows}} rows</div>
+  {{else}}
+  <div class="empty-state">
+    <div class="empty-title">Nothing to show</div>
+    <div class="empty-sub">No public servers right now.</div>
+  </div>
+  {{end}}
+</div>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,215 @@
+{{/* Shared form partials. Expects a form view with .Pricing, .Currencies, .Errors. */}}
+
+{{define "pricing_fields"}}
+{{$v := .}}
+<section class="panel form-section">
+  <h2 class="section-title">Pricing</h2>
+  <div class="form-grid">
+    <label class="field">
+      <span class="field-label">Currency</span>
+      <select name="currency">
+        {{range $v.Currencies}}
+        <option value="{{.}}" {{if $v.Pricing}}{{if eq $v.Pricing.Currency .}}selected{{end}}{{else}}{{if eq . "USD"}}selected{{end}}{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Price</span>
+      <input type="number" name="price" min="0" step="0.01" value="{{if $v.Pricing}}{{$v.Pricing.Price}}{{end}}">
+      {{with index $v.Errors "price"}}<span class="field-err">{{.}}</span>{{end}}
+    </label>
+    <label class="field">
+      <span class="field-label">Term</span>
+      <select name="term">
+        {{range $t := seqTerms}}
+        <option value="{{$t}}" {{if $v.Pricing}}{{if eq $v.Pricing.Term $t}}selected{{end}}{{end}}>{{termLabel $t}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label class="field">
+      <span class="field-label">Next due date</span>
+      <input type="date" name="next_due_date" value="{{if $v.Pricing}}{{nstr $v.Pricing.NextDueDate}}{{end}}">
+      {{with index $v.Errors "next_due_date"}}<span class="field-err">{{.}}</span>{{end}}
+    </label>
+  </div>
+</section>
+{{end}}
+
+{{define "flags_field"}}
+{{/* Expects the entity with .Active, .ShowPublic, .WasPromo */}}
+<div class="field span-2">
+  <span class="field-label">Flags</span>
+  <div class="check-row">
+    <label class="check"><input type="checkbox" name="active" {{if .Active}}checked{{end}}> Active</label>
+    <label class="check"><input type="checkbox" name="show_public" {{if .ShowPublic}}checked{{end}}> Public</label>
+    <label class="check"><input type="checkbox" name="was_promo" {{if .WasPromo}}checked{{end}}> Promo</label>
+  </div>
+</div>
+{{end}}
+
+{{define "service_extras"}}
+{{$e := .Data.Extras}}
+{{if $e}}
+<div class="card-grid extras-grid">
+
+  <section class="panel info-card">
+    <h2 class="section-title">Labels</h2>
+    <div class="chip-row">
+      {{range $e.Labels}}
+      <span class="chip">
+        {{.Name}}
+        <form method="post" action="/labels/unassign" class="chip-x">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="label_id" value="{{.ID}}">
+          <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
+          <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
+          <input type="hidden" name="back" value="{{$e.BackURL}}">
+          <button type="submit" title="Remove">✕</button>
+        </form>
+      </span>
+      {{else}}
+      <span class="empty-sub">No labels.</span>
+      {{end}}
+    </div>
+    {{if not $e.LabelsFull}}
+    <form method="post" action="/labels/assign" class="extras-form">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
+      <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
+      <input type="hidden" name="back" value="{{$e.BackURL}}">
+      <select name="label_id">
+        <option value="">Pick label…</option>
+        {{range $e.AllLabels}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+      <input type="text" name="new_label" placeholder="or new label">
+      <button class="btn" type="submit">Add</button>
+    </form>
+    {{end}}
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">Notes</h2>
+    {{range $e.Notes}}
+    <div class="note-item">
+      <div class="note-body">{{.Body}}</div>
+      <div class="note-meta">
+        <span class="mono">{{dateFmt .CreatedAt}}</span>
+        <form method="post" action="/notes/{{.ID}}/delete" hx-post="/notes/{{.ID}}/delete" hx-confirm="Delete note?">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="hidden" name="back" value="{{$e.BackURL}}">
+          <button class="link-btn" type="submit">delete</button>
+        </form>
+      </div>
+    </div>
+    {{else}}
+    <div class="empty-sub">No notes yet.</div>
+    {{end}}
+    <form method="post" action="/notes" class="extras-form">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
+      <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
+      <input type="hidden" name="back" value="{{$e.BackURL}}">
+      <textarea name="body" rows="2" placeholder="Add a note…" required></textarea>
+      <button class="btn" type="submit">Add note</button>
+    </form>
+  </section>
+
+  <section class="panel info-card">
+    <h2 class="section-title">IPs</h2>
+    {{if $e.IPs}}
+    <table class="tbl mini">
+      <tbody>
+        {{range $e.IPs}}
+        <tr>
+          <td class="mono">{{.Address}}</td>
+          <td><span class="badge">{{if .IsIPv4}}IPv4{{else}}IPv6{{end}}</span></td>
+          <td class="whois-cell">{{if .Country.Valid}}{{.Country.String}}{{if .Org.Valid}} · {{.Org.String}}{{end}}{{else}}—{{end}}</td>
+          <td class="col-actions">
+            <div class="row-actions always">
+              <form method="post" action="/ips/{{.ID}}/whois">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="back" value="{{$e.BackURL}}">
+                <button class="icon-btn" type="submit" title="Refresh whois">↻</button>
+              </form>
+              <form method="post" action="/ips/{{.ID}}/delete" hx-post="/ips/{{.ID}}/delete" hx-confirm="Delete IP?">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="back" value="{{$e.BackURL}}">
+                <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty-sub">No IPs attached.</div>
+    {{end}}
+    <form method="post" action="/ips" class="extras-form">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
+      <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
+      <input type="hidden" name="back" value="{{$e.BackURL}}">
+      <input type="text" name="address" placeholder="203.0.113.10 or 2001:db8::1" required>
+      <button class="btn" type="submit">Add IP</button>
+    </form>
+  </section>
+
+  {{if $e.ShowDNS}}
+  <section class="panel info-card">
+    <h2 class="section-title">DNS</h2>
+    {{if $e.DNS}}
+    <table class="tbl mini">
+      <tbody>
+        {{range $e.DNS}}
+        <tr>
+          <td class="mono">{{.Hostname}}</td>
+          <td><span class="badge">{{.DNSType}}</span></td>
+          <td class="mono">{{.Address}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty-sub">No DNS records linked.</div>
+    {{end}}
+    <a class="field-hint" href="/dns">Manage DNS →</a>
+  </section>
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "size_input"}}
+{{/* number + unit input-group for MB-stored sizes; .unlimited adds the checkbox */}}
+<div class="input-group">
+  <input type="number" name="{{.name}}" min="0" step="any" value="{{unitVal .val}}">
+  <select name="{{.name}}_unit">
+    {{$u := unitName .val}}
+    <option value="MB" {{if eq $u "MB"}}selected{{end}}>MB</option>
+    <option value="GB" {{if eq $u "GB"}}selected{{end}}>GB</option>
+    <option value="TB" {{if eq $u "TB"}}selected{{end}}>TB</option>
+  </select>
+</div>
+{{if .unlimited}}
+<div class="check-row">
+  <label class="check">
+    <input type="checkbox" name="{{.name}}_unlimited" {{if and .val (not (mbValid .val))}}checked{{end}}>
+    Unlimited <span class="field-hint">(number ignored)</span>
+  </label>
+</div>
+{{end}}
+{{end}}
+
+{{define "meter"}}
+{{/* thin live meter bar + pct label (CSP-safe width classes) */}}
+<div class="meter">
+  <div class="meter-track"><div class="meter-fill {{.ColorClass}} {{.WidthClass}}"></div></div>
+  <span class="meter-pct">{{.Label}}</span>
+</div>
+{{end}}
+
+{{define "meter-inline"}}
+{{/* compact-mode variant: tiny inline bar next to the pct text */}}
+<span class="meter-inline"><span class="meter-track"><span class="meter-fill {{.ColorClass}} {{.WidthClass}}"></span></span></span>
+{{end}}

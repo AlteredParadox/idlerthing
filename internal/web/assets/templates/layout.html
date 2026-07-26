@@ -1,0 +1,106 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="en" data-theme="{{.Theme}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · idlerthing</title>
+  <link rel="stylesheet" href="/static/app.css?v={{.AssetV}}">
+  <link rel="stylesheet" href="/static/accent.css?c={{.AccentC}}">
+  <script src="/static/htmx.min.js?v={{.AssetV}}" defer></script>
+  <script src="/static/app.js?v={{.AssetV}}" defer></script>
+</head>
+<body{{if .Compact}} class="compact"{{end}}>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="logo">
+      <span class="logo-mark">i</span>
+      <span class="logo-word">idlerthing</span>
+    </div>
+
+    <nav class="nav">
+      <a class="nav-item{{if eq .Nav "dashboard"}} active{{end}}" href="/">
+        <span class="nav-label">Dashboard</span>
+      </a>
+
+      <div class="nav-group">Inventory</div>
+      <a class="nav-item{{if eq .Nav "servers"}} active{{end}}" href="/servers">
+        <span class="nav-label">Servers</span><span class="nav-count mono">{{.Counts.Servers}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "shared"}} active{{end}}" href="/shared">
+        <span class="nav-label">Shared</span><span class="nav-count mono">{{.Counts.Shared}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "reseller"}} active{{end}}" href="/reseller">
+        <span class="nav-label">Reseller</span><span class="nav-count mono">{{.Counts.Reseller}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "seedboxes"}} active{{end}}" href="/seedboxes">
+        <span class="nav-label">SeedBoxes</span><span class="nav-count mono">{{.Counts.Seedboxes}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "domains"}} active{{end}}" href="/domains">
+        <span class="nav-label">Domains</span><span class="nav-count mono">{{.Counts.Domains}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "misc"}} active{{end}}" href="/misc">
+        <span class="nav-label">Misc</span><span class="nav-count mono">{{.Counts.Misc}}</span>
+      </a>
+
+      <div class="nav-group">Network</div>
+      <a class="nav-item{{if eq .Nav "dns"}} active{{end}}" href="/dns">
+        <span class="nav-label">DNS</span><span class="nav-count mono">{{.Counts.DNS}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "ips"}} active{{end}}" href="/ips">
+        <span class="nav-label">IPs</span><span class="nav-count mono">{{.Counts.IPs}}</span>
+      </a>
+
+      <div class="nav-group">Catalogs</div>
+      <a class="nav-item{{if eq .Nav "locations"}} active{{end}}" href="/catalogs/locations">
+        <span class="nav-label">Locations</span><span class="nav-count mono">{{.Counts.Locations}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "os"}} active{{end}}" href="/catalogs/os">
+        <span class="nav-label">OS</span><span class="nav-count mono">{{.Counts.OS}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "providers"}} active{{end}}" href="/catalogs/providers">
+        <span class="nav-label">Providers</span><span class="nav-count mono">{{.Counts.Providers}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "labels"}} active{{end}}" href="/catalogs/labels">
+        <span class="nav-label">Labels</span><span class="nav-count mono">{{.Counts.Labels}}</span>
+      </a>
+
+      <div class="nav-group">Other</div>
+      <a class="nav-item{{if eq .Nav "yabs"}} active{{end}}" href="/yabs">
+        <span class="nav-label">YABS</span><span class="nav-count mono">{{.Counts.YABS}}</span>
+      </a>
+      <a class="nav-item{{if eq .Nav "notes"}} active{{end}}" href="/notes">
+        <span class="nav-label">Notes</span><span class="nav-count mono">{{.Counts.Notes}}</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="foot-row">
+        <a class="nav-item{{if eq .Nav "settings"}} active{{end}}" href="/settings">
+          <span class="nav-label">Settings</span>
+        </a>
+        <form method="post" action="/prefs/theme" class="theme-form">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button class="icon-btn" type="submit" title="Toggle theme">{{if eq .Theme "dark"}}☀{{else}}☾{{end}}</button>
+        </form>
+      </div>
+      <div class="user-card">
+        <span class="user-name">{{if .User}}{{.User.Name}}{{end}}</span>
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button class="link-btn" type="submit">Log out</button>
+        </form>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    {{if .Flash}}
+    <div class="flash flash-{{.Flash.Kind}}">{{.Flash.Message}}</div>
+    {{end}}
+    {{template "content" .}}
+  </main>
+</div>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,63 @@
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>{{$v.Title}}</h1>
+    <div class="page-sub">{{len $v.Items}} entries</div>
+  </div>
+</header>
+
+<div class="panel">
+  <div id="catalog-list">
+    {{template "catalog_list" .}}
+  </div>
+
+  <form class="inline-add" method="post" action="/catalogs/{{$v.Kind}}"
+        hx-post="/catalogs/{{$v.Kind}}" hx-target="#catalog-list" hx-swap="innerHTML">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="text" name="name" placeholder="Name…" required>
+    <button class="btn btn-primary" type="submit">Add</button>
+  </form>
+</div>
+{{end}}
+
+{{define "catalog_list"}}
+{{$v := .Data}}
+{{if $v.Error}}<div class="flash flash-err">{{$v.Error}}</div>{{end}}
+{{if $v.Items}}
+<table class="tbl">
+  <thead>
+    <tr><th>Name</th>{{if $v.ShowCounts}}<th>Used</th>{{end}}<th class="col-actions"></th></tr>
+  </thead>
+  <tbody>
+    {{range $v.Items}}
+    <tr>
+      <td>
+        <form class="row-edit" method="post" action="/catalogs/{{$v.Kind}}/{{.ID}}/update"
+              hx-post="/catalogs/{{$v.Kind}}/{{.ID}}/update" hx-target="#catalog-list" hx-swap="innerHTML">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <input type="text" name="name" value="{{.Name}}" required>
+          <button class="icon-btn" type="submit" title="Save">✓</button>
+        </form>
+      </td>
+      {{if $v.ShowCounts}}<td class="mono">{{index $v.Counts .ID}}</td>{{end}}
+      <td class="col-actions">
+        <form method="post" action="/catalogs/{{$v.Kind}}/{{.ID}}/delete"
+              hx-post="/catalogs/{{$v.Kind}}/{{.ID}}/delete" hx-target="#catalog-list" hx-swap="innerHTML"
+              hx-confirm="Delete {{.Name}}?">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <button class="icon-btn danger" type="submit" title="Delete">🗑</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{len $v.Items}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">Nothing here yet</div>
+  <div class="empty-sub">Add the first entry below.</div>
+</div>
+{{end}}
+{{end}}

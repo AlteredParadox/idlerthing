@@ -3,6 +3,7 @@ package web
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -220,7 +221,7 @@ func priceYrDisplay(p *model.Pricing, rates map[string]float64) string {
 	if p == nil {
 		return "—"
 	}
-	monthly, ok := pricing.MonthlyUSD(p, rates)
+	monthly, ok := pricing.MonthlyUSDRaw(p, rates)
 	if !ok {
 		return "—"
 	}
@@ -260,7 +261,7 @@ func dueDisplay(next sql.NullString, dueSoonDays int) (string, string) {
 	if len(date) > 10 {
 		date = date[:10]
 	}
-	t, err := time.Parse("2006-01-02", date)
+	t, err := time.ParseInLocation("2006-01-02", date, time.Local)
 	if err != nil {
 		return date, ""
 	}
@@ -552,6 +553,12 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 	return srv, disks, pricing, errs
 }
 
+// validPrice reports whether a price is finite and plausible (ParseFloat
+// accepts NaN/+Inf/-Inf; a bare `price <= 0` check lets NaN through).
+func validPrice(f float64) bool {
+	return !math.IsNaN(f) && !math.IsInf(f, 0) && f > 0 && f <= 1e9
+}
+
 // parsePricingForm parses the optional pricing section. Pricing is only
 // present when a price is entered; then it must be > 0.
 func parsePricingForm(r *http.Request, errs map[string]string) *model.Pricing {
@@ -560,7 +567,7 @@ func parsePricingForm(r *http.Request, errs map[string]string) *model.Pricing {
 		return nil
 	}
 	price, err := strconv.ParseFloat(priceStr, 64)
-	if err != nil || price <= 0 {
+	if err != nil || !validPrice(price) {
 		errs["price"] = "Price must be a number greater than 0."
 		return nil
 	}

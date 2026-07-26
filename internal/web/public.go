@@ -10,10 +10,13 @@ import (
 	"idlerthing/internal/model"
 )
 
-// publicCacheEntry caches the public page for 60s (per Server).
+// publicCacheEntry caches the public page for 60s (per Server), and is
+// also invalidated by the dashboard generation counter (any service write
+// bumps it) so unpublishing a server takes effect immediately.
 type publicCacheEntry struct {
 	mu   sync.Mutex
 	at   time.Time
+	gen  uint64
 	rows []publicRow
 }
 
@@ -40,9 +43,14 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.dash.mu.Lock()
+	gen := s.dash.gen
+	s.dash.mu.Unlock()
+
 	s.publicCache.mu.Lock()
 	rows := s.publicCache.rows
-	fresh := rows != nil && s.publicCache.at.After(time.Now().Add(-60*time.Second))
+	fresh := rows != nil && s.publicCache.gen == gen &&
+		s.publicCache.at.After(time.Now().Add(-60*time.Second))
 	s.publicCache.mu.Unlock()
 
 	if !fresh {
@@ -55,6 +63,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		s.publicCache.mu.Lock()
 		s.publicCache.rows = rows
 		s.publicCache.at = time.Now()
+		s.publicCache.gen = gen
 		s.publicCache.mu.Unlock()
 	}
 

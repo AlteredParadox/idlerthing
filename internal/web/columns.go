@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 )
@@ -120,14 +119,7 @@ func (s *Server) handleServerColsPref(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := "/servers"
-	if ref, err := url.Parse(r.Referer()); err == nil && ref.Path != "" {
-		target = ref.Path
-		if ref.RawQuery != "" {
-			target += "?" + ref.RawQuery
-		}
-	}
-	http.Redirect(w, r, target, http.StatusSeeOther)
+	http.Redirect(w, r, safeRedirectTarget(r.Referer(), "/servers"), http.StatusSeeOther)
 }
 
 // linkSpeedDisplay formats mbps (`500 Mbps`, `1 Gbps`, `10 Gbps`).

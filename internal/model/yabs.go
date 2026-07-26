@@ -3,7 +3,10 @@ package model
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // YABS mirrors the yabs table.
@@ -73,14 +76,34 @@ func scanYABS(row interface{ Scan(...any) error }) (*YABS, error) {
 	return &y, nil
 }
 
+// ErrCapConsumed means the signed (server_id, ts) capability was used before.
+var ErrCapConsumed = errors.New("capability already consumed")
+
+// ErrDuplicatePayload means an identical payload already exists (race-safe).
+var ErrDuplicatePayload = errors.New("duplicate payload")
+
 // Create inserts a run with its speed rows in one transaction, and flips
-// servers.has_yabs on.
-func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed) (int64, error) {
+// servers.has_yabs on. When capTS > 0 the (server_id, ts) capability is
+// consumed atomically in the same transaction (second use → ErrCapConsumed);
+// a payload-hash unique-index violation maps to ErrDuplicatePayload.
+func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed, capTS int64) (int64, error) {
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+
+	if capTS > 0 {
+		res, err := tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO yabs_caps (server_id, ts, consumed_at) VALUES (?, ?, ?)",
+			y.ServerID, capTS, time.Now().UTC().Format(time.RFC3339))
+		if err != nil {
+			return 0, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return 0, ErrCapConsumed
+		}
+	}
 
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO yabs (server_id, run_at, cpu, cpu_cores, ram, swap, distro,
@@ -89,6 +112,9 @@ func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed,
 		y.ServerID, y.RunAt, y.CPU, y.CPUCores, y.RAM, y.Swap, y.Distro,
 		y.Kernel, y.Uptime, y.GeekbenchVersion, y.GbSingle, y.GbMulti, y.GbURL, y.PayloadHash)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return 0, ErrDuplicatePayload
+		}
 		return 0, fmt.Errorf("insert yabs: %w", err)
 	}
 	id, err := res.LastInsertId()
@@ -145,7 +171,7 @@ func (st *YABSStore) IsDuplicate(ctx context.Context, serverID int64, gbURL, pay
 
 // Get returns one run with its speed rows.
 func (st *YABSStore) Get(ctx context.Context, id int64) (*YABS, []YABSDiskSpeed, []YABSNetworkSpeed, error) {
-	y, err := scanYABS(st.DB.QueryRowContext(ctx,
+	y, err := scanYABS(QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
 		"SELECT "+yabsColumns+" FROM yabs WHERE id = ?", id))
 	if err != nil {
 		return nil, nil, nil, err
@@ -162,7 +188,7 @@ func (st *YABSStore) Get(ctx context.Context, id int64) (*YABS, []YABSDiskSpeed,
 }
 
 func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSpeed, error) {
-	rows, err := st.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
 		"SELECT id, yabs_id, block_size, read_mbps, write_mbps FROM yabs_disk_speed WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
@@ -180,7 +206,7 @@ func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSp
 }
 
 func (st *YABSStore) networkSpeeds(ctx context.Context, yabsID int64) ([]YABSNetworkSpeed, error) {
-	rows, err := st.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
 		"SELECT id, yabs_id, location, provider, send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
@@ -199,7 +225,7 @@ func (st *YABSStore) networkSpeeds(ctx context.Context, yabsID int64) ([]YABSNet
 
 // ListFor returns runs for one server, newest first.
 func (st *YABSStore) ListFor(ctx context.Context, serverID int64) ([]YABSListItem, error) {
-	rows, err := st.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx, `
 		SELECT `+prefixedColumns("y", yabsColumns)+`, COALESCE(s.hostname, '')
 		FROM yabs y JOIN servers s ON s.id = y.server_id
 		WHERE y.server_id = ? ORDER BY y.id DESC`, serverID)
@@ -212,7 +238,7 @@ func (st *YABSStore) ListFor(ctx context.Context, serverID int64) ([]YABSListIte
 
 // ListAll returns all runs across servers, newest first.
 func (st *YABSStore) ListAll(ctx context.Context) ([]YABSListItem, error) {
-	rows, err := st.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx, `
 		SELECT `+prefixedColumns("y", yabsColumns)+`, COALESCE(s.hostname, '')
 		FROM yabs y JOIN servers s ON s.id = y.server_id
 		ORDER BY y.id DESC`)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -204,9 +205,14 @@ func firstAny(m map[string]any, paths ...string) any {
 	return nil
 }
 
-// firstInt returns the first path's value as an int.
+// firstInt returns the first path's value as an int (implausible
+// magnitudes collapse to 0 instead of overflowing).
 func firstInt(m map[string]any, paths ...string) int {
-	return int(numberToFloat(firstAny(m, paths...)))
+	f := numberToFloat(firstAny(m, paths...))
+	if f > 1e7 || f < -1e7 {
+		return 0
+	}
+	return int(f)
 }
 
 // numberToFloat converts numbers or numeric strings (units stripped).
@@ -223,8 +229,14 @@ func numberToFloat(v any) float64 {
 }
 
 // parseNumberWithUnit extracts the leading number from e.g. "1.23 Gbits/sec".
+// NaN, infinities, and implausible magnitudes (>1e12) are treated as
+// absent (0) rather than persisted — Go's json encoder rejects non-finite
+// floats, and absurd values would poison exports and displays.
 func parseNumberWithUnit(s string) float64 {
-	f, _ := strconv.ParseFloat(numberPart(s), 64)
+	f, err := strconv.ParseFloat(numberPart(s), 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || math.Abs(f) > 1e12 {
+		return 0
+	}
 	return f
 }
 

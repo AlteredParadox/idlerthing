@@ -27,7 +27,7 @@ benchmarks. SQLite storage, no cgo, no external services required.
 
 ```sh
 make build
-IDLER_ADMIN_PASSWORD=changeme ./idlerthing
+IDLER_ADMIN_PASSWORD='changeme-not-this-one' ./idlerthing
 # open http://127.0.0.1:8080 — log in as admin@localhost
 ```
 
@@ -93,13 +93,14 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/servers
 Every server detail page shows a signed command:
 
 ```sh
-curl -sL yabs.sh | bash -s -- -s https://your-host/api/yabs/1?sig=...&ts=...
+curl -fsSL --proto '=https' https://yabs.sh | bash -s -- -s 'https://your-host/api/yabs/1?sig=...&ts=...'
 ```
 
 Run it on the server; the benchmark (system info, geekbench, fio disk
 speeds, iperf network speeds) appears under **YABS**. Signatures are
-HMAC-SHA256 over `{server_id}.{ts}` and valid for 12 hours; duplicate
-submissions are ignored.
+HMAC-SHA256 over `{server_id}.{ts}` — valid for 2 hours, single-use
+(after a run lands, refresh the server page for a fresh command);
+duplicate submissions are ignored.
 
 ## Tech notes
 

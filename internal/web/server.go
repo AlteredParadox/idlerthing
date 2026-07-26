@@ -91,8 +91,14 @@ func (s *Server) SetBehindTLSProxy(behind bool) {
 }
 
 // SetBaseURL sets the external base URL for the yabs ingest command.
+// Only http(s) URLs without single-quote characters are accepted.
 func (s *Server) SetBaseURL(u string) {
-	s.baseURL = strings.TrimRight(u, "/")
+	u = strings.TrimRight(u, "/")
+	if strings.Contains(u, "'") ||
+		!(strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
+		u = ""
+	}
+	s.baseURL = u
 }
 
 // Handler returns the root handler with the full middleware chain:

@@ -2,11 +2,15 @@ package web
 
 import (
 	"archive/zip"
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"idlerthing/internal/model"
 )
@@ -21,8 +25,26 @@ var exportTypes = map[string]int{
 	"misc":      model.ServiceMisc,
 }
 
+// snapshot begins a read-only transaction so the many export queries see
+// ONE consistent database snapshot (concurrent writes just wait briefly).
+// Model read paths honor the tx via model.WithTx.
+func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) (context.Context, *sql.Tx, bool) {
+	tx, err := s.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return model.WithTx(r.Context(), tx), tx, true
+}
+
 // handleExportJSON handles GET /export/json and GET /export/json/{type}.
 func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
+	ctx, tx, ok := s.snapshot(w, r)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	r = r.WithContext(ctx)
 	typeName := r.PathValue("type")
 	if typeName != "" {
 		if _, ok := exportTypes[typeName]; !ok {
@@ -61,7 +83,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		addKey("pricings", func() (any, error) {
-			rows, err := s.db.QueryContext(r.Context(), `
+			rows, err := model.QuerierFrom(r.Context(), s.db).QueryContext(r.Context(), `
 				SELECT id, service_id, service_type, currency, price, term,
 					next_due_date, active, created_at, updated_at
 				FROM pricings ORDER BY service_type, service_id`)
@@ -102,7 +124,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			return s.exportYABS(r)
 		})
 		addKey("labels_assigned", func() (any, error) {
-			rows, err := s.db.QueryContext(r.Context(),
+			rows, err := model.QuerierFrom(r.Context(), s.db).QueryContext(r.Context(),
 				"SELECT label_id, service_id, service_type FROM labels_assigned ORDER BY service_type, service_id")
 			if err != nil {
 				return nil, err
@@ -122,8 +144,26 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			return items, nil
 		})
 		addKey("notes", func() (any, error) {
-			v, err := (&model.NoteStore{DB: s.db}).ListAll(r.Context())
-			return flattenSlice(v), err
+			notes := &model.NoteStore{DB: s.db}
+			v, err := notes.ListAll(r.Context())
+			if err != nil {
+				return nil, err
+			}
+			ipNotes, err := notes.ListIPNotes(r.Context())
+			if err != nil {
+				return nil, err
+			}
+			out := flattenSlice(v)
+			for _, n := range ipNotes {
+				// Match the {"note": {...}} shape flatten gives embedded
+				// NoteWithTarget, and rename "ipid" → "ip_id" (flatten
+				// names IPID "ipid"; the import format is "ip_id").
+				m := flatten(n).(map[string]any)
+				m["ip_id"] = m["ipid"]
+				delete(m, "ipid")
+				out = append(out, map[string]any{"note": m})
+			}
+			return out, nil
 		})
 		for _, kindStr := range []string{"providers", "locations", "os"} {
 			addKey(kindStr, func() (any, error) {
@@ -135,6 +175,13 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "export failed", http.StatusInternalServerError)
 			return
 		}
+	}
+
+	// Close the snapshot BEFORE writing — a slow client must not pin the
+	// single SQLite connection for the whole response.
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	filename := "idlerthing-export"
@@ -174,9 +221,15 @@ func (s *Server) exportServers(r *http.Request) ([]any, error) {
 			return nil, err
 		}
 		m["disks"] = flattenSlice(disks)
-		labels, _ := (&model.LabelStore{DB: s.db}).ListFor(r.Context(), it.ID, model.ServiceServer)
+		labels, err := (&model.LabelStore{DB: s.db}).ListFor(r.Context(), it.ID, model.ServiceServer)
+		if err != nil {
+			return nil, err
+		}
 		m["labels"] = flattenSlice(labels)
-		ips, _ := (&model.IPStore{DB: s.db}).ListFor(r.Context(), it.ID, model.ServiceServer)
+		ips, err := (&model.IPStore{DB: s.db}).ListFor(r.Context(), it.ID, model.ServiceServer)
+		if err != nil {
+			return nil, err
+		}
 		m["ips"] = flattenSlice(ips)
 		out = append(out, m)
 	}
@@ -224,12 +277,15 @@ func (s *Server) exportService(r *http.Request, serviceType int) ([]any, error) 
 
 // handleExportCSV handles GET /export/csv — a zip with one CSV per type.
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition",
-		"attachment; filename=idlerthing-export-"+time.Now().Format("20060102")+".zip")
+	ctx, tx, ok := s.snapshot(w, r)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	r = r.WithContext(ctx)
 
-	zw := zip.NewWriter(w)
-	defer zw.Close()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
 
 	files := []struct {
 		name    string
@@ -267,6 +323,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	for _, f := range files {
 		rows, err := f.rows()
 		if err != nil {
+			tx.Rollback()
 			http.Error(w, "export failed", http.StatusInternalServerError)
 			return
 		}
@@ -276,6 +333,8 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	for _, f := range computed {
 		fw, err := zw.Create(f.name)
 		if err != nil {
+			tx.Rollback()
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		cw := csv.NewWriter(fw)
@@ -285,16 +344,37 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 		cw.Flush()
 	}
+	if err := zw.Close(); err != nil {
+		tx.Rollback()
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Close the snapshot BEFORE writing the zip out.
+	if err := tx.Commit(); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition",
+		"attachment; filename=idlerthing-export-"+time.Now().Format("20060102")+".zip")
+	w.Write(buf.Bytes())
 }
 
-// csvCell guards against spreadsheet formula injection: values starting
-// with = + - or @ are prefixed with a single quote.
+// csvCell guards against spreadsheet formula injection: values whose
+// FIRST SIGNIFICANT char is = + - or @ are prefixed with a single quote
+// (leading tabs/spaces/control bytes would otherwise bypass the check).
 func csvCell(v string) string {
-	if v == "" {
+	t := strings.TrimLeft(v, " \t\r\n\x00\x0b\x0c")
+	if t == "" {
 		return v
 	}
-	switch v[0] {
+	// ASCII and Unicode full-width formula starters (OWASP).
+	switch t[0] {
 	case '=', '+', '-', '@':
+		return "'" + v
+	}
+	switch r, _ := utf8.DecodeRuneInString(t); r {
+	case '\uFF1D', '\uFF0B', '\uFF0D', '\uFF20':
 		return "'" + v
 	}
 	return v

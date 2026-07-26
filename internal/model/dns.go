@@ -127,7 +127,7 @@ func scanDNSList(rows *sql.Rows) ([]DNSListItem, error) {
 
 // List returns all DNS records, ordered by hostname.
 func (s *DNSStore) List(ctx context.Context) ([]DNSListItem, error) {
-	rows, err := s.DB.QueryContext(ctx, dnsListSelect+" ORDER BY a.hostname COLLATE NOCASE")
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, dnsListSelect+" ORDER BY a.hostname COLLATE NOCASE")
 	if err != nil {
 		return nil, err
 	}

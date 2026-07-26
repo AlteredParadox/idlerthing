@@ -65,7 +65,7 @@ type CatalogStore struct {
 
 // List returns all items of a catalog, ordered by name.
 func (s *CatalogStore) List(ctx context.Context, kind CatalogKind) ([]CatalogItem, error) {
-	rows, err := s.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
 		"SELECT id, "+kind.NameCol+" FROM "+kind.Table+" ORDER BY "+kind.NameCol+" COLLATE NOCASE")
 	if err != nil {
 		return nil, err

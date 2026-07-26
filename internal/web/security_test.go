@@ -255,14 +255,121 @@ func TestYABSCommandBaseURL(t *testing.T) {
 	srv.SetBaseURL("https://idlers.example.com/")
 	req, _ := http.NewRequest("GET", "http://internal:8080/servers/1", nil)
 	cmd := srv.yabsCommand(req, 1)
-	if !strings.HasPrefix(cmd, "curl -sL yabs.sh | bash -s -- -s https://idlers.example.com/api/yabs/1?sig=") {
+	if !strings.Contains(cmd, "-s 'https://idlers.example.com/api/yabs/1?sig=") {
 		t.Fatalf("base url not applied: %s", cmd)
 	}
 
 	// Without it, scheme+Host is used.
 	_, _, srv2 := newTestServerFull(t)
 	cmd = srv2.yabsCommand(req, 1)
-	if !strings.Contains(cmd, "http://internal:8080/api/yabs/1?sig=") {
+	if !strings.Contains(cmd, "-s 'http://internal:8080/api/yabs/1?sig=") {
 		t.Fatalf("fallback host not applied: %s", cmd)
+	}
+}
+
+// #1 — limiter windows actually expire: past the window, attempts reset.
+func TestRateLimiterWindowExpires(t *testing.T) {
+	rl := newRateLimiter(2, 50*time.Millisecond)
+	if !rl.allow("k") {
+		t.Fatal("first attempt should pass")
+	}
+	if !rl.allow("k") {
+		t.Fatal("second attempt should pass")
+	}
+	if rl.allow("k") {
+		t.Fatal("third within window should be denied")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if !rl.allow("k") {
+		t.Fatal("attempt past the window must be allowed again")
+	}
+}
+
+// #2 — login pre-auth hardening.
+func TestLoginHardening(t *testing.T) {
+	ts, _, srv := newTestServerFull(t)
+	csrf := ""
+	getCSRF := func(c *http.Client) string {
+		if csrf == "" {
+			csrf = getLoginCSRF(t, c, ts)
+		}
+		return csrf
+	}
+	_ = getCSRF
+	client := newClient(t)
+	token := getLoginCSRF(t, client, ts)
+
+	// Oversized body → 4xx (MaxBytesReader parse error), no limiter hit.
+	big := "csrf_token=" + token + "&email=" + strings.Repeat("a", 40<<10) + "&password=x"
+	req, _ := http.NewRequest("POST", ts.URL+"/login", strings.NewReader(big))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for _, c := range client.Jar.Cookies(mustURL(t, ts.URL)) {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusSeeOther {
+		t.Fatalf("oversized body should be rejected, got %d", resp.StatusCode)
+	}
+
+	// Multipart → rejected outright.
+	req, _ = http.NewRequest("POST", ts.URL+"/login", strings.NewReader("--x"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("multipart: expected 415, got %d", resp.StatusCode)
+	}
+
+	// Limiter keys are hashed digests, never raw input.
+	if got := limiterKey(strings.Repeat("a", 1<<20)); len(got) != 32 {
+		t.Fatalf("limiter key should be a 32-char hex digest, got %d chars", len(got))
+	}
+	if limiterKey("x") == "x" {
+		t.Fatal("limiter key must not be raw input")
+	}
+	srv.limit.mu.Lock()
+	for k := range srv.limit.hits {
+		if strings.Contains(k, "aaa") {
+			t.Fatal("raw input must not appear as a limiter key")
+		}
+	}
+	srv.limit.mu.Unlock()
+}
+
+// #3 — displayed yabs command is quoted and https-hardened.
+func TestYABSCommandQuoting(t *testing.T) {
+	_, _, srv := newTestServerFull(t)
+	srv.SetBaseURL("https://idlers.example.com")
+	req, _ := http.NewRequest("GET", "http://internal:8080/servers/1", nil)
+	cmd := srv.yabsCommand(req, 1)
+	if !strings.Contains(cmd, "curl -fsSL --proto '=https' https://yabs.sh") {
+		t.Fatalf("curl prefix: %s", cmd)
+	}
+	if !strings.Contains(cmd, "-s 'https://idlers.example.com/api/yabs/1?sig=") {
+		t.Fatalf("URL should be single-quoted: %s", cmd)
+	}
+	if !strings.HasSuffix(cmd, "'") {
+		t.Fatalf("quote should wrap the whole URL incl &ts=: %s", cmd)
+	}
+
+	// behindTLSProxy without base URL → https + host.
+	_, _, srv2 := newTestServerFull(t)
+	srv2.SetBehindTLSProxy(true)
+	cmd = srv2.yabsCommand(req, 1)
+	if !strings.Contains(cmd, "-s 'https://internal:8080/api/yabs/1?sig=") {
+		t.Fatalf("proxy scheme: %s", cmd)
+	}
+
+	// base URL with a quote char is rejected → falls back to host.
+	srv.SetBaseURL("https://evil.com/'x")
+	if srv.baseURL != "" {
+		t.Fatal("quote-containing base URL must be rejected")
 	}
 }

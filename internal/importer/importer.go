@@ -12,6 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"net/netip"
+	"strings"
 
 	"idlerthing/internal/model"
 )
@@ -76,7 +79,8 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 type importer struct {
 	tx        *sql.Tx
 	sum       Summary
-	catMisses int // catalog refs the document couldn't resolve (partial export)
+	catMisses int             // catalog refs the document couldn't resolve (partial export)
+	ipMaps    map[int64]int64 // old ip id → new ip id
 	// idMaps maps service_type → old id → new id.
 	idMaps  [7]map[int64]int64
 	catMaps map[string]map[int64]int64 // catalog kind → old id → new id
@@ -85,6 +89,7 @@ type importer struct {
 
 func (imp *importer) run(ctx context.Context, doc map[string]any) error {
 	imp.catMaps = map[string]map[int64]int64{"labels": {}}
+	imp.ipMaps = map[int64]int64{}
 	for i := range imp.idMaps {
 		imp.idMaps[i] = map[int64]int64{}
 	}
@@ -140,6 +145,9 @@ func (imp *importer) run(ctx context.Context, doc map[string]any) error {
 	if err := imp.labelsAssigned(ctx, doc); err != nil {
 		return err
 	}
+	if err := imp.topLevelPricings(ctx, doc); err != nil {
+		return err
+	}
 	if imp.catMisses > 0 {
 		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
 			"partial export: catalog associations could not be restored for %d rows", imp.catMisses))
@@ -187,11 +195,101 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 			}
 		}
 		imp.sum.YABS++
+		if err := imp.fixTimestamps(ctx, "yabs", yabsID, y); err != nil {
+			return err
+		}
 	}
 	if imp.sum.YABS > 0 {
 		if _, err := imp.tx.ExecContext(ctx, `
 			UPDATE servers SET has_yabs = (SELECT COUNT(*) > 0 FROM yabs WHERE server_id = servers.id)`); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// fixTimestamps preserves exported created_at/updated_at when present
+// (schema defaults apply when absent).
+func (imp *importer) fixTimestamps(ctx context.Context, table string, id int64, m map[string]any) error {
+	created, updated := sget(m, "created_at"), sget(m, "updated_at")
+	if created == "" && updated == "" {
+		return nil
+	}
+	// Table names are compile-time constants from the importer.
+	if _, err := imp.tx.ExecContext(ctx,
+		"UPDATE "+table+" SET created_at = COALESCE(?, created_at), updated_at = COALESCE(?, updated_at) WHERE id = ?",
+		nullStr(created), nullStr(updated), id); err != nil {
+		return fmt.Errorf("preserve timestamps on %s %d: %w", table, id, err)
+	}
+	return nil
+}
+
+// topLevelPricings imports the standalone pricings table (all rows,
+// including inactive ones, with the exported active flag preserved).
+// INSERT OR IGNORE because inlined service pricing may already exist under
+// the same UNIQUE(service_id, service_type). serviceType comes from the
+// document and is validated against the valid pricing terms per batch G.
+func (imp *importer) topLevelPricings(ctx context.Context, doc map[string]any) error {
+	for _, item := range arr(doc, "pricings") {
+		pm, _ := item.(map[string]any)
+		serviceType := int(fget(pm, "service_type"))
+		if serviceType < 1 || serviceType > 6 {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"pricing: service_type %d out of range, skipped", serviceType))
+			continue
+		}
+		oldService := int64(fget(pm, "service_id"))
+		newService, ok := imp.idMaps[serviceType][oldService]
+		if !ok {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"pricing: service %d/%d not in document, skipped", serviceType, oldService))
+			continue
+		}
+		if !validImportPrice(fget(pm, "price")) {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"pricing: invalid price for service %d, skipped", newService))
+			continue
+		}
+		cur, ok := normCurrency(sget(pm, "currency"))
+		if !ok {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"pricing: invalid currency %q, skipped", sget(pm, "currency")))
+			continue
+		}
+		if term := int64(fget(pm, "term")); term < 1 || term > 7 {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"pricing: term %d out of range for service %d, skipped", term, newService))
+			continue
+		}
+		due := sgetN(pm, "next_due_date")
+		if d, ok := normDate(due.String); !ok {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"pricing: invalid next_due_date %q — storing NULL", due.String))
+			due = sql.NullString{}
+		} else if d != "" {
+			due = sql.NullString{String: d, Valid: true}
+		}
+		res, err := imp.tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO pricings (service_id, service_type, currency, price, term, next_due_date, active)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			newService, serviceType, cur, fget(pm, "price"),
+			int64(fget(pm, "term")), due, bint(bget(pm, "active")))
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			imp.sum.Pricings++
+		}
+		// Timestamps apply even when the insert was IGNOREd (the inlined
+		// service pricing created the row first, without timestamps).
+		var pid int64
+		imp.tx.QueryRowContext(ctx,
+			"SELECT id FROM pricings WHERE service_id = ? AND service_type = ?",
+			newService, serviceType).Scan(&pid)
+		if pid > 0 {
+			if err := imp.fixTimestamps(ctx, "pricings", pid, pm); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -267,6 +365,11 @@ func nget(m map[string]any, key string) sql.NullInt64 {
 	if !ok {
 		return sql.NullInt64{}
 	}
+	// JSON itself can't carry NaN/Inf, but out-of-range float→int64 is
+	// implementation-defined — clamp to NULL instead.
+	if math.IsNaN(v) || math.IsInf(v, 0) || v > 1<<62 || v < -(1<<62) {
+		return sql.NullInt64{}
+	}
 	return sql.NullInt64{Int64: int64(v), Valid: true}
 }
 
@@ -336,6 +439,25 @@ func (imp *importer) remapCatalog(table string, old sql.NullInt64) sql.NullInt64
 
 // ---------- pricing ----------
 
+// validImportPrice mirrors the app's finite-price rule for JSON numbers.
+func validImportPrice(f float64) bool {
+	return !math.IsNaN(f) && !math.IsInf(f, 0) && f > 0 && f <= 1e9
+}
+
+// normCurrency validates + uppercases a currency code (^3 ASCII letters).
+func normCurrency(c string) (string, bool) {
+	c = strings.ToUpper(strings.TrimSpace(c))
+	if len(c) != 3 {
+		return "", false
+	}
+	for _, r := range c {
+		if r < 'A' || r > 'Z' {
+			return "", false
+		}
+	}
+	return c, true
+}
+
 // normOwned normalizes an owned_since value from the document.
 func (imp *importer) normOwned(v sql.NullString, serviceName string) sql.NullString {
 	if !v.Valid {
@@ -354,6 +476,17 @@ func (imp *importer) insertPricing(ctx context.Context, pm map[string]any, servi
 	if pm == nil || sget(pm, "currency") == "" {
 		return nil
 	}
+	cur, ok := normCurrency(sget(pm, "currency"))
+	if !ok {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"pricing: invalid currency %q for service %d, skipped", sget(pm, "currency"), serviceID))
+		return nil
+	}
+	if !validImportPrice(fget(pm, "price")) {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"pricing: invalid price for service %d, skipped", serviceID))
+		return nil
+	}
 	if term := int64(fget(pm, "term")); term < 1 || term > 7 {
 		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
 			"pricing: term %d out of range for service %d, skipped", term, serviceID))
@@ -370,7 +503,7 @@ func (imp *importer) insertPricing(ctx context.Context, pm map[string]any, servi
 	_, err := imp.tx.ExecContext(ctx, `
 		INSERT INTO pricings (service_id, service_type, currency, price, term, next_due_date, active)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		serviceID, serviceType, sget(pm, "currency"), fget(pm, "price"),
+		serviceID, serviceType, cur, fget(pm, "price"),
 		int64(fget(pm, "term")), due, bint(bget(pm, "active")))
 	if err == nil {
 		imp.sum.Pricings++
@@ -410,6 +543,9 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 			imp.idMaps[1][old] = newID
 		}
 		imp.sum.Servers++
+		if err := imp.fixTimestamps(ctx, "servers", newID, s); err != nil {
+			return err
+		}
 
 		for _, d := range arr(it, "disks") {
 			dm, _ := d.(map[string]any)
@@ -476,6 +612,11 @@ func (imp *importer) insertIP(ctx context.Context, im map[string]any, serviceID 
 	if addr == "" {
 		return nil
 	}
+	if _, err := netip.ParseAddr(addr); err != nil {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"ip %q: invalid address, skipped", addr))
+		return nil
+	}
 	key := fmt.Sprintf("%d:%d:%s", serviceType, serviceID, addr)
 	if imp.seenIPs[key] {
 		return nil
@@ -490,7 +631,7 @@ func (imp *importer) insertIP(ctx context.Context, im map[string]any, serviceID 
 	if b, ok := im["is_ipv4"].(bool); ok && !b {
 		v4 = 0
 	}
-	_, err := imp.tx.ExecContext(ctx, `
+	res, err := imp.tx.ExecContext(ctx, `
 		INSERT INTO ips (service_id, service_type, address, is_ipv4, country, region, city, org, isp, asn, fetched_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		serviceID, serviceType, addr, v4,
@@ -498,6 +639,11 @@ func (imp *importer) insertIP(ctx context.Context, im map[string]any, serviceID 
 		sgetN(im, "org"), sgetN(im, "isp"), sgetN(im, "asn"), sgetN(im, "fetched_at"))
 	if err == nil {
 		imp.sum.IPs++
+		ipID, _ := res.LastInsertId()
+		if old := oldID(im); old > 0 {
+			imp.ipMaps[old] = ipID
+		}
+		return imp.fixTimestamps(ctx, "ips", ipID, im)
 	}
 	return err
 }
@@ -534,6 +680,9 @@ func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, table
 			imp.idMaps[serviceType][old] = newID
 		}
 		*count++
+		if err := imp.fixTimestamps(ctx, table, newID, h); err != nil {
+			return err
+		}
 		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, serviceType); err != nil {
 			return err
 		}
@@ -568,6 +717,9 @@ func (imp *importer) seedboxes(ctx context.Context, doc map[string]any) error {
 			imp.idMaps[6][old] = newID
 		}
 		imp.sum.Seedboxes++
+		if err := imp.fixTimestamps(ctx, "seedboxes", newID, b); err != nil {
+			return err
+		}
 		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, 6); err != nil {
 			return err
 		}
@@ -598,6 +750,9 @@ func (imp *importer) domains(ctx context.Context, doc map[string]any) error {
 			imp.idMaps[4][old] = newID
 		}
 		imp.sum.Domains++
+		if err := imp.fixTimestamps(ctx, "domains", newID, d); err != nil {
+			return err
+		}
 		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, 4); err != nil {
 			return err
 		}
@@ -625,6 +780,9 @@ func (imp *importer) misc(ctx context.Context, doc map[string]any) error {
 			imp.idMaps[5][old] = newID
 		}
 		imp.sum.Misc++
+		if err := imp.fixTimestamps(ctx, "misc_services", newID, m); err != nil {
+			return err
+		}
 		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, 5); err != nil {
 			return err
 		}
@@ -707,14 +865,18 @@ func (imp *importer) dns(ctx context.Context, doc map[string]any) error {
 		if dnsType == "" {
 			dnsType = "A"
 		}
-		if _, err := imp.tx.ExecContext(ctx, `
+		dres, err := imp.tx.ExecContext(ctx, `
 			INSERT INTO dns (hostname, dns_type, address, server_id, domain_id, shared_id, reseller_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			sget(d, "hostname"), dnsType, sget(d, "address"),
-			remap("server_id", 1), remap("domain_id", 4), remap("shared_id", 2), remap("reseller_id", 3)); err != nil {
+			remap("server_id", 1), remap("domain_id", 4), remap("shared_id", 2), remap("reseller_id", 3))
+		if err != nil {
 			return fmt.Errorf("import dns %q: %w", sget(d, "hostname"), err)
 		}
 		imp.sum.DNS++
+		if err := func() error { dnsID, _ := dres.LastInsertId(); return imp.fixTimestamps(ctx, "dns", dnsID, d) }(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -724,6 +886,30 @@ func (imp *importer) notes(ctx context.Context, doc map[string]any) error {
 		it, _ := item.(map[string]any)
 		n := mget(it, "note")
 		if n == nil {
+			continue
+		}
+		// IP-keyed note: remap ip_id through the ip id map (service fields
+		// are NULL for these — check BEFORE the service guards).
+		if ipOld := nget(n, "ip_id"); ipOld.Valid {
+			newIP, ok := imp.ipMaps[ipOld.Int64]
+			if !ok {
+				continue // parent ip not in this document
+			}
+			body := sget(n, "body")
+			if body == "" {
+				continue
+			}
+			res, err := imp.tx.ExecContext(ctx,
+				"INSERT INTO notes (ip_id, body) VALUES (?, ?)", newIP, body)
+			if err != nil {
+				return err
+			}
+			imp.sum.Notes++
+			if noteID, _ := res.LastInsertId(); noteID > 0 {
+				if err := imp.fixTimestamps(ctx, "notes", noteID, n); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		serviceType := int(fget(n, "service_type"))
@@ -736,6 +922,7 @@ func (imp *importer) notes(ctx context.Context, doc map[string]any) error {
 		if !oldService.Valid {
 			continue
 		}
+
 		newService, ok := imp.idMaps[serviceType][oldService.Int64]
 		if !ok {
 			continue
@@ -744,12 +931,18 @@ func (imp *importer) notes(ctx context.Context, doc map[string]any) error {
 		if body == "" {
 			continue
 		}
-		if _, err := imp.tx.ExecContext(ctx,
+		nres, err := imp.tx.ExecContext(ctx,
 			"INSERT INTO notes (service_id, service_type, body) VALUES (?, ?, ?)",
-			newService, serviceType, body); err != nil {
+			newService, serviceType, body)
+		if err != nil {
 			return err
 		}
 		imp.sum.Notes++
+		if noteID, _ := nres.LastInsertId(); noteID > 0 {
+			if err := imp.fixTimestamps(ctx, "notes", noteID, n); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

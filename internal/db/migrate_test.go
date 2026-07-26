@@ -1,7 +1,9 @@
 package db
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,16 +31,16 @@ func TestMigrateFreshDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 8 || applied[0] != 1 || applied[1] != 2 || applied[2] != 3 || applied[3] != 4 || applied[4] != 5 || applied[5] != 6 || applied[6] != 7 || applied[7] != 8 {
-		t.Fatalf("expected applied=[1 2 3 4 5 6 7 8], got %v", applied)
+	if len(applied) != 10 || applied[0] != 1 || applied[1] != 2 || applied[2] != 3 || applied[3] != 4 || applied[4] != 5 || applied[5] != 6 || applied[6] != 7 || applied[7] != 8 || applied[8] != 9 || applied[9] != 10 {
+		t.Fatalf("expected applied=[1 2 3 4 5 6 7 8 9 10], got %v", applied)
 	}
 
 	var version int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("expected user_version 8, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected user_version 10, got %d", version)
 	}
 
 	for _, table := range expectedTables {
@@ -74,8 +76,8 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("expected user_version 8, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected user_version 10, got %d", version)
 	}
 }
 
@@ -154,8 +156,8 @@ func TestMigration0003UnitConversion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 6 || applied[0] != 3 || applied[1] != 4 || applied[2] != 5 || applied[3] != 6 || applied[4] != 7 || applied[5] != 8 {
-		t.Fatalf("expected migrations [3 4 5 6 7 8] applied, got %v", applied)
+	if len(applied) != 8 || applied[0] != 3 || applied[1] != 4 || applied[2] != 5 || applied[3] != 6 || applied[4] != 7 || applied[5] != 8 || applied[6] != 9 || applied[7] != 10 {
+		t.Fatalf("expected migrations [3 4 5 6 7 8 9 10] applied, got %v", applied)
 	}
 
 	// 0006: legacy network_type values merge into 'IPv4 NAT'.
@@ -205,8 +207,8 @@ func TestMigration0003UnitConversion(t *testing.T) {
 
 	var version int
 	db.QueryRow("PRAGMA user_version").Scan(&version)
-	if version != 8 {
-		t.Fatalf("expected user_version 8, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected user_version 10, got %d", version)
 	}
 }
 
@@ -256,8 +258,8 @@ func TestMigration0007OrphanCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 2 || applied[0] != 7 || applied[1] != 8 {
-		t.Fatalf("expected migrations [7 8], got %v", applied)
+	if len(applied) != 4 || applied[0] != 7 || applied[1] != 8 || applied[2] != 9 || applied[3] != 10 {
+		t.Fatalf("expected migrations [7 8 9 10], got %v", applied)
 	}
 
 	count := func(q string) int {
@@ -276,5 +278,58 @@ func TestMigration0007OrphanCleanup(t *testing.T) {
 	}
 	if n := count("SELECT COUNT(*) FROM labels_assigned"); n != 1 {
 		t.Fatalf("expected 1 legit assignment, got %d", n)
+	}
+}
+
+// TestNewerDBRefused: a user_version beyond the newest migration errors out.
+func TestNewerDBRefused(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA user_version = 99"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Migrate(db); err == nil {
+		t.Fatal("expected refusal of newer database")
+	} else if !strings.Contains(err.Error(), "newer version") {
+		t.Fatalf("wrong error: %v", err)
+	}
+}
+
+// TestOpenPermissions: db dir 0700, file 0600.
+func TestOpenPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "test.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	// Re-open so the post-ping chmod covers the wal/shm siblings too.
+	db.Close()
+	db, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer db.Close()
+
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("dir mode: %o", got)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("db file mode: %o", got)
 	}
 }

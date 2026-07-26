@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -57,7 +59,7 @@ func (c *Client) QueryRange(ctx context.Context, promql string, start, end time.
 		return nil, fmt.Errorf("prometheus returned %d", resp.StatusCode)
 	}
 	var body rangeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if body.Status != "success" {
@@ -177,15 +179,34 @@ var detailMetrics = []string{
 // hours (step 60s). Individual query failures are tolerated — the affected
 // series comes back with Found=false; it never returns a non-nil error.
 func (c *Client) HostDetail(ctx context.Context, instance string) *Detail {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
 	end := time.Now()
 	start := end.Add(-6 * time.Hour)
 	d := &Detail{}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3)
+	var mu sync.Mutex
+	series := map[string]Series{}
 	for _, m := range detailMetrics {
-		points, err := c.QueryRange(ctx, detailQuery(instance, m), start, end, 60)
-		if err != nil {
-			continue
-		}
-		s := summarize(points)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(m string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			points, err := c.QueryRange(ctx, detailQuery(instance, m), start, end, 60)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			series[m] = summarize(points)
+			mu.Unlock()
+		}(m)
+	}
+	wg.Wait()
+	for _, m := range detailMetrics {
+		s := series[m]
 		switch m {
 		case "cpu":
 			d.CPU = s

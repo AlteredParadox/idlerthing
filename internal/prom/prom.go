@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -66,7 +68,7 @@ func (c *Client) Query(ctx context.Context, promql string) ([]Sample, error) {
 		return nil, fmt.Errorf("prometheus returned %d", resp.StatusCode)
 	}
 	var body queryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	if body.Status != "success" {
@@ -124,15 +126,47 @@ var serverQueries = map[string]string{
 	"uptime": `avg_over_time(up[30d:15m]) * 100`,
 }
 
-// ServerMetrics batch-fetches all host metrics. Individual query failures
-// are tolerated — whatever was fetched is returned.
+// queryBatch runs queries with bounded parallelism (3 in flight).
+func (c *Client) queryBatch(ctx context.Context, queries map[string]string) map[string][]Sample {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3)
+	var mu sync.Mutex
+	out := map[string][]Sample{}
+	for key, ql := range queries {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(key, ql string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			samples, err := c.Query(ctx, ql)
+			if err != nil {
+				return // tolerate
+			}
+			mu.Lock()
+			out[key] = samples
+			mu.Unlock()
+		}(key, ql)
+	}
+	wg.Wait()
+	return out
+}
+
+// ServerMetrics batch-fetches all host metrics in parallel (shared 8s
+// deadline across the batch, ~3 queries in flight at a time). Individual
+// query failures are tolerated — whatever was fetched is returned.
 func (c *Client) ServerMetrics(ctx context.Context) *Metrics {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
 	m := &Metrics{
 		ByNodename: map[string]*HostMetrics{},
 		ByInstance: map[string]*HostMetrics{},
 	}
 
+	var mu sync.Mutex
 	hostFor := func(instance string) *HostMetrics {
+		mu.Lock()
+		defer mu.Unlock()
 		h, ok := m.ByInstance[instance]
 		if !ok {
 			h = &HostMetrics{Instance: instance}
@@ -141,9 +175,11 @@ func (c *Client) ServerMetrics(ctx context.Context) *Metrics {
 		return h
 	}
 
+	results := c.queryBatch(ctx, serverQueries)
+
 	apply := func(key string, fn func(Sample)) {
-		samples, err := c.Query(ctx, serverQueries[key])
-		if err != nil {
+		samples, ok := results[key]
+		if !ok {
 			return // tolerate: leave those fields at zero values
 		}
 		m.Healthy = true

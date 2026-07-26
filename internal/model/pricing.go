@@ -141,13 +141,16 @@ type PricingStore struct {
 	DB *sql.DB
 }
 
-// Get returns the active pricing for a service, or nil when none exists.
+// Get returns the CURRENT pricing for a service, or nil when none exists.
+// Inactive pricings are archives — the app only ever reads/writes current
+// pricing, so archived rows are invisible here. Saving (upsert) still
+// reactivates per the documented "saving attaches current pricing" rule.
 func (s *PricingStore) Get(ctx context.Context, serviceType int, serviceID int64) (*Pricing, error) {
 	p := &Pricing{}
 	var active int
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT id, service_id, service_type, currency, price, term, next_due_date, active
-		FROM pricings WHERE service_type = ? AND service_id = ?`, serviceType, serviceID).
+		FROM pricings WHERE service_type = ? AND service_id = ? AND active = 1`, serviceType, serviceID).
 		Scan(&p.ID, &p.ServiceID, &p.ServiceType, &p.Currency, &p.Price, &p.Term, &p.NextDueDate, &active)
 	if err == sql.ErrNoRows {
 		return nil, nil

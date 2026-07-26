@@ -61,14 +61,24 @@ func scanIP(row interface{ Scan(...any) error }) (*IP, error) {
 	return &ip, nil
 }
 
-// Create attaches an IP to a service. Duplicate (service, address) pairs
-// fail with the UNIQUE constraint.
+// Create attaches an IP to a service — atomically, only when the target
+// service exists (a concurrent delete can't leave an orphan). Duplicate
+// (service, address) pairs fail with the UNIQUE constraint.
 func (s *IPStore) Create(ctx context.Context, ip *IP) (int64, error) {
+	table, ok := ServiceTable[ip.ServiceType]
+	if !ok {
+		return 0, sql.ErrNoRows
+	}
+	// Table names come from the fixed ServiceTable map.
 	res, err := s.DB.ExecContext(ctx,
-		"INSERT INTO ips (service_id, service_type, address, is_ipv4) VALUES (?, ?, ?, ?)",
-		ip.ServiceID, ip.ServiceType, ip.Address, boolToInt(ip.IsIPv4))
+		`INSERT INTO ips (service_id, service_type, address, is_ipv4)
+		 SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM `+table+` WHERE id = ?)`,
+		ip.ServiceID, ip.ServiceType, ip.Address, boolToInt(ip.IsIPv4), ip.ServiceID)
 	if err != nil {
 		return 0, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, sql.ErrNoRows
 	}
 	return res.LastInsertId()
 }
@@ -80,7 +90,7 @@ func (s *IPStore) Get(ctx context.Context, id int64) (*IP, error) {
 
 // ListFor returns IPs attached to one service.
 func (s *IPStore) ListFor(ctx context.Context, serviceID int64, serviceType int) ([]IP, error) {
-	rows, err := s.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
 		"SELECT "+ipColumns+" FROM ips WHERE service_id = ? AND service_type = ? ORDER BY address",
 		serviceID, serviceType)
 	if err != nil {
@@ -100,7 +110,7 @@ func (s *IPStore) ListFor(ctx context.Context, serviceID int64, serviceType int)
 
 // ListAll returns every IP with its target's display name.
 func (s *IPStore) ListAll(ctx context.Context) ([]IPWithTarget, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, `
 		SELECT `+prefixedColumns("a", ipColumns)+`, `+TargetNameSQL+` AS target
 		FROM ips a ORDER BY a.address`)
 	if err != nil {

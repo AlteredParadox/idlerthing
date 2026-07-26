@@ -199,13 +199,11 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	// Invalidate all OTHER sessions; keep the current one.
-	currentToken := ""
-	if sess := sessionFromCtx(r.Context()); sess != nil {
-		currentToken = sess.Token
-	}
+	// Invalidate ALL sessions for the user — including the current one,
+	// since a stolen copy of that cookie would otherwise stay valid. A
+	// fresh session is issued on the response right after.
 	if _, err := tx.ExecContext(r.Context(),
-		"DELETE FROM sessions WHERE user_id = ? AND token != ?", u.ID, currentToken); err != nil {
+		"DELETE FROM sessions WHERE user_id = ?", u.ID); err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -213,7 +211,11 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	setFlash(w, "ok", "Password changed. Other sessions were signed out and the API token was revoked.")
+	if err := s.createSession(w, r, u.ID); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	setFlash(w, "ok", "Password changed. All sessions were rotated and the API token was revoked.")
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 

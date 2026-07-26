@@ -243,17 +243,28 @@ func (s *Server) costSumUSDFor(r *http.Request, serviceType int) float64 {
 	if err != nil {
 		return 0
 	}
-	defer rows.Close()
-	rates, _ := s.rates.Get(r.Context())
-	sum := 0.0
+	// Drain + close the cursor BEFORE fetching rates — the exchange-rate
+	// fetch must not hold the single SQLite connection hostage.
+	type priceRow struct {
+		currency string
+		price    float64
+		term     int
+	}
+	var priceRows []priceRow
 	for rows.Next() {
-		var currency string
-		var price float64
-		var term int
-		if err := rows.Scan(&currency, &price, &term); err != nil {
+		var pr priceRow
+		if err := rows.Scan(&pr.currency, &pr.price, &pr.term); err != nil {
+			rows.Close()
 			return 0
 		}
-		if v, ok := pricing.MonthlyUSD(&model.Pricing{Currency: currency, Price: price, Term: term}, rates); ok {
+		priceRows = append(priceRows, pr)
+	}
+	rows.Close()
+
+	rates, _ := s.rates.Get(r.Context())
+	sum := 0.0
+	for _, pr := range priceRows {
+		if v, ok := pricing.MonthlyUSDRaw(&model.Pricing{Currency: pr.currency, Price: pr.price, Term: pr.term}, rates); ok {
 			sum += v
 		}
 	}

@@ -38,16 +38,29 @@ func (s *LabelStore) Assign(ctx context.Context, labelID, serviceID int64, servi
 	if already > 0 {
 		return nil
 	}
+	table, ok := ServiceTable[serviceType]
+	if !ok {
+		return sql.ErrNoRows
+	}
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT INTO labels_assigned (label_id, service_id, service_type)
 		SELECT ?, ?, ?
 		WHERE (SELECT COUNT(*) FROM labels_assigned
-			WHERE service_id = ? AND service_type = ?) < ?`,
-		labelID, serviceID, serviceType, serviceID, serviceType, MaxLabelsPerService)
+			WHERE service_id = ? AND service_type = ?) < ?
+		  AND EXISTS (SELECT 1 FROM `+table+` WHERE id = ?)`,
+		labelID, serviceID, serviceType, serviceID, serviceType, MaxLabelsPerService,
+		serviceID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		// Distinguish "target gone" from "cap reached".
+		var exists int
+		s.DB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM "+table+" WHERE id = ?", serviceID).Scan(&exists)
+		if exists == 0 {
+			return sql.ErrNoRows
+		}
 		return ErrTooManyLabels
 	}
 	return nil
@@ -63,7 +76,7 @@ func (s *LabelStore) Unassign(ctx context.Context, labelID, serviceID int64, ser
 
 // ListFor returns the labels assigned to one service.
 func (s *LabelStore) ListFor(ctx context.Context, serviceID int64, serviceType int) ([]CatalogItem, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, `
 		SELECT l.id, l.label FROM labels l
 		JOIN labels_assigned a ON a.label_id = l.id
 		WHERE a.service_id = ? AND a.service_type = ?
@@ -85,7 +98,7 @@ func (s *LabelStore) ListFor(ctx context.Context, serviceID int64, serviceType i
 
 // AllWithCounts returns every label with its assignment count.
 func (s *LabelStore) AllWithCounts(ctx context.Context) ([]LabelCount, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, `
 		SELECT l.id, l.label,
 			(SELECT COUNT(*) FROM labels_assigned a WHERE a.label_id = l.id) AS used
 		FROM labels l ORDER BY l.label COLLATE NOCASE`)

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -217,15 +218,25 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 		}
 
 		for _, ip := range j.IPs {
-			if ip.Address != "" {
-				s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: ip.IsIPv4 != 0})
+			if ip.Address == "" {
+				continue
 			}
+			if _, err := netip.ParseAddr(ip.Address); err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: invalid ip %q — skipped", s.Hostname, ip.Address))
+				continue
+			}
+			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: ip.IsIPv4 != 0})
 		}
 		s.Labels = parseLabels(j.Labels)
 
-		if j.Pricing != nil && j.Pricing.Price > 0 {
+		if j.Pricing != nil && validImportPrice(j.Pricing.Price) {
+			cur, ok := normCurrency(j.Pricing.Currency)
+			if !ok {
+				warnings = append(warnings, fmt.Sprintf("%s: invalid currency %q — pricing skipped", s.Hostname, j.Pricing.Currency))
+				goto noPricing
+			}
 			p := &myPricing{
-				Currency:    j.Pricing.Currency,
+				Currency:    cur,
 				Price:       j.Pricing.Price,
 				Term:        j.Pricing.Term,
 				NextDueDate: j.Pricing.NextDueDate,
@@ -238,6 +249,7 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 			}
 			s.Pricing = p
 		}
+	noPricing:
 		out = append(out, s)
 	}
 	return out, warnings, nil
@@ -371,13 +383,18 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			}
 		}
 		for _, ip := range ips {
-			if ip.Address != "" {
-				s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: ip.IsIPv4 != 0})
+			if ip.Address == "" {
+				continue
 			}
+			if _, err := netip.ParseAddr(ip.Address); err != nil {
+				warnings = append(warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", i+1, ip.Address))
+				continue
+			}
+			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: ip.IsIPv4 != 0})
 		}
 		s.Labels = parseLabels(json.RawMessage(cell(row, "labels")))
 
-		if price := atof(cell(row, "pricing_price")); price != nil && *price > 0 {
+		if price := atof(cell(row, "pricing_price")); price != nil && validImportPrice(*price) {
 			term := 1
 			if t := atoi(cell(row, "pricing_term")); t != nil {
 				term = int(*t)
@@ -523,15 +540,17 @@ func ImportMyIdlers(ctx context.Context, db *sql.DB, records []MyServer, warning
 			sum.SkippedDup++
 			continue
 		}
-		seen[key] = true
-
 		// Per-row savepoint: a failing row rolls back cleanly without
-		// poisoning the transaction for the rest.
+		// poisoning the transaction for the rest. Counters accumulate into a
+		// row-local delta merged only on success, and the seen mark lands
+		// AFTER the row actually commits (a late failure must not suppress a
+		// later valid row with the same hostname).
 		if _, err := tx.ExecContext(ctx, "SAVEPOINT row"); err != nil {
 			tx.Rollback()
 			return nil, err
 		}
-		if err := importMyServer(ctx, tx, rec, sum); err != nil {
+		var delta MySummary
+		if err := importMyServer(ctx, tx, rec, &delta); err != nil {
 			tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT row")
 			tx.ExecContext(ctx, "RELEASE SAVEPOINT row")
 			sum.Warnings = append(sum.Warnings, fmt.Sprintf("%s: %v", rec.Hostname, err))
@@ -541,6 +560,14 @@ func ImportMyIdlers(ctx context.Context, db *sql.DB, records []MyServer, warning
 			tx.Rollback()
 			return nil, err
 		}
+		seen[key] = true
+		sum.OS += delta.OS
+		sum.Locations += delta.Locations
+		sum.Providers += delta.Providers
+		sum.Labels += delta.Labels
+		sum.Disks += delta.Disks
+		sum.IPs += delta.IPs
+		sum.Pricings += delta.Pricings
 		sum.Imported++
 	}
 
@@ -551,7 +578,8 @@ func ImportMyIdlers(ctx context.Context, db *sql.DB, records []MyServer, warning
 }
 
 // importMyServer inserts one record (server + relations) inside tx.
-func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummary) error {
+// Counts accumulate into delta, merged by the caller only on success.
+func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySummary) error {
 	var osID, locID, provID sql.NullInt64
 	var created bool
 	var err error
@@ -561,7 +589,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 		}
 		osID.Valid = true
 		if created {
-			sum.OS++
+			delta.OS++
 		}
 	}
 	if rec.LocationName != "" {
@@ -570,7 +598,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 		}
 		locID.Valid = true
 		if created {
-			sum.Locations++
+			delta.Locations++
 		}
 	}
 	if rec.ProviderName != "" {
@@ -579,7 +607,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 		}
 		provID.Valid = true
 		if created {
-			sum.Providers++
+			delta.Providers++
 		}
 	}
 
@@ -612,7 +640,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 			serverID, d.SizeMB, d.Media); err != nil {
 			return err
 		}
-		sum.Disks++
+		delta.Disks++
 	}
 	for _, ip := range rec.IPs {
 		if _, err := tx.ExecContext(ctx,
@@ -620,7 +648,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 			serverID, ip.Address, bint(ip.IsIPv4)); err != nil {
 			return err
 		}
-		sum.IPs++
+		delta.IPs++
 	}
 	for i, name := range rec.Labels {
 		if i >= model.MaxLabelsPerService {
@@ -631,7 +659,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 			return err
 		}
 		if created {
-			sum.Labels++
+			delta.Labels++
 		}
 		if _, err := tx.ExecContext(ctx,
 			"INSERT OR IGNORE INTO labels_assigned (label_id, service_id, service_type) VALUES (?, ?, 1)",
@@ -651,7 +679,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, sum *MySummar
 			nullStr(rec.Pricing.NextDueDate)); err != nil {
 			return err
 		}
-		sum.Pricings++
+		delta.Pricings++
 	}
 	return nil
 }

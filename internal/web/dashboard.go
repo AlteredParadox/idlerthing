@@ -81,6 +81,8 @@ var serviceTables = []struct {
 
 // handleDashboard renders the real dashboard.
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	// Note: two concurrent cache misses may both build (benign duplicate
+	// work) — the last store wins, and the view is read-only thereafter.
 	s.dash.mu.Lock()
 	cached := s.dash.view
 	fresh := cached != nil && s.dash.viewGen == s.dash.gen &&
@@ -165,7 +167,7 @@ func (s *Server) computeDashboard(r *http.Request) (*dashboardView, error) {
 	}
 	rows.Close()
 	for _, pr := range priceRows {
-		v, ok := pricing.MonthlyUSD(&model.Pricing{Currency: pr.currency, Price: pr.price, Term: pr.term}, rates)
+		v, ok := pricing.MonthlyUSDRaw(&model.Pricing{Currency: pr.currency, Price: pr.price, Term: pr.term}, rates)
 		if ok {
 			monthlyUSD += v
 		}

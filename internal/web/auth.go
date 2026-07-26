@@ -2,8 +2,10 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"strings"
@@ -65,6 +67,19 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 
 // handleLoginPost validates credentials and creates a session on success.
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
+	// Pre-auth hardening: cap the body before any form parsing (FormValue
+	// otherwise retains huge values as limiter keys), and refuse multipart
+	// outright (its temp-file parsing burns disk for no legitimate use).
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
 	token, err := s.issueLoginCSRF(w) // rotate on every attempt
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -75,17 +90,23 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if ip := s.clientIP(r); !s.limit.allow(ip) {
+	if ip := s.clientIP(r); !s.limit.allow(limiterKey(ip)) {
 		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
 	}
 
 	email := strings.TrimSpace(r.FormValue("email"))
 	password := r.FormValue("password")
+	// Bounded inputs before they become limiter keys or bcrypt work.
+	if len(email) > 254 || len(password) > 256 {
+		s.renderLogin(w, r, token, "Invalid email or password.")
+		return
+	}
 
 	// Per-account limiter alongside the per-IP one, so a distributed
 	// credential-stuffing run against one account still trips.
-	if !s.emailLimit.allow(strings.ToLower(email)) {
+	// Limiter keys are hashed so raw input can't bloat the map.
+	if !s.emailLimit.allow(limiterKey(email)) {
 		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
 	}
@@ -263,10 +284,23 @@ func (rl *rateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	cutoff := time.Now().Add(-rl.window)
-	// Sweep only when the map is big enough to matter.
+	// Always prune the REQUESTED key first — without this, old attempts on a
+	// normal small map would linger forever and lock the account out for good.
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+	kept := rl.hits[key][:0]
+	for _, t := range rl.hits[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+
+	// Sweep UNRELATED keys only when the map is big enough to matter.
 	if len(rl.hits) > sweepThreshold {
 		for k, times := range rl.hits {
+			if k == key {
+				continue
+			}
 			fresh := times[:0]
 			for _, t := range times {
 				if t.After(cutoff) {
@@ -281,18 +315,26 @@ func (rl *rateLimiter) allow(key string) bool {
 		}
 	}
 
-	kept := rl.hits[key]
 	if kept == nil && len(rl.hits) >= maxLimiterKeys {
 		return false // new key beyond cap: fail closed
 	}
 	if len(kept) >= rl.limit {
+		rl.hits[key] = kept
 		return false
 	}
-	rl.hits[key] = append(kept, time.Now())
+	rl.hits[key] = append(kept, now)
 	return true
 }
 
 // constantTimeEqual compares two strings without early exit.
 func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// limiterKey hashes a rate-limit key to a bounded hex digest, so
+// attacker-controlled input (giant emails, spoofed IPs) can't bloat the
+// limiter map.
+func limiterKey(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:16])
 }

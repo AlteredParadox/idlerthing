@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -299,5 +300,165 @@ func TestYABSDeleteScopedToServer(t *testing.T) {
 	database.QueryRow("SELECT COUNT(*) FROM yabs WHERE id = 1").Scan(&n)
 	if n != 0 {
 		t.Fatal("run should be deleted via matching URL")
+	}
+}
+
+// #4 — single-use capabilities: same sig twice (different payloads) → consumed;
+// identical retry → duplicate; >64 disk rows truncated.
+func TestYABSSingleUseCaps(t *testing.T) {
+	ts, database, srv := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "yabs-host")
+
+	now := time.Now().Unix()
+	sig := signYABSTest(srv.secret, 1, now)
+	post := func(body string) *http.Response {
+		resp, err := http.Post(fmt.Sprintf("%s/api/yabs/1?sig=%s&ts=%d", ts.URL, sig, now),
+			"application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// First use: ok.
+	resp := post(yabsFixture)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"ok"`) {
+		t.Fatalf("first use: %d %s", resp.StatusCode, body)
+	}
+
+	// Identical byte-retry: duplicate (idempotent, NOT consumed-error).
+	resp = post(yabsFixture)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "duplicate") {
+		t.Fatalf("identical retry should be duplicate: %s", body)
+	}
+
+	// Same capability, DIFFERENT payload: consumed.
+	resp = post(`{"cpu": {"model": "Other CPU", "cores": 2}, "geekbench": {"version": 6, "single": 1, "multi": 2, "url": ""}}`)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "capability consumed") {
+		t.Fatalf("modified payload on used cap: %d %s", resp.StatusCode, body)
+	}
+
+	// >64 disk rows are truncated at 64.
+	var many strings.Builder
+	many.WriteString(`{"disk": {"fio": [`)
+	for i := 0; i < 80; i++ {
+		if i > 0 {
+			many.WriteString(",")
+		}
+		fmt.Fprintf(&many, `{"bs": "%dk", "read": "1 MB/s", "write": "1 MB/s"}`, i+1)
+	}
+	many.WriteString(`]}}`)
+	fresh := now + 1
+	resp2, err := http.Post(fmt.Sprintf("%s/api/yabs/1?sig=%s&ts=%d", ts.URL, signYABSTest(srv.secret, 1, fresh), fresh),
+		"application/json", strings.NewReader(many.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	var diskRows int
+	database.QueryRow("SELECT COUNT(*) FROM yabs_disk_speed WHERE yabs_id = 2").Scan(&diskRows)
+	if diskRows != 64 {
+		t.Fatalf("expected 64 capped disk rows, got %d", diskRows)
+	}
+}
+
+// #6 — password change rotates the session (old cookie dies, new one works).
+func TestPasswordChangeRotatesSession(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := authedClient(t, ts)
+
+	var oldToken string
+	for _, c := range client.Jar.Cookies(mustURL(t, ts.URL)) {
+		if c.Name == sessionCookieName {
+			oldToken = c.Value
+		}
+	}
+	if oldToken == "" {
+		t.Fatal("expected session cookie")
+	}
+
+	resp := postForm(t, client, ts, "/settings/account", url.Values{
+		"action": {"password"}, "current_password": {testPassword},
+		"new_password": {"newpassword1"}, "confirm_password": {"newpassword1"},
+	})
+	resp.Body.Close()
+
+	// The cookie in the jar must be NEW (rotated), and must work.
+	var newToken string
+	for _, c := range client.Jar.Cookies(mustURL(t, ts.URL)) {
+		if c.Name == sessionCookieName {
+			newToken = c.Value
+		}
+	}
+	if newToken == "" || newToken == oldToken {
+		t.Fatal("session must be rotated to a fresh token")
+	}
+	resp, err := client.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rotated session should work, got %d", resp.StatusCode)
+	}
+
+	// The OLD token is dead: replay it manually.
+	jarless := newClient(t)
+	jarless.Jar.SetCookies(mustURL(t, ts.URL), []*http.Cookie{{Name: sessionCookieName, Value: oldToken}})
+	resp, err = jarless.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("old session should be dead, got %d", resp.StatusCode)
+	}
+}
+
+// #7 — NaN price rejected on the web form; writeJSON NaN → 500 not partial 200.
+func TestValidPriceAndWriteJSON(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := authedClient(t, ts)
+
+	resp := postForm(t, client, ts, "/servers", url.Values{
+		"hostname": {"nan-srv"}, "server_type": {"1"}, "active": {"on"},
+		"price": {"NaN"}, "currency": {"USD"}, "term": {"1"},
+	})
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, "Price must be a number greater than 0") {
+		t.Fatal("NaN price should be rejected on the form")
+	}
+
+	// writeJSON with a NaN must 500 cleanly, not write a partial 200.
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]float64{"v": math.NaN()})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on NaN encode, got %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, map[string]string{"ok": "yes"})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok":"yes"`) {
+		t.Fatal("normal encode should work")
+	}
+}
+
+// #8 — formula check can't be bypassed with leading whitespace.
+func TestCSVCellWhitespaceBypass(t *testing.T) {
+	if got := csvCell("\t=1+1"); !strings.HasPrefix(got, "'") {
+		t.Fatalf("tab-prefixed formula should be quoted: %q", got)
+	}
+	if got := csvCell("  @sum"); !strings.HasPrefix(got, "'") {
+		t.Fatalf("space-prefixed formula should be quoted: %q", got)
+	}
+	if got := csvCell("plain"); got != "plain" {
+		t.Fatalf("plain cell untouched: %q", got)
 	}
 }

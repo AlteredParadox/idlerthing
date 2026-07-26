@@ -161,7 +161,7 @@ func (st *ServerStore) Get(ctx context.Context, id int64) (*Server, []ServerDisk
 
 // Disks returns the disks of one server.
 func (st *ServerStore) Disks(ctx context.Context, serverID int64) ([]ServerDisk, error) {
-	rows, err := st.DB.QueryContext(ctx,
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
 		"SELECT id, server_id, size_as_mb, media FROM server_disks WHERE server_id = ? ORDER BY id", serverID)
 	if err != nil {
 		return nil, err
@@ -322,7 +322,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 	}
 	query += " ORDER BY " + orderBy
 
-	rows, err := st.DB.QueryContext(ctx, query, args...)
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

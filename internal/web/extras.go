@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -312,14 +313,21 @@ type ipwhoIsResp struct {
 }
 
 // fetchWhois looks up one address (rate-limited, 5s timeout).
+// errWhoisThrottled means a refresh came in under the 1/s throttle.
+var errWhoisThrottled = errors.New("whois refresh throttled")
+
 func (s *Server) fetchWhois(ctx context.Context, address string) (*model.WhoisData, error) {
+	// Throttle without sleeping under the lock: too-recent calls bounce
+	// immediately instead of queueing goroutines.
 	s.whoisRate.mu.Lock()
-	wait := time.Until(s.whoisRate.last.Add(time.Second))
-	if wait > 0 {
-		time.Sleep(wait)
+	tooRecent := time.Since(s.whoisRate.last) < time.Second
+	if !tooRecent {
+		s.whoisRate.last = time.Now()
 	}
-	s.whoisRate.last = time.Now()
 	s.whoisRate.mu.Unlock()
+	if tooRecent {
+		return nil, errWhoisThrottled
+	}
 
 	base := s.whoisURL
 	if base == "" {
@@ -339,7 +347,7 @@ func (s *Server) fetchWhois(ctx context.Context, address string) (*model.WhoisDa
 		return nil, fmt.Errorf("whois service returned %d", resp.StatusCode)
 	}
 	var body ipwhoIsResp
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
 		return nil, err
 	}
 	if !body.Success {
@@ -374,7 +382,11 @@ func (s *Server) handleIPWhois(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := s.fetchWhois(r.Context(), ip.Address)
 	if err != nil {
-		setFlash(w, "err", "Whois refresh failed — keeping old data.")
+		if errors.Is(err, errWhoisThrottled) {
+			setFlash(w, "err", "Slow down — one whois refresh per second.")
+		} else {
+			setFlash(w, "err", "Whois refresh failed — keeping old data.")
+		}
 		redirectBack(w, r, "/ips")
 		return
 	}

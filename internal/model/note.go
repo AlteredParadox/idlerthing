@@ -30,13 +30,26 @@ type NoteStore struct {
 	DB *sql.DB
 }
 
-// Create inserts a service note.
+// Create inserts a service note — atomically, only when the target
+// service exists (a concurrent delete can't leave an orphan).
 func (s *NoteStore) Create(ctx context.Context, n *Note) (int64, error) {
+	if !n.ServiceID.Valid || !n.ServiceType.Valid {
+		return 0, sql.ErrNoRows
+	}
+	serviceType := int(n.ServiceType.Int64)
+	table, ok := ServiceTable[serviceType]
+	if !ok {
+		return 0, sql.ErrNoRows
+	}
 	res, err := s.DB.ExecContext(ctx,
-		"INSERT INTO notes (service_id, service_type, body) VALUES (?, ?, ?)",
-		n.ServiceID, n.ServiceType, n.Body)
+		`INSERT INTO notes (service_id, service_type, body)
+		 SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM `+table+` WHERE id = ?)`,
+		n.ServiceID, n.ServiceType, n.Body, n.ServiceID.Int64)
 	if err != nil {
 		return 0, err
+	}
+	if r, _ := res.RowsAffected(); r == 0 {
+		return 0, sql.ErrNoRows
 	}
 	return res.LastInsertId()
 }
@@ -56,7 +69,7 @@ func (s *NoteStore) ListFor(ctx context.Context, serviceID int64, serviceType in
 
 // ListAll returns every service note with its target's display name.
 func (s *NoteStore) ListAll(ctx context.Context) ([]NoteWithTarget, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, `
 		SELECT a.id, a.service_id, a.service_type, a.ip_id, a.body, a.created_at, a.updated_at,
 			`+TargetNameSQL+` AS target
 		FROM notes a
@@ -76,6 +89,18 @@ func (s *NoteStore) ListAll(ctx context.Context) ([]NoteWithTarget, error) {
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+// ListIPNotes returns notes attached to IPs (ip_id IS NOT NULL).
+func (s *NoteStore) ListIPNotes(ctx context.Context) ([]Note, error) {
+	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx, `
+		SELECT id, service_id, service_type, ip_id, body, created_at, updated_at
+		FROM notes WHERE ip_id IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNotes(rows)
 }
 
 // Delete removes a note.

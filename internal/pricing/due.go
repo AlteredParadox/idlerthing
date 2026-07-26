@@ -16,7 +16,16 @@ import (
 func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 	today := time.Now().Format("2006-01-02")
 
-	rows, err := db.QueryContext(ctx, `
+	// Select candidates and update INSIDE one transaction, with a
+	// compare-and-swap WHERE on the old date — a concurrent pricing edit
+	// between select and update is never overwritten.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id, term, next_due_date FROM pricings
 		WHERE active = 1 AND next_due_date IS NOT NULL AND next_due_date < ?
 		  AND term != ?`, today, model.TermOneTime)
@@ -47,11 +56,6 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 	// midnight — otherwise early-morning rows in UTC+N zones get selected
 	// but never advanced.
 	todayStart, _ := time.Parse("2006-01-02", today)
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	for _, dr := range pending {
 		due, err := time.Parse("2006-01-02", dr.due)
 		if err != nil {
@@ -64,10 +68,14 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 		for due.Before(todayStart) {
 			due = AddMonthsClamped(due, months)
 		}
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE pricings SET next_due_date = ? WHERE id = ?",
-			due.Format("2006-01-02"), dr.id); err != nil {
+		res, err := tx.ExecContext(ctx,
+			"UPDATE pricings SET next_due_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND next_due_date = ?",
+			due.Format("2006-01-02"), dr.id, dr.due)
+		if err != nil {
 			return updated, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue // changed concurrently — leave it alone
 		}
 		updated++
 	}

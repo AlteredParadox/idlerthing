@@ -186,7 +186,7 @@ func (st *SeedboxStore) List(ctx context.Context, opts ListOptions) ([]SeedboxLi
 	}
 	query += " ORDER BY " + orderBy
 
-	rows, err := st.DB.QueryContext(ctx, query, args...)
+	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

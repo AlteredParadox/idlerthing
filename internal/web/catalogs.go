@@ -134,6 +134,9 @@ func (s *Server) respondCatalogMutation(w http.ResponseWriter, r *http.Request, 
 		http.Redirect(w, r, "/catalogs/"+kindStr, http.StatusSeeOther)
 		return
 	}
+	if errMsg == "" {
+		s.touchDashboard() // successful htmx mutations invalidate too
+	}
 	items, err := s.catalogs.List(r.Context(), kind)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)

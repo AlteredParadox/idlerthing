@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -157,5 +158,38 @@ func TestUptimePct(t *testing.T) {
 	v, err := New(ts.URL).UptimePct(context.Background(), "a:9100")
 	if err != nil || v != 99.95 {
 		t.Fatalf("uptime: %v %v", v, err)
+	}
+}
+
+// Batch I #7 — ServerMetrics runs its 8 queries with bounded parallelism
+// (≤3 in flight) and still finishes well under the sequential cost.
+func TestServerMetricsConcurrencyBound(t *testing.T) {
+	var inflight, maxInflight int32
+	ts := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&inflight, 1)
+		for {
+			m := atomic.LoadInt32(&maxInflight)
+			if n <= m || atomic.CompareAndSwapInt32(&maxInflight, m, n) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		atomic.AddInt32(&inflight, -1)
+		fmt.Fprint(w, vectorJSON(sample(`"instance":"a:9100","nodename":"host-a"`, "1")))
+	})
+
+	start := time.Now()
+	m := New(ts.URL).ServerMetrics(context.Background())
+	elapsed := time.Since(start)
+
+	if got := atomic.LoadInt32(&maxInflight); got > 3 {
+		t.Fatalf("parallelism bound violated: %d in flight", got)
+	}
+	// 8 queries at 50ms: sequential = 400ms; 3-wide ≈ 150ms (+ slack).
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("batch looks sequential: %v", elapsed)
+	}
+	if !m.Healthy {
+		t.Fatal("expected healthy batch")
 	}
 }

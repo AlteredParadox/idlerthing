@@ -193,12 +193,17 @@ func loadSecret(cfg config.Config) ([]byte, error) {
 	}
 	path := cfg.DBPath + ".secret"
 	if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
+		// Tighten an existing secret file (best-effort, warn only).
+		if err := os.Chmod(path, 0o600); err != nil {
+			slog.Warn("chmod secret file failed", "path", path, "err", err)
+		}
 		return raw, nil
 	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
+	// Written explicitly 0600 regardless of umask.
 	if err := os.WriteFile(path, secret, 0o600); err != nil {
 		return nil, fmt.Errorf("persist secret: %w", err)
 	}
@@ -226,6 +231,9 @@ func seedAdmin(db *sql.DB, password string) error {
 			return err
 		}
 		generated = true
+	} else if len(password) < 8 {
+		// Same policy as the settings UI — never silently seed a weak admin.
+		return fmt.Errorf("IDLER_ADMIN_PASSWORD must be at least 8 characters")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

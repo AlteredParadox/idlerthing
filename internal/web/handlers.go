@@ -77,10 +77,7 @@ func (s *Server) handleThemePref(w http.ResponseWriter, r *http.Request) {
 	}
 	s.db.ExecContext(r.Context(), "UPDATE settings SET theme = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", next)
 
-	target := "/"
-	if ref, err := url.Parse(r.Referer()); err == nil && ref.Path != "" {
-		target = ref.Path // same-origin path only
-	}
+	target := safeRedirectTarget(r.Referer(), "/")
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
@@ -157,12 +154,24 @@ func (s *Server) handleShortHostnamesPref(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	target := "/servers"
-	if ref, err := url.Parse(r.Referer()); err == nil && ref.Path != "" {
-		target = ref.Path
-		if ref.RawQuery != "" {
-			target += "?" + ref.RawQuery
-		}
-	}
+	target := safeRedirectTarget(r.Referer(), "/servers")
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// safeRedirectTarget validates a Referer header into a redirect target:
+// same-origin absolute paths only — no protocol-relative //evil.com, no
+// backslashes, no scheme/host.
+func safeRedirectTarget(referer, fallback string) string {
+	ref, err := url.Parse(referer)
+	if err != nil {
+		return fallback
+	}
+	p := ref.Path
+	if p == "" || strings.HasPrefix(p, "//") || strings.Contains(p, "\\") {
+		return fallback
+	}
+	if ref.RawQuery != "" {
+		p += "?" + ref.RawQuery
+	}
+	return p
 }

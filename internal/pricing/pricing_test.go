@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,5 +184,93 @@ func TestAdvanceDueDates(t *testing.T) {
 	}
 	if dueOf(future) != "2099-01-01" {
 		t.Fatal("future due should not advance")
+	}
+}
+
+// Batch I #7 — a failing endpoint is fetched ONCE across concurrent Gets
+// (singleflight) and not retried for 60s (negative caching).
+func TestRatesSingleflightAndBackoff(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	r := &Rates{BaseURL: ts.URL}
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := r.Get(context.Background()); ok {
+				t.Error("failing endpoint should report ok=false")
+			}
+		}()
+	}
+	wg.Wait()
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("expected 1 fetch across 3 concurrent Gets, got %d", n)
+	}
+
+	// Within the 60s backoff window another Get must NOT refetch.
+	if _, ok := r.Get(context.Background()); ok {
+		t.Fatal("still failing: ok should be false")
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("backoff window refetched: %d calls", n)
+	}
+}
+
+// Batch I #8 — archived (active=0) pricings are invisible to PricingStore.Get.
+func TestPricingStoreArchivedInvisible(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	st := &model.PricingStore{DB: database}
+
+	if _, err := database.Exec(`
+		INSERT INTO pricings (service_id, service_type, currency, price, term, active)
+		VALUES (1, 1, 'USD', 10, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	p, err := st.Get(ctx, 1, 1)
+	if err != nil || p == nil || p.Price != 10 {
+		t.Fatalf("active pricing should be visible: %v %v", p, err)
+	}
+
+	if _, err := database.Exec("UPDATE pricings SET active = 0 WHERE service_id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	p, err = st.Get(ctx, 1, 1)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if p != nil {
+		t.Fatalf("archived pricing must be invisible, got %+v", p)
+	}
+}
+
+// Batch I #16 — the due-date advance CAS bumps updated_at.
+func TestAdvanceDueDatesBumpsUpdatedAt(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+
+	res, err := database.Exec(`
+		INSERT INTO pricings (service_id, service_type, currency, price, term, next_due_date, created_at, updated_at)
+		VALUES (1, 1, 'USD', 10, 1, '2020-01-15', '2020-01-01 00:00:00', '2020-01-01 00:00:00')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+
+	if n, err := AdvanceDueDates(ctx, database); err != nil || n != 1 {
+		t.Fatalf("advance: n=%d err=%v", n, err)
+	}
+	var updatedAt string
+	if err := database.QueryRow("SELECT updated_at FROM pricings WHERE id = ?", id).Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAt == "2020-01-01 00:00:00" {
+		t.Fatalf("updated_at not bumped: %q", updatedAt)
 	}
 }

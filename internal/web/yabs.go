@@ -6,10 +6,12 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"idlerthing/internal/model"
@@ -46,20 +48,28 @@ func (s *Server) validYABSSig(serverID int64, ts int64, sig string) bool {
 }
 
 // yabsCommand builds the ingest command shown on the server detail page.
-// IDLER_BASE_URL wins when set; otherwise the request's scheme+Host is
-// used (Host-header derived, which may be wrong behind proxies).
+// The URL is POSIX-single-quoted — unquoted, the &ts= would background the
+// shell command and the ingest would fail with a 403. IDLER_BASE_URL wins
+// when set (validated http(s), no single-quote chars); otherwise the
+// request's Host is used, https when TLS or behind a TLS proxy.
 func (s *Server) yabsCommand(r *http.Request, serverID int64) string {
 	ts := time.Now().Unix()
 	base := s.baseURL
 	if base == "" {
 		scheme := "http"
-		if r.TLS != nil {
+		if r.TLS != nil || s.behindTLSProxy {
 			scheme = "https"
 		}
 		base = scheme + "://" + r.Host
 	}
-	return fmt.Sprintf("curl -sL yabs.sh | bash -s -- -s %s/api/yabs/%d?sig=%s&ts=%d",
-		base, serverID, s.signYABS(serverID, ts), ts)
+	return fmt.Sprintf("curl -fsSL --proto '=https' https://yabs.sh | bash -s -- -s %s",
+		shellQuote(fmt.Sprintf("%s/api/yabs/%d?sig=%s&ts=%d",
+			base, serverID, s.signYABS(serverID, ts), ts)))
+}
+
+// shellQuote single-quotes a string for POSIX shells (' → '"'"').
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 // handleYABSIngest handles POST /api/yabs/{id} — public, signature-authed.
@@ -89,22 +99,37 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusRequestEntityTooLarge, "body too large")
 		return
 	}
+
+	st := &model.YABSStore{DB: s.db}
+
+	// Byte-identical retry? Answer WITHOUT parsing — but still consume the
+	// capability if it's unused, so a replay can't be re-parsed for hours.
+	hash := sha256.Sum256(body)
+	hashHex := hex.EncodeToString(hash[:])
+	dup, err := st.IsDuplicate(r.Context(), serverID, "", hashHex)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if dup {
+		if _, err := s.db.ExecContext(r.Context(),
+			"INSERT OR IGNORE INTO yabs_caps (server_id, ts, consumed_at) VALUES (?, ?, ?)",
+			serverID, ts, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
+		return
+	}
+
 	result, err := yabs.Parse(body)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "invalid yabs JSON")
 		return
 	}
 
-	st := &model.YABSStore{DB: s.db}
-	dup, err := st.IsDuplicate(r.Context(), serverID, result.GbURL, result.PayloadHash)
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if dup {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
-		return
-	}
+	// gb_url duplicates surface as a unique-index violation at insert time
+	// (migration 0010) and map to duplicate inside Create.
 
 	run := &model.YABS{
 		ServerID:         serverID,
@@ -126,21 +151,36 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 	} else {
 		run.RunAt = sqlNs(time.Now().UTC().Format(time.RFC3339))
 	}
+	// Cap child rows per run; a note goes nowhere — truncation is silent
+	// by design (payloads claiming more are almost certainly abusive).
 	var disks []model.YABSDiskSpeed
-	for _, d := range result.Disks {
+	for i, d := range result.Disks {
+		if i >= 64 {
+			break
+		}
 		disks = append(disks, model.YABSDiskSpeed{BlockSize: d.BlockSize, ReadMbps: d.ReadMbps, WriteMbps: d.WriteMbps})
 	}
 	var network []model.YABSNetworkSpeed
-	for _, n := range result.Network {
+	for i, n := range result.Network {
+		if i >= 64 {
+			break
+		}
 		network = append(network, model.YABSNetworkSpeed{
 			Location: n.Location, Provider: n.Provider,
 			SendMbps: n.SendMbps, RecvMbps: n.RecvMbps, LatencyMs: n.LatencyMs,
 		})
 	}
 
-	id, err := st.Create(r.Context(), run, disks, network)
+	id, err := st.Create(r.Context(), run, disks, network, ts)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		switch {
+		case errors.Is(err, model.ErrCapConsumed):
+			writeAPIError(w, http.StatusForbidden, "capability consumed")
+		case errors.Is(err, model.ErrDuplicatePayload):
+			writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
+		default:
+			writeAPIError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
 	s.touchDashboard()

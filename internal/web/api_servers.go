@@ -3,6 +3,7 @@ package web
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,15 +93,25 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 			srv.OwnedSince = sql.NullString{String: j.OwnedSince, Valid: true}
 		}
 	}
+	// Bounds aligned with the web form.
 	for _, v := range []struct {
 		name string
 		p    *int64
+		max  int64
 	}{
-		{"ram_as_mb", j.RamAsMB}, {"cpu", j.CPU}, {"bandwidth_as_mb", j.BandwidthAsMB},
-		{"link_speed", j.LinkSpeed}, {"ssh_port", j.SSHPort},
+		{"ram_as_mb", j.RamAsMB, 1 << 30},
+		{"cpu", j.CPU, 1024},
+		{"bandwidth_as_mb", j.BandwidthAsMB, 1 << 30},
+		{"link_speed", j.LinkSpeed, 1 << 20},
+		{"ssh_port", j.SSHPort, 65535},
 	} {
-		if v.p != nil && *v.p < 0 {
-			errs[v.name] = "must be >= 0"
+		if v.p != nil && (*v.p < 0 || *v.p > v.max) {
+			errs[v.name] = "out of range"
+		}
+	}
+	for i, d := range j.Disks {
+		if d.SizeAsMB < 0 || d.SizeAsMB > 1<<30 {
+			errs[fmt.Sprintf("disks[%d].size_as_mb", i)] = "out of range"
 		}
 	}
 
@@ -120,8 +131,8 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 
 	var pricing *model.Pricing
 	if j.Pricing != nil {
-		if j.Pricing.Price <= 0 {
-			errs["price"] = "price must be > 0"
+		if !validPrice(j.Pricing.Price) {
+			errs["price"] = "price must be finite and > 0"
 		} else {
 			currency := validCurrency(j.Pricing.Currency)
 			term := j.Pricing.Term
@@ -187,7 +198,7 @@ func (s *Server) handleAPIServers(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeList(w, r, flattenSlice(items))
+	writeTypedList(w, r, items)
 }
 
 // handleAPIServerGet returns one server with relations.

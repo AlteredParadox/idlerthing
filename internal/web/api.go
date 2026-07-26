@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
@@ -80,11 +81,18 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 
 // ---------- JSON helpers ----------
 
-// writeJSON sends v as JSON with the given status.
+// writeJSON sends v as JSON with the given status. Encoding happens into
+// a buffer FIRST so a serialization failure (e.g. NaN) yields a clean 500
+// instead of a partial 200.
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	w.Write(buf.Bytes())
 }
 
 // writeAPIError sends the error envelope.
@@ -113,24 +121,27 @@ func parsePagination(r *http.Request) apiPagination {
 	return apiPagination{Page: page, Per: per}
 }
 
-// paginate slices items and writes the list envelope.
-func (s *Server) writeList(w http.ResponseWriter, r *http.Request, items []any) {
-	p := parsePagination(r)
-	total := len(items)
-	start := (p.Page - 1) * p.Per
-	if start > total {
-		start = total
+// pageWindow computes safe slice bounds. start is computed WITHOUT
+// overflow-prone multiplication: (page-1)*per can wrap for huge pages.
+func pageWindow(page, per, total int) (int, int, int, int) {
+	start := 0
+	if page > 1 {
+		// Equivalent to (page-1)*per clamped to total, without overflow:
+		// any page beyond the last yields an empty window.
+		if page-1 > total/per+1 {
+			start = total
+		} else {
+			start = (page - 1) * per
+			if start > total {
+				start = total
+			}
+		}
 	}
-	end := start + p.Per
+	end := start + per
 	if end > total {
 		end = total
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"data":  items[start:end],
-		"page":  p.Page,
-		"per":   p.Per,
-		"total": total,
-	})
+	return page, per, start, end
 }
 
 // flatten converts model structs (incl. sql.Null* fields) into plain
@@ -211,6 +222,7 @@ func camelToSnake(s string) string {
 	return b.String()
 }
 
+// flattenSlice flattens a typed slice (already page-windowed by callers).
 func flattenSlice[T any](items []T) []any {
 	out := make([]any, len(items))
 	for i, it := range items {
@@ -219,41 +231,62 @@ func flattenSlice[T any](items []T) []any {
 	return out
 }
 
+// writeTypedList pages typed rows (sliced BEFORE flattening, so the
+// reflection only processes the returned page) and writes the envelope.
+func writeTypedList[T any](w http.ResponseWriter, r *http.Request, items []T) {
+	p := parsePagination(r)
+	_, _, start, end := pageWindow(p.Page, p.Per, len(items))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":  flattenSlice(items[start:end]),
+		"page":  p.Page,
+		"per":   p.Per,
+		"total": len(items),
+	})
+}
+
 // ---------- Read endpoints ----------
 
 // handleAPIServiceList returns a paginated list for one service type.
 func (s *Server) handleAPIServiceList(serviceType int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var items []any
-		var err error
 		opts := model.ListOptions{Status: "all"}
 		switch serviceType {
 		case model.ServiceShared:
-			var v []model.HostingListItem
-			v, err = (&model.SharedStore{DB: s.db}).List(r.Context(), opts)
-			items = flattenSlice(v)
+			v, err := (&model.SharedStore{DB: s.db}).List(r.Context(), opts)
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			writeTypedList(w, r, v)
 		case model.ServiceReseller:
-			var v []model.HostingListItem
-			v, err = (&model.ResellerStore{DB: s.db}).List(r.Context(), opts)
-			items = flattenSlice(v)
+			v, err := (&model.ResellerStore{DB: s.db}).List(r.Context(), opts)
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			writeTypedList(w, r, v)
 		case model.ServiceSeedbox:
-			var v []model.SeedboxListItem
-			v, err = (&model.SeedboxStore{DB: s.db}).List(r.Context(), opts)
-			items = flattenSlice(v)
+			v, err := (&model.SeedboxStore{DB: s.db}).List(r.Context(), opts)
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			writeTypedList(w, r, v)
 		case model.ServiceDomain:
-			var v []model.DomainListItem
-			v, err = (&model.DomainStore{DB: s.db}).List(r.Context(), opts)
-			items = flattenSlice(v)
+			v, err := (&model.DomainStore{DB: s.db}).List(r.Context(), opts)
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			writeTypedList(w, r, v)
 		case model.ServiceMisc:
-			var v []model.MiscListItem
-			v, err = (&model.MiscStore{DB: s.db}).List(r.Context(), opts)
-			items = flattenSlice(v)
+			v, err := (&model.MiscStore{DB: s.db}).List(r.Context(), opts)
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			writeTypedList(w, r, v)
 		}
-		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		s.writeList(w, r, items)
 	}
 }
 
@@ -330,19 +363,24 @@ func (s *Server) handleAPIPricings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Names came along in the main query (no per-row N+1).
-	var items []any
-	for i, p := range pricings {
-		m := flatten(p).(map[string]any)
+	// Names came along in the main query (no per-row N+1). Slice BEFORE
+	// flattening so only the returned page goes through reflection.
+	p := parsePagination(r)
+	page, per, start, end := pageWindow(p.Page, p.Per, len(pricings))
+	items := make([]any, 0, end-start)
+	for i := start; i < end; i++ {
+		m := flatten(pricings[i]).(map[string]any)
 		m["service_name"] = names[i]
 		m["created_at"] = timestamps[i][0]
 		m["updated_at"] = timestamps[i][1]
 		items = append(items, m)
 	}
-	if items == nil {
-		items = []any{}
-	}
-	s.writeList(w, r, items)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":  items,
+		"page":  page,
+		"per":   per,
+		"total": len(pricings),
+	})
 }
 
 // handleAPIIPs returns all IPs with targets.
@@ -352,7 +390,7 @@ func (s *Server) handleAPIIPs(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeList(w, r, flattenSlice(items))
+	writeTypedList(w, r, items)
 }
 
 // handleAPIDNS returns all DNS records.
@@ -362,7 +400,7 @@ func (s *Server) handleAPIDNS(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeList(w, r, flattenSlice(items))
+	writeTypedList(w, r, items)
 }
 
 // handleAPILabels returns all labels with usage counts.
@@ -372,7 +410,7 @@ func (s *Server) handleAPILabels(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeList(w, r, flattenSlice(items))
+	writeTypedList(w, r, items)
 }
 
 // handleAPINotes returns all notes.
@@ -382,7 +420,7 @@ func (s *Server) handleAPINotes(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	s.writeList(w, r, flattenSlice(items))
+	writeTypedList(w, r, items)
 }
 
 // handleAPICatalog returns a catalog list.
@@ -398,6 +436,6 @@ func (s *Server) handleAPICatalog(kindStr string) http.HandlerFunc {
 			writeAPIError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		s.writeList(w, r, flattenSlice(items))
+		writeTypedList(w, r, items)
 	}
 }

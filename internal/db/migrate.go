@@ -27,6 +27,21 @@ func Migrate(db *sql.DB) ([]int, error) {
 		return nil, fmt.Errorf("read embedded migrations: %w", err)
 	}
 
+	// Never run against a DB from a newer build.
+	var maxVersion int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		prefix, _, _ := strings.Cut(e.Name(), "_")
+		if v, err := strconv.Atoi(prefix); err == nil && v > maxVersion {
+			maxVersion = v
+		}
+	}
+	if current > maxVersion {
+		return nil, fmt.Errorf("database was created by a newer version of idlerthing (user_version %d > %d)", current, maxVersion)
+	}
+
 	type migration struct {
 		version int
 		name    string

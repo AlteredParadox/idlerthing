@@ -195,6 +195,8 @@ func TestIPAddInvalidAndWhois(t *testing.T) {
 	}
 
 	// Whois failure keeps old data and flashes an error.
+	// (Reset the throttle so this exercises the failure path, not the bounce.)
+	srv.whoisRate.last = time.Time{}
 	srv.whoisURL = "http://127.0.0.1:1/unreachable"
 	resp = postForm(t, client, ts, "/ips/1/whois", url.Values{"back": {"/ips"}})
 	resp.Body.Close()

@@ -4,6 +4,7 @@ package pricing
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"sync"
@@ -20,7 +21,8 @@ const ratesTTL = 7 * 24 * time.Hour
 
 // Rates is an in-memory exchange-rate cache (base USD). On fetch failure it
 // keeps whatever it has (possibly nothing) and reports ok=false so the UI
-// can degrade to native currencies.
+// can degrade to native currencies. Failures back off for 60s (negative
+// caching) and concurrent Gets singleflight onto one in-flight fetch.
 type Rates struct {
 	// BaseURL is injectable for tests.
 	BaseURL string
@@ -28,6 +30,8 @@ type Rates struct {
 	mu        sync.Mutex
 	rates     map[string]float64
 	fetchedAt time.Time
+	lastTry   time.Time
+	inFlight  chan struct{}
 	client    *http.Client
 }
 
@@ -37,26 +41,45 @@ func NewRates() *Rates {
 }
 
 // Get returns rates (units per 1 USD) and whether they are usable.
-// The HTTP fetch happens WITHOUT the mutex held (a slow endpoint must not
-// serialize unrelated page renders); a rare duplicate fetch is fine.
+// Fresh cache hits and recent failures answer immediately; otherwise one
+// fetch runs while concurrent Gets wait on it (singleflight).
 func (r *Rates) Get(ctx context.Context) (map[string]float64, bool) {
 	r.mu.Lock()
-	cached, fetchedAt := r.rates, r.fetchedAt
-	r.mu.Unlock()
-	if cached != nil && time.Since(fetchedAt) < ratesTTL {
+	if r.rates != nil && time.Since(r.fetchedAt) < ratesTTL {
+		cached := r.rates
+		r.mu.Unlock()
 		return cached, true
 	}
+	// Negative cache: a failed fetch backs off for 60s.
+	if time.Since(r.lastTry) < 60*time.Second && !r.lastTry.IsZero() {
+		stale := r.rates
+		r.mu.Unlock()
+		return stale, stale != nil
+	}
+	if r.inFlight != nil {
+		ch := r.inFlight
+		r.mu.Unlock()
+		<-ch // wait for the in-flight fetch to finish
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.rates, r.rates != nil
+	}
+	r.inFlight = make(chan struct{})
+	r.lastTry = time.Now()
+	r.mu.Unlock()
 
 	fresh, ok := r.fetch(ctx)
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !ok {
-		return r.rates, r.rates != nil // keep stale
+	if ok {
+		r.rates = fresh
+		r.fetchedAt = time.Now()
 	}
-	r.rates = fresh
-	r.fetchedAt = time.Now()
-	return r.rates, true
+	close(r.inFlight)
+	r.inFlight = nil
+	out, outOk := r.rates, r.rates != nil
+	r.mu.Unlock()
+	return out, outOk
 }
 
 // fetch retrieves the current rates from the endpoint.
@@ -79,28 +102,39 @@ func (r *Rates) fetch(ctx context.Context) (map[string]float64, bool) {
 	var body struct {
 		Rates map[string]float64 `json:"rates"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || len(body.Rates) == 0 {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil || len(body.Rates) == 0 {
 		return nil, false
 	}
 	return body.Rates, true
 }
 
-// MonthlyUSD normalizes a pricing to a per-month USD amount. ok=false when
-// the amount cannot be computed (one-time term, or no rate for the currency).
+// MonthlyUSD normalizes a pricing to a per-month USD amount, rounded to
+// cents — for PER-ROW displays. ok=false when the amount cannot be
+// computed (one-time term, or no rate for the currency).
 func MonthlyUSD(p *model.Pricing, rates map[string]float64) (float64, bool) {
+	v, ok := MonthlyUSDRaw(p, rates)
+	if !ok {
+		return 0, false
+	}
+	return round2(v), true
+}
+
+// MonthlyUSDRaw is MonthlyUSD without the cent-rounding — for SUMS, where
+// per-row rounding would drift (round at display time instead).
+func MonthlyUSDRaw(p *model.Pricing, rates map[string]float64) (float64, bool) {
 	months := model.TermMonths(p.Term)
 	if months == 0 || p.Price <= 0 {
 		return 0, false
 	}
 	monthly := p.Price / float64(months)
 	if p.Currency == "USD" {
-		return round2(monthly), true
+		return monthly, true
 	}
 	rate, ok := rates[p.Currency]
 	if !ok || rate <= 0 {
 		return 0, false
 	}
-	return round2(monthly / rate), true
+	return monthly / rate, true
 }
 
 // ConvertUSD converts a USD amount into another currency using rates.

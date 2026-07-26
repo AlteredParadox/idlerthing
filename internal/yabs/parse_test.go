@@ -98,3 +98,32 @@ func TestUnitFactorIEC(t *testing.T) {
 		t.Fatalf("SI GB still works: %v", got)
 	}
 }
+
+// Batch I #4 — non-finite/implausible numbers collapse to 0 instead of
+// persisting (Go's json encoder would otherwise 500 the export).
+func TestParseAbsurdNumbers(t *testing.T) {
+	r, err := Parse([]byte(`{
+	  "cpu": {"model": "X", "cores": 1000000000},
+	  "disk": {"fio": [{"bs": "4k", "read": "99999999999999 MB/s", "write": "1 MB/s"}]},
+	  "network": {"iperf": [{"location": "L", "send": "99999999999999 Gbits/sec", "recv": "2 Gbits/sec", "latency": "99999999999999 ms"}]},
+	  "geekbench": {"version": 6, "single": 99999999999, "multi": 5}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if r.CPUCores != 0 {
+		t.Fatalf("absurd cores should collapse to 0, got %d", r.CPUCores)
+	}
+	if len(r.Disks) != 1 || r.Disks[0].ReadMbps != 0 || r.Disks[0].WriteMbps != 1 {
+		t.Fatalf("disk speeds: %+v", r.Disks)
+	}
+	if len(r.Network) != 1 || r.Network[0].SendMbps != 0 || r.Network[0].RecvMbps != 2000 {
+		t.Fatalf("network speeds: %+v", r.Network)
+	}
+	if r.Network[0].LatencyMs != 0 {
+		t.Fatalf("absurd latency should collapse to 0, got %v", r.Network[0].LatencyMs)
+	}
+	if r.GbSingle != 0 || r.GbMulti != 5 {
+		t.Fatalf("geekbench: single=%d multi=%d", r.GbSingle, r.GbMulti)
+	}
+}

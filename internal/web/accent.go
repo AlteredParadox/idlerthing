@@ -15,14 +15,11 @@ const defaultAccent = "#5b9cf8"
 
 // uiPrefs reads the accent color + compact flag from settings.
 func (s *Server) uiPrefs(r *http.Request) (accent string, compact bool) {
-	var c string
-	var cm int
-	err := s.db.QueryRowContext(r.Context(),
-		"SELECT accent_color, compact_mode FROM settings WHERE id = 1").Scan(&c, &cm)
-	if err != nil || !accentColorRe.MatchString(c) {
+	settings := s.memoSettings(r)
+	if !accentColorRe.MatchString(settings.AccentColor) {
 		return defaultAccent, false
 	}
-	return strings.ToLower(c), cm != 0
+	return strings.ToLower(settings.AccentColor), settings.Compact
 }
 
 // handleAccentCSS serves GET /static/accent.css — the accent variables

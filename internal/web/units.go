@@ -125,16 +125,18 @@ func sizeFormValue(r *http.Request, errs map[string]string, name string, maxMB i
 		return sql.NullInt64{}
 	}
 	f, err := strconv.ParseFloat(raw, 64)
-	if err != nil || f < 0 {
+	if err != nil || f < 0 || math.IsNaN(f) {
 		errs[name] = "Must be a number ≥ 0."
 		return sql.NullInt64{}
 	}
-	mb := int64(math.Round(f * unitFactor(r.FormValue(name+"_unit"))))
-	if mb > maxMB {
+	// Range-check in the FLOAT domain first: int64(NaN/overflow) is
+	// implementation-defined (MinInt64) and would slip past a post-convert check.
+	total := f * unitFactor(r.FormValue(name+"_unit"))
+	if math.IsInf(total, 0) || total > float64(maxMB) {
 		errs[name] = "Value too large."
 		return sql.NullInt64{}
 	}
-	return sql.NullInt64{Int64: mb, Valid: true}
+	return sql.NullInt64{Int64: int64(math.Round(total)), Valid: true}
 }
 
 // bandwidthFormValue parses bandwidth with the unlimited checkbox.

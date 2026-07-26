@@ -39,6 +39,7 @@ func (s *Server) seedboxSection() *section {
 			if err != nil {
 				return nil, err
 			}
+			dueSoon := s.dueSoonDays(r)
 			var rows []listRow
 			for _, it := range items {
 				id := strconv.FormatInt(it.ID, 10)
@@ -65,7 +66,7 @@ func (s *Server) seedboxSection() *section {
 						{Main: dash(it.LocationName)},
 						{Main: dash(it.ProviderName)},
 						pricingCell(it.Pricing),
-						dueCell(it.Pricing, s.dueSoonDays(r)),
+						dueCell(it.Pricing, dueSoon),
 					},
 				})
 			}

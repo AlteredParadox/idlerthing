@@ -52,15 +52,8 @@ func (s *Server) hiddenCols(r *http.Request) map[string]bool {
 			}
 		}
 	}
-	u := userFromCtx(r.Context())
-	if u == nil {
-		apply(defaultHiddenCols)
-		return hidden
-	}
-	var v string
-	err := s.db.QueryRowContext(r.Context(),
-		"SELECT value FROM user_prefs WHERE user_id = ? AND key = 'servers_cols'", u.ID).Scan(&v)
-	if err != nil {
+	v, ok := s.memoPref(r, "servers_cols")
+	if !ok {
 		apply(defaultHiddenCols) // no pref row yet
 		return hidden
 	}
@@ -119,10 +112,13 @@ func (s *Server) handleServerColsPref(w http.ResponseWriter, r *http.Request) {
 			hidden = append(hidden, c.Key)
 		}
 	}
-	s.db.ExecContext(r.Context(),
+	if _, err := s.db.ExecContext(r.Context(),
 		`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'servers_cols', ?)
 		 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`,
-		u.ID, strings.Join(hidden, ","))
+		u.ID, strings.Join(hidden, ",")); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	target := "/servers"
 	if ref, err := url.Parse(r.Referer()); err == nil && ref.Path != "" {
@@ -141,13 +137,9 @@ func linkSpeedDisplay(mbps int64) string {
 	}
 	if mbps >= 1000 {
 		if mbps%1000 == 0 {
-			return strings.TrimSpace(intToStr(mbps/1000)) + " Gbps"
+			return strings.TrimSpace(strconv.FormatInt(mbps/1000, 10)) + " Gbps"
 		}
 		return trim2(float64(mbps)/1000) + " Gbps"
 	}
-	return intToStr(mbps) + " Mbps"
-}
-
-func intToStr(v int64) string {
-	return strconv.FormatInt(v, 10)
+	return strconv.FormatInt(mbps, 10) + " Mbps"
 }

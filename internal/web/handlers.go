@@ -1,6 +1,7 @@
 package web
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -54,10 +55,8 @@ func (s *Server) counts(r *http.Request) Counts {
 
 // currentTheme reads the theme setting, defaulting to dark.
 func (s *Server) currentTheme(r *http.Request) string {
-	var theme string
-	err := s.db.QueryRowContext(r.Context(),
-		"SELECT theme FROM settings WHERE id = 1").Scan(&theme)
-	if err != nil || (theme != "dark" && theme != "light") {
+	theme := s.memoSettings(r).Theme
+	if theme != "dark" && theme != "light" {
 		return "dark"
 	}
 	return theme
@@ -113,10 +112,14 @@ func (s *Server) listSort(r *http.Request, name, defaultSort string) (sort, dir 
 			dir = "asc"
 		}
 		if u != nil {
-			s.db.ExecContext(r.Context(),
+			// Best-effort persistence of the sort choice (a side effect of
+			// the GET) — log failures rather than erroring the page.
+			if _, err := s.db.ExecContext(r.Context(),
 				`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'sort_' || ?, ?)
 				 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`,
-				u.ID, name, sort+","+dir)
+				u.ID, name, sort+","+dir); err != nil {
+				slog.Error("persist sort pref", "err", err)
+			}
 		}
 		return sort, dir
 	}
@@ -146,9 +149,12 @@ func (s *Server) handleShortHostnamesPref(w http.ResponseWriter, r *http.Request
 		if s.shortHostnames(r) {
 			next = "0"
 		}
-		s.db.ExecContext(r.Context(),
+		if _, err := s.db.ExecContext(r.Context(),
 			`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'short_hostnames', ?)
-			 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`, u.ID, next)
+			 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`, u.ID, next); err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	target := "/servers"

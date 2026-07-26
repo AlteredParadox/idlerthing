@@ -66,14 +66,9 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 	}
 
 	client := prom.New(baseURL)
-	detail, err := client.HostDetail(r.Context(), instance)
-	var view *liveMonView
-	if err != nil || detail == nil {
-		view = &liveMonView{Unavailable: true}
-	} else {
-		filesystems, _ := client.Filesystems(r.Context(), instance) // tolerate failure
-		view = buildLiveMonView(detail, filesystems)
-	}
+	detail := client.HostDetail(r.Context(), instance)
+	filesystems, _ := client.Filesystems(r.Context(), instance) // tolerate failure
+	view := buildLiveMonView(detail, filesystems)
 
 	s.livemon.mu.Lock()
 	s.livemon.at[instance] = time.Now()
@@ -113,7 +108,9 @@ func buildLiveMonView(d *prom.Detail, filesystems []prom.Filesystem) *liveMonVie
 			break
 		}
 	}
-	if !anyData {
+	// Unavailable only when there's NOTHING to show — filesystem rows
+	// fetched fine are still worth rendering.
+	if !anyData && len(filesystems) == 0 {
 		return &liveMonView{Unavailable: true}
 	}
 

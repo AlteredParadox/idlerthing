@@ -141,6 +141,10 @@ func TestLiveMonNegativeCache(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		if strings.Contains(r.URL.Query().Get("query"), "node_filesystem") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		liveMonFakeProm(w, r)
 	}))
 	defer promSrv.Close()
@@ -159,5 +163,76 @@ func TestLiveMonNegativeCache(t *testing.T) {
 	}
 	if rangeCalls.Load() != before {
 		t.Fatal("unavailable view should be negative-cached")
+	}
+}
+
+// #2 — htmx table swaps render rows correctly (post skip-counts change).
+func TestHtmxSwapRendersRows(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "swap-01")
+	createServer(t, client, ts, "swap-02")
+
+	get := func(path string) string {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		req.Header.Set("HX-Request", "true")
+		for _, c := range client.Jar.Cookies(mustURL(t, ts.URL)) {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := readBody(t, resp)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d", path, resp.StatusCode)
+		}
+		return body
+	}
+
+	body := get("/servers?status=all")
+	if !strings.Contains(body, "swap-01") || !strings.Contains(body, "swap-02") {
+		t.Fatal("swap should render all rows")
+	}
+	body = get("/servers?status=all&q=swap-01")
+	if !strings.Contains(body, "swap-01") || strings.Contains(body, "swap-02") {
+		t.Fatal("search swap should filter rows")
+	}
+	// Sort still works through the partial.
+	body = get("/servers?status=all&sort=hostname&dir=desc")
+	if strings.Index(body, "swap-02") > strings.Index(body, "swap-01") {
+		t.Fatal("sort should apply in the partial")
+	}
+	// No layout in partials.
+	if strings.Contains(body, "sidebar") || strings.Contains(body, "stat-card") {
+		t.Fatal("partial must not contain layout/stat cards")
+	}
+}
+
+// #6 — settings changes reflect immediately (per-request memo, no staleness).
+func TestMemoSettingsFreshness(t *testing.T) {
+	ts, database := newTestServer(t)
+	client := authedClient(t, ts)
+	// Change theme; next request must see it (memo is per-request).
+	database.Exec("UPDATE settings SET theme = 'light' WHERE id = 1")
+	resp, err := client.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, `data-theme="light"`) {
+		t.Fatal("theme change must reflect on the next request")
+	}
+	database.Exec("UPDATE settings SET theme = 'dark' WHERE id = 1")
+	resp, err = client.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, `data-theme="dark"`) {
+		t.Fatal("revert must reflect immediately")
 	}
 }

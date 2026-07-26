@@ -130,10 +130,11 @@ func TestLiveMonSection(t *testing.T) {
 
 func TestLiveMonUnavailable(t *testing.T) {
 	ts, database := newTestServer(t)
-	// Instant queries work (match succeeds) but query_range is broken →
-	// the section degrades to the unavailable note.
+	// Instant queries work (match succeeds) but query_range AND filesystem
+	// queries are broken → total failure → the unavailable note.
 	promSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/query_range" {
+		q := r.URL.Query().Get("query")
+		if r.URL.Path == "/api/v1/query_range" || strings.Contains(q, "node_filesystem") {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

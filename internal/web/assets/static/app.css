@@ -753,7 +753,6 @@ select:focus { outline: none; border-color: var(--acc); }
   margin-bottom: 4px;
 }
 .dot-err { background: var(--err); }
-.dot-warn { background: var(--warn); }
 
 .ping-form { display: inline; }
 

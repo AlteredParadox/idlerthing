@@ -15,14 +15,11 @@ import (
 
 // promSettings reads the prometheus config from settings.
 func (s *Server) promSettings(r *http.Request) (enabled bool, baseURL string) {
-	var en int
-	var u string
-	err := s.db.QueryRowContext(r.Context(),
-		"SELECT prometheus_enabled, prometheus_url FROM settings WHERE id = 1").Scan(&en, &u)
-	if err != nil || en == 0 {
+	settings := s.memoSettings(r)
+	if !settings.PrometheusEnabled {
 		return false, ""
 	}
-	return true, strings.TrimRight(strings.TrimSpace(u), "/")
+	return true, strings.TrimRight(strings.TrimSpace(settings.PrometheusURL), "/")
 }
 
 // validPromURL reports whether u is an http(s) URL with a host.
@@ -34,11 +31,14 @@ func validPromURL(u string) bool {
 
 // ---------- metrics cache (45s, stale-on-error) ----------
 
-// promCache caches the last successful ServerMetrics batch.
+// promCache caches the last successful ServerMetrics batch and the last
+// fetch ATTEMPT time (failures back off refetches instead of re-running
+// ~40s of queries on every request).
 type promCache struct {
 	mu      sync.Mutex
 	at      time.Time
 	metrics *prom.Metrics
+	lastTry time.Time
 }
 
 // liveMetrics returns metrics when prometheus is enabled, else nil.
@@ -56,15 +56,23 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 	s.prom.mu.Lock()
 	cached := s.prom.metrics
 	fresh := cached != nil && time.Since(s.prom.at) < 45*time.Second
+	backoff := time.Since(s.prom.lastTry) < 30*time.Second
 	s.prom.mu.Unlock()
 	if fresh {
 		return cached
 	}
-
-	m := prom.New(baseURL).ServerMetrics(r.Context())
-	if len(m.ByInstance) == 0 {
-		return cached // fetch failed or empty: stale (or nil)
+	if backoff {
+		return cached // recent failure: serve stale (or nil) without refetching
 	}
+
+	s.prom.mu.Lock()
+	s.prom.lastTry = time.Now()
+	s.prom.mu.Unlock()
+	m := prom.New(baseURL).ServerMetrics(r.Context())
+	if !m.Healthy {
+		return cached // fetch failed: stale (or nil) until the backoff expires
+	}
+	// Zero results from a HEALTHY prometheus is a valid state — store it.
 	s.prom.mu.Lock()
 	s.prom.metrics = m
 	s.prom.at = time.Now()
@@ -81,16 +89,14 @@ func matchLive(m *prom.Metrics, hostname string) *prom.HostMetrics {
 		return nil
 	}
 	key := strings.ToLower(strings.TrimSpace(hostname))
-	short := key
-	if i := strings.IndexByte(short, '.'); i > 0 {
-		short = short[:i]
-	}
+	short := firstLabel(key)
+
+	// Pass 1: exact matches (nodename, or instance with scrape port stripped).
 	for nodename, h := range m.ByNodename {
 		if !h.Found {
 			continue
 		}
-		nn := strings.ToLower(strings.TrimSpace(nodename))
-		if nn == key || nn == short {
+		if strings.ToLower(strings.TrimSpace(nodename)) == key {
 			return h
 		}
 	}
@@ -98,15 +104,37 @@ func matchLive(m *prom.Metrics, hostname string) *prom.HostMetrics {
 		if !h.Found {
 			continue
 		}
-		inst := strings.ToLower(strings.TrimSpace(instance))
-		if i := strings.LastIndexByte(inst, ':'); i > 0 {
-			inst = inst[:i] // strip scrape port
-		}
-		if inst == key {
+		if stripPort(instance) == key {
 			return h
 		}
 	}
-	return nil
+
+	// Pass 2: first-label fallback — only when EXACTLY ONE candidate matches
+	// (ambiguous first labels return nil rather than cross-matching).
+	var found *prom.HostMetrics
+	for nodename, h := range m.ByNodename {
+		if !h.Found {
+			continue
+		}
+		if firstLabel(strings.ToLower(strings.TrimSpace(nodename))) == short {
+			if found != nil && found != h {
+				return nil
+			}
+			found = h
+		}
+	}
+	for instance, h := range m.ByInstance {
+		if !h.Found {
+			continue
+		}
+		if firstLabel(stripPort(instance)) == short {
+			if found != nil && found != h {
+				return nil
+			}
+			found = h
+		}
+	}
+	return found
 }
 
 // ---------- meter rendering ----------
@@ -246,4 +274,21 @@ func (s *Server) uptime30d(r *http.Request, instance string) string {
 	s.uptime.v[instance] = v
 	s.uptime.mu.Unlock()
 	return fmt.Sprintf("%.2f%%", v)
+}
+
+// firstLabel returns the part before the first dot.
+func firstLabel(host string) string {
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		return host[:i]
+	}
+	return host
+}
+
+// stripPort removes a scrape port suffix (host:9100 → host).
+func stripPort(instance string) string {
+	inst := strings.ToLower(strings.TrimSpace(instance))
+	if i := strings.LastIndexByte(inst, ':'); i > 0 {
+		return inst[:i]
+	}
+	return inst
 }

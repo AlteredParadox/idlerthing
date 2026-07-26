@@ -47,6 +47,11 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 	// midnight — otherwise early-morning rows in UTC+N zones get selected
 	// but never advanced.
 	todayStart, _ := time.Parse("2006-01-02", today)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
 	for _, dr := range pending {
 		due, err := time.Parse("2006-01-02", dr.due)
 		if err != nil {
@@ -59,14 +64,14 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 		for due.Before(todayStart) {
 			due = AddMonthsClamped(due, months)
 		}
-		if _, err := db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			"UPDATE pricings SET next_due_date = ? WHERE id = ?",
 			due.Format("2006-01-02"), dr.id); err != nil {
 			return updated, err
 		}
 		updated++
 	}
-	return updated, nil
+	return updated, tx.Commit()
 }
 
 // AddMonthsClamped adds months to t, clamping the day of month when the

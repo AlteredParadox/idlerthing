@@ -36,6 +36,7 @@ func (s *Server) domainSection() *section {
 			if err != nil {
 				return nil, err
 			}
+			dueSoon := s.dueSoonDays(r)
 			var rows []listRow
 			for _, it := range items {
 				id := strconv.FormatInt(it.ID, 10)
@@ -63,7 +64,7 @@ func (s *Server) domainSection() *section {
 						{Main: dash(it.ProviderName)},
 						{Main: dash(it.OwnedSince.String), Class: "mono"},
 						pricingCell(it.Pricing),
-						dueCell(it.Pricing, s.dueSoonDays(r)),
+						dueCell(it.Pricing, dueSoon),
 					},
 				})
 			}

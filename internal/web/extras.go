@@ -80,6 +80,20 @@ func formInt64(r *http.Request, name string) (int64, error) {
 	return strconv.ParseInt(r.FormValue(name), 10, 64)
 }
 
+// serviceExists verifies an extras target actually exists before attaching
+// (crafted POSTs could otherwise create "(deleted)" orphans).
+func (s *Server) serviceExists(r *http.Request, serviceType int, serviceID int64) bool {
+	table, ok := model.ServiceTable[serviceType]
+	if !ok {
+		return false
+	}
+	var n int
+	// Table names come from the fixed ServiceTable map.
+	s.db.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM "+table+" WHERE id = ?", serviceID).Scan(&n)
+	return n > 0
+}
+
 // ---------- Labels ----------
 
 // handleLabelAssign handles POST /labels/assign.
@@ -88,6 +102,11 @@ func (s *Server) handleLabelAssign(w http.ResponseWriter, r *http.Request) {
 	serviceType, err2 := formInt64(r, "service_type")
 	if err1 != nil || err2 != nil || serviceType < 1 || serviceType > 6 {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	if !s.serviceExists(r, int(serviceType), serviceID) {
+		http.NotFound(w, r)
 		return
 	}
 
@@ -144,6 +163,10 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	if err1 != nil || err2 != nil || serviceType < 1 || serviceType > 6 || body == "" {
 		setFlash(w, "err", "Note body is required.")
 		redirectBack(w, r, "/notes")
+		return
+	}
+	if !s.serviceExists(r, int(serviceType), serviceID) {
+		http.NotFound(w, r)
 		return
 	}
 	notes := &model.NoteStore{DB: s.db}
@@ -227,6 +250,10 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	if !s.serviceExists(r, int(serviceType), serviceID) {
+		http.NotFound(w, r)
+		return
+	}
 	raw := strings.TrimSpace(r.FormValue("address"))
 	addr, err := netip.ParseAddr(raw)
 	if err != nil {
@@ -265,8 +292,8 @@ func (s *Server) handleIPDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---------- WHOIS ----------
 
-// whoisRateLimit serializes lookups to 1 per second globally.
-var whoisRate struct {
+// whoisRateLimit serializes lookups to 1 per second per Server.
+type whoisRateLimit struct {
 	mu   sync.Mutex
 	last time.Time
 }
@@ -286,13 +313,13 @@ type ipwhoIsResp struct {
 
 // fetchWhois looks up one address (rate-limited, 5s timeout).
 func (s *Server) fetchWhois(ctx context.Context, address string) (*model.WhoisData, error) {
-	whoisRate.mu.Lock()
-	wait := time.Until(whoisRate.last.Add(time.Second))
+	s.whoisRate.mu.Lock()
+	wait := time.Until(s.whoisRate.last.Add(time.Second))
 	if wait > 0 {
 		time.Sleep(wait)
 	}
-	whoisRate.last = time.Now()
-	whoisRate.mu.Unlock()
+	s.whoisRate.last = time.Now()
+	s.whoisRate.mu.Unlock()
 
 	base := s.whoisURL
 	if base == "" {

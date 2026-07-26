@@ -33,6 +33,7 @@ func (s *Server) miscSection() *section {
 			if err != nil {
 				return nil, err
 			}
+			dueSoon := s.dueSoonDays(r)
 			var rows []listRow
 			for _, it := range items {
 				id := strconv.FormatInt(it.ID, 10)
@@ -49,7 +50,7 @@ func (s *Server) miscSection() *section {
 						{Main: it.Name, Dot: dot, Link: "/misc/" + id},
 						{Main: dash(it.OwnedSince.String), Class: "mono"},
 						pricingCell(it.Pricing),
-						dueCell(it.Pricing, s.dueSoonDays(r)),
+						dueCell(it.Pricing, dueSoon),
 					},
 				})
 			}

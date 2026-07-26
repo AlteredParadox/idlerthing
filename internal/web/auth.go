@@ -33,6 +33,7 @@ type ctxKey int
 const (
 	ctxUser ctxKey = iota
 	ctxSession
+	ctxMemo
 )
 
 type session struct {
@@ -164,6 +165,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID in
 // requireAuth's job.
 func (s *Server) loadSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), ctxMemo, &reqMemo{}))
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil || cookie.Value == "" {
 			next.ServeHTTP(w, r)
@@ -235,13 +237,21 @@ func (s *Server) clientIP(r *http.Request) string {
 	return host
 }
 
-// rateLimiter is a small per-key sliding-window limiter.
+// rateLimiter is a small per-key sliding-window limiter. The map is
+// swept only when it grows past sweepThreshold, and distinct keys are
+// capped — beyond the cap NEW keys fail closed (XFF-spoofed key floods
+// can't grow memory or make each call O(n)).
 type rateLimiter struct {
 	mu     sync.Mutex
 	hits   map[string][]time.Time
 	limit  int
 	window time.Duration
 }
+
+const (
+	sweepThreshold = 256
+	maxLimiterKeys = 4096
+)
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 	return &rateLimiter{hits: make(map[string][]time.Time), limit: limit, window: window}
@@ -254,22 +264,27 @@ func (rl *rateLimiter) allow(key string) bool {
 	defer rl.mu.Unlock()
 
 	cutoff := time.Now().Add(-rl.window)
-	// Global sweep: drop keys with no recent attempts.
-	for k, times := range rl.hits {
-		fresh := times[:0]
-		for _, t := range times {
-			if t.After(cutoff) {
-				fresh = append(fresh, t)
+	// Sweep only when the map is big enough to matter.
+	if len(rl.hits) > sweepThreshold {
+		for k, times := range rl.hits {
+			fresh := times[:0]
+			for _, t := range times {
+				if t.After(cutoff) {
+					fresh = append(fresh, t)
+				}
 			}
-		}
-		if len(fresh) == 0 {
-			delete(rl.hits, k)
-		} else {
-			rl.hits[k] = fresh
+			if len(fresh) == 0 {
+				delete(rl.hits, k)
+			} else {
+				rl.hits[k] = fresh
+			}
 		}
 	}
 
 	kept := rl.hits[key]
+	if kept == nil && len(rl.hits) >= maxLimiterKeys {
+		return false // new key beyond cap: fail closed
+	}
 	if len(kept) >= rl.limit {
 		return false
 	}

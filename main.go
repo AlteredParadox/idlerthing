@@ -157,6 +157,9 @@ func run() error {
 		Addr:              cfg.Addr,
 		Handler:           webServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second, // headroom for large exports
+		IdleTimeout:       120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

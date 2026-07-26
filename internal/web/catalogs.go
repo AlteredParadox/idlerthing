@@ -108,9 +108,11 @@ func (s *Server) handleCatalogDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	errMsg := ""
+	// UsageCount up front so the refusal message has the count without
+	// re-running it after the failed delete.
+	n, _ := s.catalogs.UsageCount(r.Context(), kind, id)
 	if err := s.catalogs.Delete(r.Context(), kind, id); err != nil {
 		if errors.Is(err, model.ErrInUse) {
-			n, _ := s.catalogs.UsageCount(r.Context(), kind, id)
 			errMsg = "In use by " + strconv.Itoa(n) + " service(s) — remove those first."
 		} else {
 			errMsg = "Delete failed."

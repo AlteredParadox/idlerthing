@@ -104,10 +104,12 @@ type HostMetrics struct {
 }
 
 // Metrics bundles everything ServerMetrics fetched: lookup by nodename
-// (matching key) and by instance.
+// (matching key) and by instance. Healthy reports whether at least one
+// query succeeded — distinguishes "prometheus down" from "zero targets".
 type Metrics struct {
 	ByNodename map[string]*HostMetrics
 	ByInstance map[string]*HostMetrics
+	Healthy    bool
 }
 
 // Instant queries used by ServerMetrics.
@@ -144,6 +146,7 @@ func (c *Client) ServerMetrics(ctx context.Context) *Metrics {
 		if err != nil {
 			return // tolerate: leave those fields at zero values
 		}
+		m.Healthy = true
 		for _, s := range samples {
 			fn(s)
 		}
@@ -192,7 +195,7 @@ func (c *Client) ServerMetrics(ctx context.Context) *Metrics {
 // timeout); 15m sampling is plenty for an uptime percentage.
 func (c *Client) UptimePct(ctx context.Context, instance string) (float64, error) {
 	samples, err := c.Query(ctx,
-		`avg_over_time(up{instance="`+instance+`"}[30d:15m]) * 100`)
+		`avg_over_time(up{instance=`+strconv.Quote(instance)+`}[30d:15m]) * 100`)
 	if err != nil {
 		return 0, err
 	}

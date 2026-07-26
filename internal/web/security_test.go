@@ -162,16 +162,28 @@ func TestLoginEmailLimiter(t *testing.T) {
 
 func TestRateLimiterPrunesStaleKeys(t *testing.T) {
 	rl := newRateLimiter(5, 20*time.Millisecond)
-	for i := 0; i < 100; i++ {
+	// Sweep only kicks in past the threshold.
+	for i := 0; i < sweepThreshold+50; i++ {
 		rl.allow(fmt.Sprintf("key%d", i))
-	}
-	if len(rl.hits) != 100 {
-		t.Fatalf("expected 100 keys, got %d", len(rl.hits))
 	}
 	time.Sleep(30 * time.Millisecond)
 	rl.allow("fresh")
 	if len(rl.hits) != 1 {
-		t.Fatalf("stale keys should be pruned, got %d keys", len(rl.hits))
+		t.Fatalf("stale keys should be pruned past threshold, got %d keys", len(rl.hits))
+	}
+}
+
+func TestRateLimiterKeyCap(t *testing.T) {
+	rl := newRateLimiter(5, time.Minute)
+	for i := 0; i < maxLimiterKeys; i++ {
+		rl.allow(fmt.Sprintf("k%d", i))
+	}
+	// New key beyond the cap fails closed; existing keys still pass.
+	if rl.allow("new-key") {
+		t.Fatal("new key beyond cap must be denied")
+	}
+	if !rl.allow("k0") {
+		t.Fatal("existing key must keep working past the cap")
 	}
 }
 

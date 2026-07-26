@@ -3,14 +3,15 @@ package web
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"idlerthing/internal/model"
 )
 
-// publicCache caches the public page for 60s.
-var publicCache struct {
+// publicCacheEntry caches the public page for 60s (per Server).
+type publicCacheEntry struct {
 	mu   sync.Mutex
 	at   time.Time
 	rows []publicRow
@@ -39,10 +40,10 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicCache.mu.Lock()
-	rows := publicCache.rows
-	fresh := rows != nil && publicCache.at.After(time.Now().Add(-60*time.Second))
-	publicCache.mu.Unlock()
+	s.publicCache.mu.Lock()
+	rows := s.publicCache.rows
+	fresh := rows != nil && s.publicCache.at.After(time.Now().Add(-60*time.Second))
+	s.publicCache.mu.Unlock()
 
 	if !fresh {
 		var err error
@@ -51,10 +52,10 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		publicCache.mu.Lock()
-		publicCache.rows = rows
-		publicCache.at = time.Now()
-		publicCache.mu.Unlock()
+		s.publicCache.mu.Lock()
+		s.publicCache.rows = rows
+		s.publicCache.at = time.Now()
+		s.publicCache.mu.Unlock()
 	}
 
 	s.renderPublic(w, r, rows)
@@ -101,7 +102,7 @@ func (s *Server) computePublicRows(r *http.Request) ([]publicRow, error) {
 			Price:    "—",
 		}
 		if v, ok := cpu.(int64); ok {
-			row.CPU = intToStr(v) + "×"
+			row.CPU = strconv.FormatInt(v, 10) + "×"
 		} else {
 			row.CPU = "—"
 		}

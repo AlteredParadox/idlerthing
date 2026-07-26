@@ -336,3 +336,31 @@ func TestMyRowFailureTolerance(t *testing.T) {
 		t.Fatalf("expected 2 servers committed, got %d", count)
 	}
 }
+
+// #6 — date normalization forms.
+func TestNormDate(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"2026-07-25", "2026-07-25", false},
+		{"2026-07-25T10:30:00Z", "2026-07-25", false},
+		{"", "", false},
+		{"2026-1-2", "", true},
+		{"garbage", "", true},
+		{"25/07/2026", "", true},
+	}
+	for _, c := range cases {
+		got, ok := normDate(c.in)
+		if c.wantErr {
+			if ok {
+				t.Errorf("%q: expected invalid, got %q", c.in, got)
+			}
+			continue
+		}
+		if !ok || got != c.want {
+			t.Errorf("%q: got %q ok=%v, want %q", c.in, got, ok, c.want)
+		}
+	}
+}

@@ -175,8 +175,8 @@ var detailMetrics = []string{
 
 // HostDetail fetches all metric windows for one instance over the last 6
 // hours (step 60s). Individual query failures are tolerated — the affected
-// series comes back with Found=false.
-func (c *Client) HostDetail(ctx context.Context, instance string) (*Detail, error) {
+// series comes back with Found=false; it never returns a non-nil error.
+func (c *Client) HostDetail(ctx context.Context, instance string) *Detail {
 	end := time.Now()
 	start := end.Add(-6 * time.Hour)
 	d := &Detail{}
@@ -209,7 +209,7 @@ func (c *Client) HostDetail(ctx context.Context, instance string) (*Detail, erro
 			d.DiskWrite = s
 		}
 	}
-	return d, nil
+	return d
 }
 
 // Filesystem is one mounted filesystem's usage.

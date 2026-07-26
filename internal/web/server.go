@@ -48,8 +48,10 @@ type Server struct {
 	uptime     uptimeCache
 	livemon    liveMonCache
 
-	behindTLSProxy bool   // IDLER_BEHIND_TLS_PROXY
-	baseURL        string // IDLER_BASE_URL ("" = derive from request)
+	publicCache    publicCacheEntry
+	behindTLSProxy bool           // IDLER_BEHIND_TLS_PROXY
+	baseURL        string         // IDLER_BASE_URL ("" = derive from request)
+	whoisRate      whoisRateLimit // per-server whois throttle (fresh in tests)
 }
 
 // New creates a Server backed by db.

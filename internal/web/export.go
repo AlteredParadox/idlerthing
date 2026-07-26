@@ -98,6 +98,29 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			v, err := (&model.LabelStore{DB: s.db}).AllWithCounts(r.Context())
 			return flattenSlice(v), err
 		})
+		addKey("yabs", func() (any, error) {
+			return s.exportYABS(r)
+		})
+		addKey("labels_assigned", func() (any, error) {
+			rows, err := s.db.QueryContext(r.Context(),
+				"SELECT label_id, service_id, service_type FROM labels_assigned ORDER BY service_type, service_id")
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			var items []any
+			for rows.Next() {
+				var labelID, serviceID int64
+				var serviceType int
+				if err := rows.Scan(&labelID, &serviceID, &serviceType); err != nil {
+					return nil, err
+				}
+				items = append(items, map[string]any{
+					"label_id": labelID, "service_id": serviceID, "service_type": serviceType,
+				})
+			}
+			return items, nil
+		})
 		addKey("notes", func() (any, error) {
 			v, err := (&model.NoteStore{DB: s.db}).ListAll(r.Context())
 			return flattenSlice(v), err
@@ -402,6 +425,30 @@ func (s *Server) csvMisc(r *http.Request) ([][]string, error) {
 			boolCSV(it.Active), it.OwnedSince.String,
 		}
 		out = append(out, append(row, pricingCSV(it.Pricing)...))
+	}
+	return out, nil
+}
+
+// exportYABS returns all yabs runs with nested speed rows.
+func (s *Server) exportYABS(r *http.Request) (any, error) {
+	st := &model.YABSStore{DB: s.db}
+	items, err := st.ListAll(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	var out []any
+	for _, it := range items {
+		y, disks, network, err := st.Get(r.Context(), it.ID)
+		if err != nil {
+			return nil, err
+		}
+		m := flatten(y).(map[string]any)
+		m["disk_speed"] = flattenSlice(disks)
+		m["network_speed"] = flattenSlice(network)
+		out = append(out, m)
+	}
+	if out == nil {
+		out = []any{}
 	}
 	return out, nil
 }

@@ -43,7 +43,8 @@ func newTestServerFull(t *testing.T) (*httptest.Server, *sql.DB, *Server) {
 	if _, err := db.Migrate(database); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(testPassword), bcrypt.DefaultCost)
+	// MinCost keeps the suite fast; the cost rides in the hash anyway.
+	hash, err := bcrypt.GenerateFromPassword([]byte(testPassword), bcrypt.MinCost)
 	if err != nil {
 		t.Fatalf("bcrypt: %v", err)
 	}

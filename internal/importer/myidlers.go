@@ -10,6 +10,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"idlerthing/internal/model"
 )
@@ -184,7 +185,11 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 			s.CPUModel = *j.CPUModel
 		}
 		if j.OwnedSince != nil {
-			s.OwnedSince = *j.OwnedSince
+			if d, ok := normDate(*j.OwnedSince); ok {
+				s.OwnedSince = d
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%s: invalid owned_since %q — storing NULL", s.Hostname, *j.OwnedSince))
+			}
 		}
 		if j.ServerType != nil && *j.ServerType >= 1 && *j.ServerType <= 7 {
 			s.ServerType = *j.ServerType
@@ -219,12 +224,19 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 		s.Labels = parseLabels(j.Labels)
 
 		if j.Pricing != nil && j.Pricing.Price > 0 {
-			s.Pricing = &myPricing{
+			p := &myPricing{
 				Currency:    j.Pricing.Currency,
 				Price:       j.Pricing.Price,
 				Term:        j.Pricing.Term,
 				NextDueDate: j.Pricing.NextDueDate,
 			}
+			if d, ok := normDate(p.NextDueDate); ok {
+				p.NextDueDate = d
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%s: invalid next_due_date %q — storing NULL", s.Hostname, p.NextDueDate))
+				p.NextDueDate = ""
+			}
+			s.Pricing = p
 		}
 		out = append(out, s)
 	}
@@ -306,6 +318,10 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 	var out []MyServer
 	var warnings []string
 	for i, row := range rows[1:] {
+		owned, ownedOK := normDate(cell(row, "owned_since"))
+		if !ownedOK {
+			warnings = append(warnings, fmt.Sprintf("row %d: invalid owned_since %q — storing NULL", i+1, cell(row, "owned_since")))
+		}
 		s := MyServer{
 			Hostname:      cell(row, "hostname"),
 			Ns1:           cell(row, "ns1"),
@@ -321,7 +337,7 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			Transferrable: csvBool(cell(row, "transferrable")),
 			Active:        cell(row, "active") != "0",
 			ShowPublic:    csvBool(cell(row, "show_public")),
-			OwnedSince:    cell(row, "owned_since"),
+			OwnedSince:    owned,
 			OSName:        cell(row, "os_name"),
 			LocationName:  cell(row, "location_name"),
 			ProviderName:  cell(row, "provider_name"),
@@ -366,11 +382,15 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			if t := atoi(cell(row, "pricing_term")); t != nil {
 				term = int(*t)
 			}
+			due, dueOK := normDate(cell(row, "pricing_next_due_date"))
+			if !dueOK {
+				warnings = append(warnings, fmt.Sprintf("row %d: invalid next_due_date %q — storing NULL", i+1, cell(row, "pricing_next_due_date")))
+			}
 			s.Pricing = &myPricing{
 				Currency:    cell(row, "pricing_currency"),
 				Price:       *price,
 				Term:        term,
-				NextDueDate: cell(row, "pricing_next_due_date"),
+				NextDueDate: due,
 			}
 		}
 		out = append(out, s)
@@ -379,6 +399,24 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 }
 
 // ---------- shared mapping helpers ----------
+
+// normDate normalizes a date to yyyy-mm-dd (strict; RFC3339 date prefix
+// "2006-01-02T..." accepted by trimming at 'T'). ok=false means the input
+// was non-empty but unparseable → caller warns and stores NULL.
+func normDate(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", true
+	}
+	if i := strings.IndexByte(s, 'T'); i > 0 {
+		s = s[:i]
+	}
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return "", false
+	}
+	return t.Format("2006-01-02"), true
+}
 
 func intBool(v *int) bool { return v != nil && *v != 0 }
 

@@ -111,6 +111,18 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request, sec *
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	// htmx swaps re-render only the table partial — rows, sort state, and the
+	// CSRF token. Skip the counts/cards queries the layout would need.
+	if r.Header.Get("HX-Request") == "true" {
+		data := s.newPageData(w, r, sec.Title, sec.Kind)
+		data.Data = listView{listNav: listNav{
+			Base: sec.Base, Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir,
+		}, Rows: rows}
+		s.renderNamed(w, "service_list", "list_table", data)
+		return
+	}
+
 	active, inactive, err := sec.Counts(r.Context())
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -135,10 +147,6 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request, sec *
 
 	data := s.newPageData(w, r, sec.Title, sec.Kind)
 	data.Data = view
-	if r.Header.Get("HX-Request") == "true" {
-		s.renderNamed(w, "service_list", "list_table", data)
-		return
-	}
 	s.render(w, r, "service_list", data)
 }
 
@@ -259,18 +267,6 @@ func (s *Server) costPairUSDFor(r *http.Request, serviceType int) (monthly, year
 		return "—", "—"
 	}
 	return fmt.Sprintf("$%.2f/mo", sum), fmt.Sprintf("$%.2f/yr", sum*12)
-}
-
-// monthlyUSDFor renders the monthly cost stat, e.g. "$12.34/mo" ("—" if none).
-func (s *Server) monthlyUSDFor(r *http.Request, serviceType int) string {
-	monthly, _ := s.costPairUSDFor(r, serviceType)
-	return monthly
-}
-
-// yearlyUSDFor renders the yearly cost stat, e.g. "$148.08/yr" ("—" if none).
-func (s *Server) yearlyUSDFor(r *http.Request, serviceType int) string {
-	_, yearly := s.costPairUSDFor(r, serviceType)
-	return yearly
 }
 
 // pricingPairs renders a pricing as kv pairs for detail cards.

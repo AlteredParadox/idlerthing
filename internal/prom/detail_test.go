@@ -129,10 +129,7 @@ func TestHostDetailAndFilesystems(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL)
-	d, err := c.HostDetail(context.Background(), "a:9100")
-	if err != nil {
-		t.Fatalf("HostDetail: %v", err)
-	}
+	d := c.HostDetail(context.Background(), "a:9100")
 	if !d.CPU.Found || d.CPU.Current != 10 || d.CPU.Max != 30 || d.CPU.Avg != 18 {
 		t.Fatalf("cpu: %+v", d.CPU)
 	}

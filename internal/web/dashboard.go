@@ -81,11 +81,6 @@ var serviceTables = []struct {
 
 // handleDashboard renders the real dashboard.
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	// Lazy due-date rollover (cheap); any change invalidates the cache.
-	if n, err := pricing.AdvanceDueDates(r.Context(), s.db); err == nil && n > 0 {
-		s.touchDashboard()
-	}
-
 	s.dash.mu.Lock()
 	cached := s.dash.view
 	fresh := cached != nil && s.dash.viewGen == s.dash.gen &&
@@ -96,6 +91,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if fresh {
 		view = cached
 	} else {
+		// Lazy due-date rollover on cache misses only (≤60s lag is harmless
+		// at day granularity); any change invalidates the cache.
+		if n, err := pricing.AdvanceDueDates(r.Context(), s.db); err == nil && n > 0 {
+			s.touchDashboard()
+		}
 		var err error
 		view, err = s.computeDashboard(r)
 		if err != nil {
@@ -287,10 +287,12 @@ type dashSettings struct {
 }
 
 func (s *Server) dashSettings(r *http.Request) dashSettings {
-	out := dashSettings{currency: "USD", dueSoon: 14, recentlyAdded: 5}
-	s.db.QueryRowContext(r.Context(),
-		"SELECT dashboard_currency, due_soon_amount, recently_added_amount FROM settings WHERE id = 1").
-		Scan(&out.currency, &out.dueSoon, &out.recentlyAdded)
+	settings := s.memoSettings(r)
+	out := dashSettings{
+		currency:      settings.DashboardCurrency,
+		dueSoon:       settings.DueSoon,
+		recentlyAdded: settings.RecentlyAdded,
+	}
 	if out.dueSoon <= 0 {
 		out.dueSoon = 14
 	}

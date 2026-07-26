@@ -101,18 +101,29 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	active, inactive, err := s.servers.StatusCounts(r.Context())
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	locations, err := s.servers.DistinctLocations(r.Context())
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+
+	// htmx swaps re-render only the table partial — skip the
+	// counts/locations/cost queries the full page would need.
+	isHX := r.Header.Get("HX-Request") == "true"
+
+	var active, inactive, locations int
+	if !isHX {
+		active, inactive, err = s.servers.StatusCounts(r.Context())
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		locations, err = s.servers.DistinctLocations(r.Context())
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
-	monthlyCost, yearlyCost := s.costPairUSDFor(r, model.ServiceServer)
+	var monthlyCost, yearlyCost string
+	if !isHX {
+		monthlyCost, yearlyCost = s.costPairUSDFor(r, model.ServiceServer)
+	}
 	view := serversListView{
 		listNav:        listNav{Base: "/servers", Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir},
 		ActiveCount:    active,
@@ -149,12 +160,10 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 
 // dueSoonDays reads settings.due_soon_amount.
 func (s *Server) dueSoonDays(r *http.Request) int {
-	var n int
-	if err := s.db.QueryRowContext(r.Context(),
-		"SELECT due_soon_amount FROM settings WHERE id = 1").Scan(&n); err != nil || n <= 0 {
-		return 14
+	if n := s.memoSettings(r).DueSoon; n > 0 {
+		return n
 	}
-	return n
+	return 14
 }
 
 // makeServerRow converts a list item into display-ready strings.
@@ -255,7 +264,9 @@ func dueDisplay(next sql.NullString, dueSoonDays int) (string, string) {
 	if err != nil {
 		return date, ""
 	}
-	today := time.Now().Truncate(24 * time.Hour)
+	// Local midnight (the rest of the app compares local dates).
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	switch {
 	case t.Before(today):
 		return date, "due-over"

@@ -19,6 +19,7 @@ import (
 // Summary reports per-type inserted counts.
 type Summary struct {
 	Warnings  []string
+	YABS      int
 	Providers int
 	Locations int
 	OS        int
@@ -73,8 +74,9 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 }
 
 type importer struct {
-	tx  *sql.Tx
-	sum Summary
+	tx        *sql.Tx
+	sum       Summary
+	catMisses int // catalog refs the document couldn't resolve (partial export)
 	// idMaps maps service_type → old id → new id.
 	idMaps  [7]map[int64]int64
 	catMaps map[string]map[int64]int64 // catalog kind → old id → new id
@@ -82,7 +84,7 @@ type importer struct {
 }
 
 func (imp *importer) run(ctx context.Context, doc map[string]any) error {
-	imp.catMaps = map[string]map[int64]int64{}
+	imp.catMaps = map[string]map[int64]int64{"labels": {}}
 	for i := range imp.idMaps {
 		imp.idMaps[i] = map[int64]int64{}
 	}
@@ -131,6 +133,106 @@ func (imp *importer) run(ctx context.Context, doc map[string]any) error {
 	}
 	if err := imp.notes(ctx, doc); err != nil {
 		return err
+	}
+	if err := imp.yabs(ctx, doc); err != nil {
+		return err
+	}
+	if err := imp.labelsAssigned(ctx, doc); err != nil {
+		return err
+	}
+	if imp.catMisses > 0 {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"partial export: catalog associations could not be restored for %d rows", imp.catMisses))
+	}
+	return nil
+}
+
+// yabs imports runs (with speeds) remapped through the server id map, then
+// recomputes servers.has_yabs.
+func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
+	for _, item := range arr(doc, "yabs") {
+		y, _ := item.(map[string]any)
+		oldServer := int64(fget(y, "server_id"))
+		newServer, ok := imp.idMaps[1][oldServer]
+		if !ok {
+			continue // server not in this document
+		}
+		res, err := imp.tx.ExecContext(ctx, `
+			INSERT INTO yabs (server_id, run_at, cpu, cpu_cores, ram, swap, distro,
+				kernel, uptime, geekbench_version, gb_single, gb_multi, gb_url, payload_hash)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			newServer, sgetN(y, "run_at"), sgetN(y, "cpu"), nget(y, "cpu_cores"),
+			sgetN(y, "ram"), sgetN(y, "swap"), sgetN(y, "distro"), sgetN(y, "kernel"),
+			sgetN(y, "uptime"), nget(y, "geekbench_version"), nget(y, "gb_single"),
+			nget(y, "gb_multi"), sgetN(y, "gb_url"), sgetN(y, "payload_hash"))
+		if err != nil {
+			return fmt.Errorf("import yabs for server %d: %w", oldServer, err)
+		}
+		yabsID, _ := res.LastInsertId()
+		for _, d := range arr(y, "disk_speed") {
+			dm, _ := d.(map[string]any)
+			if _, err := imp.tx.ExecContext(ctx,
+				"INSERT INTO yabs_disk_speed (yabs_id, block_size, read_mbps, write_mbps) VALUES (?, ?, ?, ?)",
+				yabsID, sget(dm, "block_size"), fget(dm, "read_mbps"), fget(dm, "write_mbps")); err != nil {
+				return err
+			}
+		}
+		for _, n := range arr(y, "network_speed") {
+			nm, _ := n.(map[string]any)
+			if _, err := imp.tx.ExecContext(ctx,
+				"INSERT INTO yabs_network_speed (yabs_id, location, provider, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?)",
+				yabsID, sget(nm, "location"), sget(nm, "provider"),
+				fget(nm, "send_mbps"), fget(nm, "recv_mbps"), fget(nm, "latency_ms")); err != nil {
+				return err
+			}
+		}
+		imp.sum.YABS++
+	}
+	if imp.sum.YABS > 0 {
+		if _, err := imp.tx.ExecContext(ctx, `
+			UPDATE servers SET has_yabs = (SELECT COUNT(*) > 0 FROM yabs WHERE server_id = servers.id)`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// labelsAssigned imports the labels_assigned table, remapped through the
+// labels catalog map and the service id maps, capped per service.
+func (imp *importer) labelsAssigned(ctx context.Context, doc map[string]any) error {
+	for _, item := range arr(doc, "labels_assigned") {
+		a, _ := item.(map[string]any)
+		oldLabel := int64(fget(a, "label_id"))
+		serviceType := int(fget(a, "service_type"))
+		oldService := int64(fget(a, "service_id"))
+
+		labelID, ok := imp.catMaps["labels"][oldLabel]
+		if !ok {
+			continue // label catalog row not in this document
+		}
+		if serviceType < 1 || serviceType > 6 {
+			imp.sum.Warnings = append(imp.sum.Warnings,
+				fmt.Sprintf("label assignment: service_type %d out of range, skipped", serviceType))
+			continue
+		}
+		newService, ok := imp.idMaps[serviceType][oldService]
+		if !ok {
+			continue
+		}
+		var n int
+		if err := imp.tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM labels_assigned WHERE service_id = ? AND service_type = ?",
+			newService, serviceType).Scan(&n); err != nil {
+			return err
+		}
+		if n >= model.MaxLabelsPerService {
+			continue
+		}
+		if _, err := imp.tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO labels_assigned (label_id, service_id, service_type) VALUES (?, ?, ?)",
+			labelID, newService, serviceType); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -228,21 +330,48 @@ func (imp *importer) remapCatalog(table string, old sql.NullInt64) sql.NullInt64
 	if newID, ok := imp.catMaps[table][old.Int64]; ok {
 		return sql.NullInt64{Int64: newID, Valid: true}
 	}
+	imp.catMisses++
 	return sql.NullInt64{}
 }
 
 // ---------- pricing ----------
+
+// normOwned normalizes an owned_since value from the document.
+func (imp *importer) normOwned(v sql.NullString, serviceName string) sql.NullString {
+	if !v.Valid {
+		return v
+	}
+	if d, ok := normDate(v.String); ok {
+		return sql.NullString{String: d, Valid: d != ""}
+	}
+	imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+		"%s: invalid owned_since %q — storing NULL", serviceName, v.String))
+	return sql.NullString{}
+}
 
 // insertPricing inserts the inlined pricing map for a new service id.
 func (imp *importer) insertPricing(ctx context.Context, pm map[string]any, serviceID int64, serviceType int) error {
 	if pm == nil || sget(pm, "currency") == "" {
 		return nil
 	}
+	if term := int64(fget(pm, "term")); term < 1 || term > 7 {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"pricing: term %d out of range for service %d, skipped", term, serviceID))
+		return nil
+	}
+	due := sgetN(pm, "next_due_date")
+	if d, ok := normDate(due.String); !ok {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"pricing: invalid next_due_date %q for service %d — storing NULL", due.String, serviceID))
+		due = sql.NullString{}
+	} else if d != "" {
+		due = sql.NullString{String: d, Valid: true}
+	}
 	_, err := imp.tx.ExecContext(ctx, `
 		INSERT INTO pricings (service_id, service_type, currency, price, term, next_due_date, active)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		serviceID, serviceType, sget(pm, "currency"), fget(pm, "price"),
-		int64(fget(pm, "term")), sgetN(pm, "next_due_date"), bint(bget(pm, "active")))
+		int64(fget(pm, "term")), due, bint(bget(pm, "active")))
 	if err == nil {
 		imp.sum.Pricings++
 	}
@@ -272,7 +401,7 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 			sgetN(s, "ns1"), sgetN(s, "ns2"), nget(s, "ssh_port"),
 			bint(bget(s, "active")), bint(bget(s, "show_public")),
 			bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
-			sgetN(s, "owned_since"))
+			imp.normOwned(sgetN(s, "owned_since"), sget(s, "hostname")))
 		if err != nil {
 			return fmt.Errorf("import server %q: %w", sget(s, "hostname"), err)
 		}
@@ -396,7 +525,7 @@ func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, table
 			nget(h, "email_limit"), nget(h, "db_limit"), nget(h, "disk_as_mb"),
 			nget(h, "bandwidth_as_mb"), bint(bget(h, "has_dedicated_ip")), sgetN(h, "ip"),
 			bint(bget(h, "active")), bint(bget(h, "show_public")),
-			bint(bget(h, "was_promo")), sgetN(h, "owned_since"))
+			bint(bget(h, "was_promo")), imp.normOwned(sgetN(h, "owned_since"), sget(h, "main_domain")))
 		if err != nil {
 			return fmt.Errorf("import %s %q: %w", table, sget(h, "main_domain"), err)
 		}
@@ -430,7 +559,7 @@ func (imp *importer) seedboxes(ctx context.Context, doc map[string]any) error {
 			imp.remapCatalog("locations", nget(b, "location_id")),
 			nget(b, "port_speed"), nget(b, "disk_as_mb"), nget(b, "bandwidth_as_mb"),
 			bint(bget(b, "active")), bint(bget(b, "show_public")),
-			bint(bget(b, "was_promo")), sgetN(b, "owned_since"))
+			bint(bget(b, "was_promo")), imp.normOwned(sgetN(b, "owned_since"), sget(b, "hostname")))
 		if err != nil {
 			return fmt.Errorf("import seedbox %q: %w", sget(b, "hostname"), err)
 		}
@@ -460,7 +589,7 @@ func (imp *importer) domains(ctx context.Context, doc map[string]any) error {
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			sget(d, "domain"), sgetN(d, "extension"), sgetN(d, "ns1"), sgetN(d, "ns2"), sgetN(d, "ns3"),
 			imp.remapCatalog("providers", nget(d, "provider_id")),
-			bint(bget(d, "active")), sgetN(d, "owned_since"))
+			bint(bget(d, "active")), imp.normOwned(sgetN(d, "owned_since"), sget(d, "domain")))
 		if err != nil {
 			return fmt.Errorf("import domain %q: %w", sget(d, "domain"), err)
 		}
@@ -487,7 +616,7 @@ func (imp *importer) misc(ctx context.Context, doc map[string]any) error {
 		}
 		res, err := imp.tx.ExecContext(ctx,
 			"INSERT INTO misc_services (name, active, owned_since) VALUES (?, ?, ?)",
-			sget(m, "name"), bint(bget(m, "active")), sgetN(m, "owned_since"))
+			sget(m, "name"), bint(bget(m, "active")), imp.normOwned(sgetN(m, "owned_since"), sget(m, "name")))
 		if err != nil {
 			return fmt.Errorf("import misc %q: %w", sget(m, "name"), err)
 		}
@@ -516,10 +645,15 @@ func (imp *importer) labels(ctx context.Context, doc map[string]any) error {
 		if name == "" {
 			continue
 		}
-		if _, created, err := getOrCreateCatalogTx(ctx, imp.tx, "labels", "label", name); err != nil {
+		newID, created, err := getOrCreateCatalogTx(ctx, imp.tx, "labels", "label", name)
+		if err != nil {
 			return err
-		} else if created {
+		}
+		if created {
 			imp.sum.Labels++
+		}
+		if old := oldID(l); old > 0 {
+			imp.catMaps["labels"][old] = newID
 		}
 	}
 	return nil

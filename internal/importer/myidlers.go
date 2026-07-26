@@ -452,12 +452,6 @@ func diskMedia(media string) string {
 	}
 }
 
-// networkTypes is our target set.
-var networkTypes = map[string]bool{
-	"IPv4": true, "IPv6": true, "IPv4+IPv6": true,
-	"IPv4 NAT": true, "IPv4 NAT + IPv6": true,
-}
-
 // mapNetworkType maps fork variants onto our set; unknown free text passes through.
 func mapNetworkType(v *string) string {
 	if v == nil {

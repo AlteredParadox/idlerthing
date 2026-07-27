@@ -16,7 +16,7 @@ import (
 func TestBehindTLSProxySecureCookieAndXFF(t *testing.T) {
 	ts, _, srv := newTestServerFull(t)
 	srv.SetBehindTLSProxy(true)
-	client := newClient(t)
+	client := newProxyClient(t)
 
 	// Login over plain HTTP (httptest has no TLS) — cookie must still be Secure.
 	resp := login(t, client, ts, testPassword)

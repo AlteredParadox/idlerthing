@@ -55,7 +55,7 @@ func TestCookiesSecureBehindProxy(t *testing.T) {
 	srv.SetBehindTLSProxy(true)
 
 	// Login-CSRF cookie (GET /login).
-	resp, err := newClient(t).Get(ts.URL + "/login")
+	resp, err := newProxyClient(t).Get(ts.URL + "/login")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestCookiesSecureBehindProxy(t *testing.T) {
 	}
 
 	// Session cookie (POST /login).
-	client := newClient(t)
+	client := newProxyClient(t)
 	resp = login(t, client, ts, testPassword)
 	resp.Body.Close()
 	for _, c := range resp.Cookies() {

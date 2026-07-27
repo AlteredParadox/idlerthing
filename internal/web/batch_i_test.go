@@ -142,8 +142,15 @@ func TestYABSGbURLDuplicate(t *testing.T) {
 	client := authedClient(t, ts)
 	createServer(t, client, ts, "yabs-host")
 
+	// Pin the clock ONCE: tsOff selects the capability, so two calls meant to
+	// reuse the same (server_id, ts) must derive it from the same base. Reading
+	// time.Now() per call made that hold only while both landed in the same
+	// wall-clock second — straddling a second boundary minted a FRESH
+	// capability and the "capability consumed" assertion below failed. Rare
+	// normally, reproducible under `go test -race ./...`.
+	base := time.Now().Unix()
 	post := func(tsOff int64, body string) (int, string) {
-		now := time.Now().Unix() + tsOff
+		now := base + tsOff
 		resp, err := http.Post(fmt.Sprintf("%s/api/yabs/1?sig=%s&ts=%d",
 			ts.URL, signYABSTest(srv.secret, 1, now), now),
 			"application/json", strings.NewReader(body))

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -73,6 +74,64 @@ func newClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Jar: jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// proxyJar is the cookie jar for tests that turn SetBehindTLSProxy on.
+//
+// In that deployment the browser⇄proxy hop is HTTPS and the proxy⇄app hop is
+// plain http, so the app marks its cookies Secure and the browser replays
+// them. httptest can only give us the plain-http hop, and whether
+// net/http/cookiejar replays a Secure cookie to http://127.0.0.1 is
+// Go-version-dependent — 1.26 treats loopback as a trustworthy origin and
+// does, 1.25 (go.mod's floor, and what CI installs) does not. A stock jar
+// therefore drops the Secure login-CSRF and session cookies on 1.25 and the
+// whole authenticated flow fails for reasons that have nothing to do with
+// the behaviour under test.
+//
+// This jar models the browser side of that topology: it stores and returns
+// cookies regardless of the Secure attribute. Path scoping and deletion are
+// honoured so the login-CSRF cookie stays scoped to /login and expiring a
+// cookie (flash pop, logout) still removes it.
+type proxyJar struct {
+	mu sync.Mutex
+	c  map[string]*http.Cookie
+}
+
+func (j *proxyJar) SetCookies(_ *url.URL, cookies []*http.Cookie) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for _, c := range cookies {
+		if c.MaxAge < 0 || c.Value == "" {
+			delete(j.c, c.Name)
+			continue
+		}
+		j.c[c.Name] = c
+	}
+}
+
+func (j *proxyJar) Cookies(u *url.URL) []*http.Cookie {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var out []*http.Cookie
+	for _, c := range j.c {
+		if c.Path != "" && c.Path != "/" && !strings.HasPrefix(u.Path, c.Path) {
+			continue
+		}
+		out = append(out, &http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	return out
+}
+
+// newProxyClient is newClient with the Secure-tolerant jar above — use it in
+// any test that calls SetBehindTLSProxy.
+func newProxyClient(t *testing.T) *http.Client {
+	t.Helper()
+	return &http.Client{
+		Jar: &proxyJar{c: map[string]*http.Cookie{}},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

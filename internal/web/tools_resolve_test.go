@@ -25,6 +25,14 @@ func TestResolvePingFrom(t *testing.T) {
 	// Empty PATH so the LookPath fallback is deterministic.
 	t.Setenv("PATH", filepath.Join(dir, "empty"))
 
+	// LookPath fallback: no fixed candidate matches, but PATH has one.
+	t.Run("falls back to PATH", func(t *testing.T) {
+		t.Setenv("PATH", dir)
+		if got := resolvePingFrom([]string{missing}); got != real {
+			t.Fatalf("resolvePingFrom fallback = %q, want %q", got, real)
+		}
+	})
+
 	for _, tc := range []struct {
 		name       string
 		candidates []string

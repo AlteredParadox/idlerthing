@@ -108,8 +108,8 @@ func TestAddMonthsClamped(t *testing.T) {
 		{"2023-12-31", 2, "2024-02-29"},  // across year boundary into Feb
 	}
 	for _, c := range cases {
-		in, _ := time.Parse("2006-01-02", c.in)
-		got := AddMonthsClamped(in, c.months).Format("2006-01-02")
+		in, _ := time.Parse(time.DateOnly, c.in)
+		got := AddMonthsClamped(in, c.months).Format(time.DateOnly)
 		if got != c.want {
 			t.Errorf("%s +%dm = %s, want %s", c.in, c.months, got, c.want)
 		}
@@ -153,27 +153,27 @@ func TestAdvanceDueDates(t *testing.T) {
 		return d
 	}
 	// Assert against the same local "today" the advance logic uses.
-	todayStart, _ := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
+	todayStart, _ := time.Parse(time.DateOnly, time.Now().Format(time.DateOnly))
 
 	// Past monthly must land on/after today, same day-of-month.
-	d, _ := time.Parse("2006-01-02", dueOf(pastMonthly))
+	d, _ := time.Parse(time.DateOnly, dueOf(pastMonthly))
 	if d.Before(todayStart) || d.Day() != 15 {
 		t.Fatalf("past monthly advanced to %v", d)
 	}
 	// Jan 31 chain must land on/after today, clamped to month end each hop,
 	// and never overflow into the next month.
-	d, _ = time.Parse("2006-01-02", dueOf(jan31))
+	d, _ = time.Parse(time.DateOnly, dueOf(jan31))
 	if d.Before(todayStart) || d.Day() > 31 {
 		t.Fatalf("jan31 advanced to %v", d)
 	}
 
 	// A yesterday-due row must advance to >= today.
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	yesterday := time.Now().AddDate(0, 0, -1).Format(time.DateOnly)
 	yid := insert(model.TermMonthly, yesterday)
 	if n, err := AdvanceDueDates(ctx, database); err != nil || n != 1 {
 		t.Fatalf("yesterday advance: n=%d err=%v", n, err)
 	}
-	d, _ = time.Parse("2006-01-02", dueOf(yid))
+	d, _ = time.Parse(time.DateOnly, dueOf(yid))
 	if d.Before(todayStart) {
 		t.Fatalf("yesterday-due row stuck at %v", d)
 	}

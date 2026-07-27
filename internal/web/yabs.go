@@ -34,7 +34,7 @@ import (
 const yabsSigWindow = model.YABSSigWindow
 
 // signYABS produces the HMAC-SHA256 signature for "{server_id}.{ts}".
-func (s *Server) signYABS(serverID int64, ts int64) string {
+func (s *Server) signYABS(serverID, ts int64) string {
 	mac := hmac.New(sha256.New, s.secret)
 	fmt.Fprintf(mac, "%d.%d", serverID, ts)
 	return hex.EncodeToString(mac.Sum(nil))

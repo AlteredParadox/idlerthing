@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"net/netip"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -14,9 +15,37 @@ import (
 // pingRunner is injectable for tests. It returns latency in ms, or an error.
 var pingRunner = execPing
 
+// pingBinary is resolved ONCE, at startup, preferring fixed absolute paths so
+// a PATH entry pointing at a writable directory cannot substitute a shim for
+// the ping we exec. The PATH lookup is only a last resort for layouts that
+// put it elsewhere; "ping" alone (relative, resolved per-exec) is never used.
+var pingBinary = resolvePing()
+
+// pingCandidates are the fixed locations searched before the PATH fallback.
+var pingCandidates = []string{"/bin/ping", "/usr/bin/ping", "/sbin/ping", "/usr/sbin/ping"}
+
+func resolvePing() string { return resolvePingFrom(pingCandidates) }
+
+func resolvePingFrom(candidates []string) string {
+	for _, p := range candidates {
+		// Regular files only: a directory named "ping" on the search list
+		// must not be mistaken for the binary.
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return p
+		}
+	}
+	if p, err := exec.LookPath("ping"); err == nil {
+		return p
+	}
+	return "" // absent — execPing reports "ping not available"
+}
+
 // execPing runs one ICMP ping via the system ping binary.
 func execPing(host string) (float64, error) {
-	cmd := exec.Command("ping", "-c", "1", "-W", "2", host)
+	if pingBinary == "" {
+		return 0, fmt.Errorf("ping not available")
+	}
+	cmd := exec.Command(pingBinary, "-c", "1", "-W", "2", host)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if execErr, ok := err.(*exec.Error); ok && execErr.Err == exec.ErrNotFound {

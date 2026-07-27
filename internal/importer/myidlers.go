@@ -297,9 +297,9 @@ func parseLabels(raw json.RawMessage) []string {
 		}
 		return out
 	}
-	var strings_ []string
-	if err := json.Unmarshal(raw, &strings_); err == nil {
-		return clean(strings_)
+	var names []string
+	if err := json.Unmarshal(raw, &names); err == nil {
+		return clean(names)
 	}
 	var objs []struct {
 		Label string `json:"label"`
@@ -490,11 +490,11 @@ func normDate(s string) (string, bool) {
 	if i := strings.IndexByte(s, 'T'); i > 0 {
 		s = s[:i]
 	}
-	t, err := time.Parse("2006-01-02", s)
+	t, err := time.Parse(time.DateOnly, s)
 	if err != nil {
 		return "", false
 	}
-	return t.Format("2006-01-02"), true
+	return t.Format(time.DateOnly), true
 }
 
 func intBool(v *int) bool { return v != nil && *v != 0 }

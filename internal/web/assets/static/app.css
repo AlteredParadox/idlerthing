@@ -56,6 +56,8 @@
   --mut: #8b90a0;
   --acc: #5b9cf8;
   --accfg: #08101c;
+  /* fallback until /static/accent.css loads and overrides it */
+  --accSoft: rgba(91, 156, 248, 0.14);
   --hov: #1b1e26;
   --track: #2a2e37;
 
@@ -615,7 +617,10 @@ select:focus { outline: none; border-color: var(--acc); }
   padding: 2px 6px 2px 9px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--acc) 45%, transparent);
-  background: color-mix(in srgb, var(--acc) 12%, transparent);
+  /* the soft accent — this used to be color-mix(...12%) here and was then
+     silently overridden by a second .chip rule further down the file, so
+     14% is what has actually rendered. Kept as-is, now stated once. */
+  background: var(--accSoft);
   color: var(--acc);
   font-size: 12px;
   font-weight: 500;
@@ -657,6 +662,7 @@ select:focus { outline: none; border-color: var(--acc); }
 }
 .tbl.mini td {
   padding: 4px 6px;
+  white-space: normal;
   border-bottom: 1px solid var(--bd);
 }
 .tbl.mini tr:last-child td { border-bottom: none; }
@@ -705,7 +711,6 @@ select:focus { outline: none; border-color: var(--acc); }
 
 /* extras card overflow fixes */
 .info-card .tbl.mini .col-actions { position: static; }
-.tbl.mini td { white-space: normal; }
 .tbl.mini td.mono { white-space: nowrap; }
 .whois-cell {
   max-width: 190px;
@@ -774,7 +779,6 @@ select:focus { outline: none; border-color: var(--acc); }
 }
 
 /* accent soft token (overridden by /static/accent.css) */
-:root { --accSoft: rgba(91, 156, 248, 0.14); }
 
 /* settings: color swatch */
 .color-swatch {
@@ -787,14 +791,11 @@ select:focus { outline: none; border-color: var(--acc); }
   cursor: pointer;
 }
 
-/* label chips use the soft accent */
-.chip {
-  background: var(--accSoft);
-}
 
 /* ---------- compact mode: single-line dense rows ---------- */
 .compact .tbl td {
   padding: 4px 10px;
+  vertical-align: middle;
   line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
@@ -804,7 +805,6 @@ select:focus { outline: none; border-color: var(--acc); }
 .compact .tbl .kv,
 .compact .tbl td > div { line-height: 1.3; }
 /* keep rows single-line tall: shrink hover action buttons and center content */
-.compact .tbl td { vertical-align: middle; }
 .compact .tbl .row-actions { gap: 2px; align-items: center; }
 .compact .tbl .icon-btn {
   width: 20px;
@@ -966,4 +966,19 @@ select:focus { outline: none; border-color: var(--acc); }
 .tbl td.col-muted {
   color: var(--mut);
   font-size: 12px;
+}
+
+/* Visually hidden but exposed to assistive tech — used for the <th> headers
+   on the dense "mini" tables, which are real data tables but have no room
+   for a visible header row. Standard clip-rect pattern. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

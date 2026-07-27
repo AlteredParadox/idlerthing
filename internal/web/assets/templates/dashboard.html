@@ -35,6 +35,9 @@
     <h2 class="section-title">Due soon ({{$v.DueSoonDays}} days)</h2>
     {{if $v.DueSoon}}
     <table class="tbl mini">
+      <thead class="sr-only">
+        <tr><th scope="col">Service</th><th scope="col">Type</th><th scope="col">Price</th><th scope="col">Due</th></tr>
+      </thead>
       <tbody>
         {{range $v.DueSoon}}
         <tr>
@@ -55,6 +58,9 @@
     <h2 class="section-title">Recently added</h2>
     {{if $v.Recent}}
     <table class="tbl mini">
+      <thead class="sr-only">
+        <tr><th scope="col">Service</th><th scope="col">Type</th><th scope="col">Added</th></tr>
+      </thead>
       <tbody>
         {{range $v.Recent}}
         <tr>

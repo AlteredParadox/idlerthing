@@ -67,15 +67,16 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 		err := s.db.QueryRowContext(r.Context(),
 			"SELECT api_token_hash FROM users WHERE api_token_hash IS NOT NULL LIMIT 1").Scan(&stored)
 		switch {
-		case err == sql.ErrNoRows:
-			writeAPIError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		case err != nil:
+		case err != nil && err != sql.ErrNoRows:
 			// A DB error must surface as 500 — masking it as 401 would send
 			// operators chasing tokens while the database is broken.
 			writeAPIError(w, http.StatusInternalServerError, "internal error")
 			return
-		case stored == nil || subtle.ConstantTimeCompare([]byte(given), []byte(*stored)) != 1:
+		// No token row, no stored hash, or a mismatch are all "unauthorized"
+		// and must stay indistinguishable. The || short-circuits before
+		// *stored on the ErrNoRows path.
+		case err == sql.ErrNoRows || stored == nil ||
+			subtle.ConstantTimeCompare([]byte(given), []byte(*stored)) != 1:
 			writeAPIError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

@@ -50,7 +50,7 @@
     </form>
   </div>
   <div class="controls-right">
-    <input type="search" name="q" value="{{$v.Q}}" placeholder="Search hostname, model, provider, OS…"
+    <input type="search" name="q" value="{{$v.Q}}" aria-label="Search servers" placeholder="Search hostname, model, provider, OS…"
            class="search-input"
            hx-get="/servers?status={{$v.Status}}&sort={{$v.Sort}}&dir={{$v.Dir}}"
            hx-trigger="keyup changed delay:300ms" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">

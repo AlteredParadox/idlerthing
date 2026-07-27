@@ -209,7 +209,7 @@ func (s *Server) computeDashboard(r *http.Request) (*dashboardView, error) {
 
 	// Due-soon list + count: active services with active pricings only.
 	today := time.Now()
-	windowEnd := today.AddDate(0, 0, settings.dueSoon).Format("2006-01-02")
+	windowEnd := today.AddDate(0, 0, settings.dueSoon).Format(time.DateOnly)
 	err = s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM pricings a
 		WHERE a.active = 1 AND a.next_due_date IS NOT NULL AND a.next_due_date <= ?

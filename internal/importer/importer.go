@@ -62,8 +62,7 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	// arrived in the same release as this check, so an ABSENT key is a
 	// legacy (pre-marker) backup — restore it with a warning. A present
 	// but unrecognized value is rejected.
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := dec.Decode(new(any)); err != io.EOF {
 		return nil, fmt.Errorf("trailing garbage after the JSON document")
 	}
 	legacyFormat := false
@@ -183,10 +182,16 @@ func (imp *importer) run(ctx context.Context, doc map[string]any) error {
 	if err := imp.servers(ctx, doc); err != nil {
 		return err
 	}
-	if err := imp.hosting(ctx, doc, "shared", "shared_hosting", "shared_type", "shared_hosting", "shared_type", 2, &imp.sum.Shared); err != nil {
+	if err := imp.hosting(ctx, doc, hostingSpec{
+		docKey: "shared", entityKey: "shared_hosting", typeKey: "shared_type",
+		table: "shared_hosting", typeCol: "shared_type",
+		serviceType: 2, count: &imp.sum.Shared}); err != nil {
 		return err
 	}
-	if err := imp.hosting(ctx, doc, "reseller", "shared_hosting", "shared_type", "reseller_hosting", "reseller_type", 3, &imp.sum.Reseller); err != nil {
+	if err := imp.hosting(ctx, doc, hostingSpec{
+		docKey: "reseller", entityKey: "shared_hosting", typeKey: "shared_type",
+		table: "reseller_hosting", typeCol: "reseller_type",
+		serviceType: 3, count: &imp.sum.Reseller}); err != nil {
 		return err
 	}
 	if err := imp.seedboxes(ctx, doc); err != nil {
@@ -769,25 +774,37 @@ func (imp *importer) insertIP(ctx context.Context, im map[string]any, serviceID 
 
 // ---------- shared/reseller ----------
 
-func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, entityKey, typeKey, table, typeCol string, serviceType int, count *int) error {
-	// entityKey/typeKey are the DOCUMENT's keys ("shared_hosting"/
-	// "shared_type" for BOTH types — the export flattens the embedded
-	// SharedHosting struct); table/typeCol are the database targets.
-	for _, item := range arr(doc, key) {
+// hostingSpec names the strings hosting() needs. They are easy to transpose
+// positionally — the document keys are "shared_hosting"/"shared_type" for
+// BOTH types (the export flattens the embedded SharedHosting struct) while
+// the database targets differ, so two of the five look identical for shared
+// and different for reseller.
+type hostingSpec struct {
+	docKey      string // top-level array key: "shared" / "reseller"
+	entityKey   string // per-item entity object key IN THE DOCUMENT
+	typeKey     string // type field inside that entity, in the document
+	table       string // destination table
+	typeCol     string // destination type column
+	serviceType int
+	count       *int
+}
+
+func (imp *importer) hosting(ctx context.Context, doc map[string]any, spec hostingSpec) error {
+	for _, item := range arr(doc, spec.docKey) {
 		it, _ := item.(map[string]any)
-		h := mget(it, entityKey)
+		h := mget(it, spec.entityKey)
 		if h == nil {
 			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
-				"%s: item without a %q object, skipped", key, entityKey))
+				"%s: item without a %q object, skipped", spec.docKey, spec.entityKey))
 			continue
 		}
 		res, err := imp.tx.ExecContext(ctx, `
-			INSERT INTO `+table+` (main_domain, `+typeCol+`, provider_id, location_id,
+			INSERT INTO `+spec.table+` (main_domain, `+spec.typeCol+`, provider_id, location_id,
 				domains_limit, subdomains_limit, ftp_limit, email_limit, db_limit,
 				disk_as_mb, bandwidth_as_mb, has_dedicated_ip, ip,
 				active, show_public, was_promo, owned_since)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sget(h, "main_domain"), sgetN(h, typeKey),
+			sget(h, "main_domain"), sgetN(h, spec.typeKey),
 			imp.remapCatalog("providers", nget(h, "provider_id")),
 			imp.remapCatalog("locations", nget(h, "location_id")),
 			imp.boundedInt(nget(h, "domains_limit"), 1<<20, "domains_limit", sget(h, "main_domain")),
@@ -801,17 +818,17 @@ func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, entit
 			bint(bget(h, "active")), bint(bget(h, "show_public")),
 			bint(bget(h, "was_promo")), imp.normOwned(sgetN(h, "owned_since"), sget(h, "main_domain")))
 		if err != nil {
-			return fmt.Errorf("import %s %q: %w", table, sget(h, "main_domain"), err)
+			return fmt.Errorf("import %s %q: %w", spec.table, sget(h, "main_domain"), err)
 		}
 		newID, _ := res.LastInsertId()
 		if old := oldID(h); old > 0 {
-			imp.idMaps[serviceType][old] = newID
+			imp.idMaps[spec.serviceType][old] = newID
 		}
-		*count++
-		if err := imp.fixTimestamps(ctx, table, newID, h); err != nil {
+		*spec.count++
+		if err := imp.fixTimestamps(ctx, spec.table, newID, h); err != nil {
 			return err
 		}
-		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, serviceType); err != nil {
+		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, spec.serviceType); err != nil {
 			return err
 		}
 	}

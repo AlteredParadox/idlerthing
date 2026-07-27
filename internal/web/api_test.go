@@ -120,14 +120,33 @@ func TestAPITokenGeneration(t *testing.T) {
 	ts, database := newTestServer(t)
 	client := authedClient(t, ts)
 
+	// PRG: POST redirects; the revealed token rides a one-time cookie.
 	resp := postForm(t, client, ts, "/settings/account", url.Values{"action": {"token"}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 PRG redirect, got %d", resp.StatusCode)
+	}
+
+	// First GET shows the token exactly once.
+	resp, err := client.Get(ts.URL + "/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
 	body := readBody(t, resp)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected re-render with token, got %d", resp.StatusCode)
-	}
 	if !strings.Contains(body, "will not be shown again") {
 		t.Fatal("expected copy warning with revealed token")
+	}
+
+	// Second GET (incl. F5) does NOT regenerate or reveal anything.
+	resp, err = client.Get(ts.URL + "/settings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2 := readBody(t, resp)
+	resp.Body.Close()
+	if strings.Contains(body2, "will not be shown again") {
+		t.Fatal("token must be revealed exactly once")
 	}
 
 	var hash *string

@@ -267,6 +267,9 @@ func (s *Server) costSumUSDFor(r *http.Request, serviceType int) float64 {
 		priceRows = append(priceRows, pr)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0
+	}
 
 	rates, _ := s.rates.Get(r.Context())
 	sum := 0.0

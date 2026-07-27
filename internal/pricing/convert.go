@@ -79,7 +79,13 @@ func (r *Rates) Get(ctx context.Context) (map[string]float64, bool) {
 	r.lastTry = time.Now()
 	r.mu.Unlock()
 
-	fresh, ok := r.fetch(ctx)
+	// Fetch on a DETACHED context: if the leader's request ctx dies
+	// mid-fetch (client disconnect), followers still get the completed
+	// result instead of (nil,false) plus the 60s negative-cache backoff.
+	// lastTry was already stamped above, so failures keep their backoff.
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	fresh, ok := r.fetch(fetchCtx)
+	cancel()
 
 	r.mu.Lock()
 	if ok {

@@ -23,11 +23,13 @@ type dashboardCache struct {
 	// Sidebar counts cached by the same generation counter — every write to
 	// a COUNTED table bumps gen via touchDashboard (audited: all six service
 	// types, catalogs, label assign/unassign, dns, ips, notes, yabs ingest +
-	// delete), so staleness is impossible. Writes to users/sessions/settings/
+	// delete). A weak TTL backstops out-of-band writes (CLI import against
+	// the running server's DB). Writes to users/sessions/settings/
 	// user_prefs don't change any count and intentionally don't bump.
 	countsGen uint64
 	counts    Counts
 	countsOK  bool
+	countsAt  time.Time
 }
 
 // touchDashboard invalidates the dashboard cache.
@@ -182,6 +184,9 @@ func (s *Server) computeDashboard(r *http.Request) (*dashboardView, error) {
 		priceRows = append(priceRows, pr)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	for _, pr := range priceRows {
 		v, ok := pricing.MonthlyUSDRaw(&model.Pricing{Currency: pr.currency, Price: pr.price, Term: pr.term}, rates)
 		if ok {
@@ -247,6 +252,9 @@ func (s *Server) computeDashboard(r *http.Request) (*dashboardView, error) {
 		})
 	}
 	dueRows.Close()
+	if err := dueRows.Err(); err != nil {
+		return nil, err
+	}
 
 	// Recently added across all types.
 	recent, err := s.db.QueryContext(ctx, `
@@ -276,6 +284,9 @@ func (s *Server) computeDashboard(r *http.Request) (*dashboardView, error) {
 		})
 	}
 	recent.Close()
+	if err := recent.Err(); err != nil {
+		return nil, err
+	}
 
 	// Spec summary across active servers.
 	var ramMB, diskMB, bwMB int64

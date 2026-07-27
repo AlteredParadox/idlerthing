@@ -571,7 +571,7 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 			imp.remapCatalog("providers", nget(s, "provider_id")),
 			imp.remapCatalog("locations", nget(s, "location_id")),
 			imp.boundedInt(nget(s, "ram_as_mb"), 1<<30, "ram_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "cpu"), 1024, "cpu", sget(s, "hostname")), sgetN(s, "cpu_model"),
-			nget(s, "bandwidth_as_mb"), imp.boundedInt(nget(s, "link_speed"), 1<<20, "link_speed", sget(s, "hostname")), sgetN(s, "network_type"),
+			imp.boundedInt(nget(s, "bandwidth_as_mb"), 1<<30, "bandwidth_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "link_speed"), 1<<20, "link_speed", sget(s, "hostname")), sgetN(s, "network_type"),
 			sgetN(s, "ns1"), sgetN(s, "ns2"), imp.boundedInt(nget(s, "ssh_port"), 65535, "ssh_port", sget(s, "hostname")),
 			bint(bget(s, "active")), bint(bget(s, "show_public")),
 			bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
@@ -590,8 +590,8 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 
 		for _, d := range arr(it, "disks") {
 			dm, _ := d.(map[string]any)
-			size := int64(fget(dm, "size_as_mb"))
-			if size <= 0 {
+			size := imp.boundedInt(nget(dm, "size_as_mb"), 1<<30, "disk size_as_mb", sget(s, "hostname"))
+			if !size.Valid || size.Int64 <= 0 {
 				continue
 			}
 			media := sget(dm, "media")
@@ -606,7 +606,7 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 			}
 			if _, err := imp.tx.ExecContext(ctx,
 				"INSERT INTO server_disks (server_id, size_as_mb, media) VALUES (?, ?, ?)",
-				newID, size, media); err != nil {
+				newID, size.Int64, media); err != nil {
 				return err
 			}
 			imp.sum.Disks++
@@ -714,9 +714,14 @@ func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, table
 			sget(h, "main_domain"), sgetN(h, "shared_type"),
 			imp.remapCatalog("providers", nget(h, "provider_id")),
 			imp.remapCatalog("locations", nget(h, "location_id")),
-			nget(h, "domains_limit"), nget(h, "subdomains_limit"), nget(h, "ftp_limit"),
-			nget(h, "email_limit"), nget(h, "db_limit"), nget(h, "disk_as_mb"),
-			nget(h, "bandwidth_as_mb"), bint(bget(h, "has_dedicated_ip")), sgetN(h, "ip"),
+			imp.boundedInt(nget(h, "domains_limit"), 1<<20, "domains_limit", sget(h, "main_domain")),
+			imp.boundedInt(nget(h, "subdomains_limit"), 1<<20, "subdomains_limit", sget(h, "main_domain")),
+			imp.boundedInt(nget(h, "ftp_limit"), 1<<20, "ftp_limit", sget(h, "main_domain")),
+			imp.boundedInt(nget(h, "email_limit"), 1<<20, "email_limit", sget(h, "main_domain")),
+			imp.boundedInt(nget(h, "db_limit"), 1<<20, "db_limit", sget(h, "main_domain")),
+			imp.boundedInt(nget(h, "disk_as_mb"), 1<<30, "disk_as_mb", sget(h, "main_domain")),
+			imp.boundedInt(nget(h, "bandwidth_as_mb"), 1<<30, "bandwidth_as_mb", sget(h, "main_domain")),
+			bint(bget(h, "has_dedicated_ip")), sgetN(h, "ip"),
 			bint(bget(h, "active")), bint(bget(h, "show_public")),
 			bint(bget(h, "was_promo")), imp.normOwned(sgetN(h, "owned_since"), sget(h, "main_domain")))
 		if err != nil {
@@ -753,7 +758,9 @@ func (imp *importer) seedboxes(ctx context.Context, doc map[string]any) error {
 			sgetN(b, "title"), sget(b, "hostname"), sgetN(b, "seed_box_type"),
 			imp.remapCatalog("providers", nget(b, "provider_id")),
 			imp.remapCatalog("locations", nget(b, "location_id")),
-			nget(b, "port_speed"), nget(b, "disk_as_mb"), nget(b, "bandwidth_as_mb"),
+			imp.boundedInt(nget(b, "port_speed"), 1<<20, "port_speed", sget(b, "hostname")),
+			imp.boundedInt(nget(b, "disk_as_mb"), 1<<30, "disk_as_mb", sget(b, "hostname")),
+			imp.boundedInt(nget(b, "bandwidth_as_mb"), 1<<30, "bandwidth_as_mb", sget(b, "hostname")),
 			bint(bget(b, "active")), bint(bget(b, "show_public")),
 			bint(bget(b, "was_promo")), imp.normOwned(sgetN(b, "owned_since"), sget(b, "hostname")))
 		if err != nil {

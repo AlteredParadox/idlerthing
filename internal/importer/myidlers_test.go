@@ -601,3 +601,99 @@ func TestMyCSVWarningRowNumbers(t *testing.T) {
 		t.Fatalf("second data row is file line 3: %q", warnings[1])
 	}
 }
+
+// Batch O #3 — the MB plausibility cap matches the API's 1<<30.
+func TestConvertBandwidthCap(t *testing.T) {
+	gb := func(f float64) *float64 { return &f }
+	// 2<<20 GB = 2<<30 MB → over the 1<<30 cap: absent + warn flag.
+	if mb, bad := convertBandwidth(gb(2 << 20)); mb != nil || !bad {
+		t.Fatalf("2<<30 MB should be rejected: %v %v", mb, bad)
+	}
+	if mb, bad := convertBandwidth(gb(100)); mb == nil || *mb != 100*1024 || bad {
+		t.Fatalf("valid bandwidth broke: %v %v", mb, bad)
+	}
+	// Batch O #8 — negative warns; zero is silently unlimited.
+	if mb, bad := convertBandwidth(gb(-5)); mb != nil || !bad {
+		t.Fatalf("negative should warn: %v %v", mb, bad)
+	}
+	if mb, bad := convertBandwidth(gb(0)); mb != nil || bad {
+		t.Fatalf("zero should be silent NULL: %v %v", mb, bad)
+	}
+}
+
+// Batch O #5 — labels: empty names skipped, cap counts DISTINCT assigns.
+func TestMyLabelsCleanAndDistinctCap(t *testing.T) {
+	database := testDB(t)
+	recs, _, err := ParseMyJSON(strings.NewReader(`[
+		{"hostname": "lbl-01", "labels": ["", "  ", "prod"]},
+		{"hostname": "lbl-02", "labels": ["a", "a", "b", "c", "d"]}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs[0].Labels) != 1 || recs[0].Labels[0] != "prod" {
+		t.Fatalf("empty labels must be dropped: %v", recs[0].Labels)
+	}
+	sum, err := ImportMyIdlers(context.Background(), database, recs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var emptyLabels int
+	database.QueryRow("SELECT COUNT(*) FROM labels WHERE label = ''").Scan(&emptyLabels)
+	if emptyLabels != 0 {
+		t.Fatal("empty-string label row must not be created")
+	}
+	// a,a,b,c,d → 4 distinct → all four assigned (cap is 4).
+	var assigned int
+	database.QueryRow(`SELECT COUNT(*) FROM labels_assigned a
+		JOIN servers s ON s.id = a.service_id AND a.service_type = 1
+		WHERE s.hostname = 'lbl-02'`).Scan(&assigned)
+	if assigned != 4 {
+		t.Fatalf("distinct cap should keep all 4 labels, got %d (%+v)", assigned, sum)
+	}
+}
+
+// Batch O #4 — native importer bounds: hosting limits/disk/bandwidth,
+// seedbox port_speed, server bandwidth + disk sizes.
+func TestNativeSelectiveBounds(t *testing.T) {
+	database := testDB(t)
+	fixture := `{
+		"servers": [{"server": {"id": 1, "hostname": "nb-01", "server_type": 1,
+			"active": true, "bandwidth_as_mb": 2147483648},
+			"disks": [{"size_as_mb": 2147483648, "media": "SSD"}, {"size_as_mb": 1024, "media": "SSD"}]}],
+		"shared": [{"shared_hosting": {"id": 2, "main_domain": "nb.example.com",
+			"active": true, "domains_limit": 2097153, "disk_as_mb": 2147483648}}],
+		"seedboxes": [{"seedbox": {"id": 3, "hostname": "nb-sb", "active": true,
+			"port_speed": 2097152, "bandwidth_as_mb": 2048}}]
+	}`
+	summary, err := Import(context.Background(), database, strings.NewReader(fixture), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Servers != 1 || summary.Shared != 1 || summary.Seedboxes != 1 || summary.Disks != 1 {
+		t.Fatalf("summary: %+v", summary)
+	}
+	if len(summary.Warnings) < 5 {
+		t.Fatalf("expected ≥5 bound warnings, got %v", summary.Warnings)
+	}
+	var bw, disk any
+	database.QueryRow("SELECT bandwidth_as_mb FROM servers").Scan(&bw)
+	database.QueryRow("SELECT SUM(size_as_mb) FROM server_disks").Scan(&disk)
+	if bw != nil {
+		t.Fatalf("2<<30 bandwidth must be NULL, got %v", bw)
+	}
+	if disk != int64(1024) {
+		t.Fatalf("only the valid disk imports, got %v", disk)
+	}
+	var lim, hdisk any
+	database.QueryRow("SELECT domains_limit, disk_as_mb FROM shared_hosting").Scan(&lim, &hdisk)
+	if lim != nil || hdisk != nil {
+		t.Fatalf("hosting over-cap values must be NULL: %v %v", lim, hdisk)
+	}
+	var port any
+	var sbBw int64
+	database.QueryRow("SELECT port_speed, bandwidth_as_mb FROM seedboxes").Scan(&port, &sbBw)
+	if port != nil || sbBw != 2048 {
+		t.Fatalf("seedbox bounds: %v %d", port, sbBw)
+	}
+}

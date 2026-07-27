@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -80,22 +81,32 @@ func (c *Client) Query(ctx context.Context, promql string) ([]Sample, error) {
 	}
 	var out []Sample
 	for _, r := range body.Data.Result {
-		var v float64
-		if len(r.Value) == 2 {
-			if s, ok := r.Value[1].(string); ok {
-				v, _ = strconv.ParseFloat(s, 64)
-			}
+		if len(r.Value) != 2 {
+			out = append(out, Sample{Metric: r.Metric})
+			continue
+		}
+		s, ok := r.Value[1].(string)
+		if !ok {
+			out = append(out, Sample{Metric: r.Metric})
+			continue
+		}
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+			continue // "NaN"/"+Inf" samples carry no information — skip them
 		}
 		out = append(out, Sample{Metric: r.Metric, Value: v})
 	}
 	return out, nil
 }
 
-// HostMetrics holds the live numbers for one machine.
+// HostMetrics holds the live numbers for one machine. OnlineKnown is false
+// when the `up` query itself failed — Online is then UNKNOWN, not down
+// (callers must not render a red "down" dot next to live CPU numbers).
 type HostMetrics struct {
 	Instance       string
 	Found          bool
 	Online         bool
+	OnlineKnown    bool
 	CPUPct         float64
 	RAMPct         float64
 	DiskPct        float64
@@ -200,6 +211,7 @@ func (c *Client) ServerMetrics(ctx context.Context) *Metrics {
 		h := hostFor(s.Metric["instance"])
 		h.Found = true
 		h.Online = s.Value == 1
+		h.OnlineKnown = true
 	})
 	apply("cpu", func(s Sample) { hostFor(s.Metric["instance"]).CPUPct = s.Value })
 	apply("ram", func(s Sample) { hostFor(s.Metric["instance"]).RAMPct = s.Value })

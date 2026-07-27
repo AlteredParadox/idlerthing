@@ -316,3 +316,44 @@ func TestRatesColdFetchSharedWithFollowers(t *testing.T) {
 		t.Fatalf("expected 1 fetch, got %d", n)
 	}
 }
+
+// Batch O #12 — a leader whose request ctx dies mid-fetch still completes
+// on the detached context; followers get the rates, not a poisoned backoff.
+func TestRatesLeaderCtxCancelDoesNotPoisonFollowers(t *testing.T) {
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(150 * time.Millisecond)
+		w.Write([]byte(`{"base":"USD","rates":{"EUR":0.9}}`))
+	}))
+	defer ts.Close()
+
+	r := &Rates{BaseURL: ts.URL}
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var leaderRates, followerRates map[string]float64
+	var leaderOK, followerOK bool
+	go func() {
+		defer wg.Done()
+		leaderRates, leaderOK = r.Get(leaderCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		time.Sleep(30 * time.Millisecond) // arrive as a follower
+		followerRates, followerOK = r.Get(context.Background())
+	}()
+	time.Sleep(60 * time.Millisecond)
+	cancel() // leader's client disconnects mid-fetch
+	wg.Wait()
+
+	if !followerOK || followerRates["EUR"] != 0.9 {
+		t.Fatalf("follower poisoned by leader cancel: %v %v", followerRates, followerOK)
+	}
+	if !leaderOK || leaderRates["EUR"] != 0.9 {
+		t.Fatalf("leader should complete on the detached ctx: %v %v", leaderRates, leaderOK)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("expected 1 fetch, got %d", n)
+	}
+}

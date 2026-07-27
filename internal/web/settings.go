@@ -35,32 +35,23 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w, r, settingsView{})
 }
 
-// renderSettings renders the settings page, overlaying the current DB state.
+// renderSettings renders the settings page, overlaying the current state
+// via the per-request memo (also correct on the POST-error path: the memo
+// is per-request and the success path redirects).
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, view settingsView) {
-	var defaultCur, dashCur, theme, accent, promURL string
-	var dueSoon, recent, public, compact, promEnabled int
-	err := s.db.QueryRowContext(r.Context(), `
-		SELECT default_currency, dashboard_currency, due_soon_amount,
-			recently_added_amount, theme, servers_public, accent_color, compact_mode,
-			prometheus_enabled, prometheus_url
-		FROM settings WHERE id = 1`).
-		Scan(&defaultCur, &dashCur, &dueSoon, &recent, &theme, &public, &accent, &compact,
-			&promEnabled, &promURL)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	view.DefaultCurrency = defaultCur
-	view.DashboardCurrency = dashCur
-	view.DueSoon = dueSoon
-	view.RecentlyAdded = recent
-	view.Theme = theme
-	view.ServersPublic = public != 0
-	view.AccentColor = accent
-	view.Compact = compact != 0
-	view.PrometheusEnabled = promEnabled != 0
-	view.PrometheusURL = promURL
+	row := s.memoSettings(r)
+	view.DefaultCurrency = row.DefaultCurrency
+	view.DashboardCurrency = row.DashboardCurrency
+	view.DueSoon = row.DueSoon
+	view.RecentlyAdded = row.RecentlyAdded
+	view.Theme = row.Theme
+	view.ServersPublic = row.ServersPublic
+	view.AccentColor = row.AccentColor
+	view.Compact = row.Compact
+	view.PrometheusEnabled = row.PrometheusEnabled
+	view.PrometheusURL = row.PrometheusURL
 	view.Currencies = currencies
+	view.RevealedToken = s.popRevealedToken(w, r)
 
 	u := userFromCtx(r.Context())
 	if u != nil {
@@ -103,9 +94,8 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 
 	accent := strings.ToLower(strings.TrimSpace(r.FormValue("accent_color")))
 	if accent == "" {
-		// Field absent (older clients) — keep the current value.
-		s.db.QueryRowContext(r.Context(),
-			"SELECT accent_color FROM settings WHERE id = 1").Scan(&accent)
+		// Field absent (older clients) — keep the current (memoized) value.
+		accent = s.memoSettings(r).AccentColor
 		if !accentColorRe.MatchString(accent) {
 			accent = defaultAccent
 		}
@@ -219,8 +209,13 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
-// generateAPIToken creates a new API token, stores its sha256, and displays
-// the plaintext exactly once.
+// apiTokenCookieName carries the freshly generated API token across the
+// PRG redirect — the plaintext is shown exactly once.
+const apiTokenCookieName = "idler_api_token"
+
+// generateAPIToken creates a new API token, stores its sha256, and redirects
+// (PRG) with the plaintext riding a one-time cookie — rendering it directly
+// with a 200 would regenerate+revoke the token on every F5.
 func (s *Server) generateAPIToken(w http.ResponseWriter, r *http.Request, u *user) {
 	token, err := randomToken(32)
 	if err != nil {
@@ -234,7 +229,27 @@ func (s *Server) generateAPIToken(w http.ResponseWriter, r *http.Request, u *use
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.renderSettings(w, r, settingsView{RevealedToken: token})
+	http.SetCookie(w, &http.Cookie{
+		Name:     apiTokenCookieName,
+		Value:    token,
+		Path:     "/settings",
+		HttpOnly: true,
+		Secure:   s.cookieSecure(r),
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// popRevealedToken reads and clears the one-time API-token cookie.
+func (s *Server) popRevealedToken(w http.ResponseWriter, r *http.Request) string {
+	cookie, err := r.Cookie(apiTokenCookieName)
+	if err != nil || cookie.Value == "" {
+		return ""
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: apiTokenCookieName, Value: "", Path: "/settings", HttpOnly: true, MaxAge: -1,
+	})
+	return cookie.Value
 }
 
 // validCurrency returns the code when supported, else USD.

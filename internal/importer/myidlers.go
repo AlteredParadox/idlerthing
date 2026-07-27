@@ -286,9 +286,20 @@ func parseLabels(raw json.RawMessage) []string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
+	// Empty/whitespace names are dropped — they would create an
+	// empty-string catalog row.
+	clean := func(in []string) []string {
+		var out []string
+		for _, l := range in {
+			if l = strings.TrimSpace(l); l != "" {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
 	var strings_ []string
 	if err := json.Unmarshal(raw, &strings_); err == nil {
-		return strings_
+		return clean(strings_)
 	}
 	var objs []struct {
 		Label string `json:"label"`
@@ -303,7 +314,7 @@ func parseLabels(raw json.RawMessage) []string {
 				out = append(out, o.Name)
 			}
 		}
-		return out
+		return clean(out)
 	}
 	return nil
 }
@@ -488,9 +499,10 @@ func normDate(s string) (string, bool) {
 
 func intBool(v *int) bool { return v != nil && *v != 0 }
 
-// maxImportMB is the plausibility ceiling for float→MB conversions (1 PB in
-// MB); beyond it the value is corrupt, not big.
-const maxImportMB = int64(1) << 40
+// maxImportMB is the plausibility ceiling for float→MB conversions — the
+// same 1<<30 cap the web form + JSON API use (1 PB in MB); beyond it the
+// value is corrupt, not big.
+const maxImportMB = int64(1) << 30
 
 // safeInt converts a JSON/CSV float to an int64 with bounds: non-finite,
 // negative, or over-max values are rejected (ok=false) instead of hitting
@@ -520,8 +532,11 @@ func capMy(v *int64, max int64, field, label string, warnings *[]string) *int64 
 // (unlimited). bad=true means the input was present but implausible
 // (NaN/Inf/huge) — caller warns and stores NULL.
 func convertBandwidth(gb *float64) (mb *int64, bad bool) {
-	if gb == nil || *gb <= 0 {
-		return nil, false
+	if gb == nil || *gb == 0 {
+		return nil, false // absent / unlimited — not an error
+	}
+	if *gb < 0 {
+		return nil, true // negative is corrupt: warn + NULL
 	}
 	v, ok := safeInt(*gb*1024, maxImportMB)
 	if !ok || v == 0 {
@@ -739,10 +754,19 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySumm
 		}
 		delta.IPs++
 	}
-	for i, name := range rec.Labels {
-		if i >= model.MaxLabelsPerService {
+	// Cap DISTINCT successful assignments (the source may repeat names or
+	// vary case); get-or-create matches case-insensitively.
+	assigned := 0
+	seenLabels := map[string]bool{}
+	for _, name := range rec.Labels {
+		if assigned >= model.MaxLabelsPerService {
 			break
 		}
+		key := strings.ToLower(name)
+		if seenLabels[key] {
+			continue
+		}
+		seenLabels[key] = true
 		labelID, created, err := getOrCreateCatalogTx(ctx, tx, "labels", "label", name)
 		if err != nil {
 			return err
@@ -755,6 +779,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySumm
 			labelID, serverID); err != nil {
 			return err
 		}
+		assigned++
 	}
 	if rec.Pricing != nil {
 		if _, err := tx.ExecContext(ctx, `

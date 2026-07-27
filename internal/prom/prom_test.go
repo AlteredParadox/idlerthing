@@ -193,3 +193,52 @@ func TestServerMetricsConcurrencyBound(t *testing.T) {
 		t.Fatal("expected healthy batch")
 	}
 }
+
+// Batch O #10 — NaN/Inf samples are skipped (mirrors QueryRange).
+func TestQuerySkipsNonFiniteSamples(t *testing.T) {
+	ts := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, vectorJSON(
+			sample(`"instance":"a:9100"`, "NaN"),
+			sample(`"instance":"b:9100"`, "+Inf"),
+			sample(`"instance":"c:9100"`, "12.5"),
+		))
+	})
+	samples, err := New(ts.URL).Query(context.Background(), "cpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 || samples[0].Value != 12.5 {
+		t.Fatalf("non-finite samples must be skipped: %+v", samples)
+	}
+}
+
+// Batch O #11 — when the `up` query fails but other queries succeed, hosts
+// are found with UNKNOWN online status (not falsely down).
+func TestServerMetricsUpFailedOnlineUnknown(t *testing.T) {
+	ts := fakeProm(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		if q == serverQueries["up"] {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		switch q {
+		case serverQueries["uname"]:
+			fmt.Fprint(w, vectorJSON(sample(`"instance":"a:9100","nodename":"host-a"`, "1")))
+		case serverQueries["cpu"]:
+			fmt.Fprint(w, vectorJSON(sample(`"instance":"a:9100"`, "12.5")))
+		default:
+			fmt.Fprint(w, vectorJSON())
+		}
+	})
+	m := New(ts.URL).ServerMetrics(context.Background())
+	h := m.ByNodename["host-a"]
+	if h == nil || !h.Found {
+		t.Fatalf("host should be found via uname/cpu signal: %+v", h)
+	}
+	if h.OnlineKnown {
+		t.Fatalf("online status must be UNKNOWN when `up` fails: %+v", h)
+	}
+	if h.CPUPct != 12.5 {
+		t.Fatalf("cpu meters still render: %+v", h)
+	}
+}

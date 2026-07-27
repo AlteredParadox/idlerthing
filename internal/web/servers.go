@@ -149,7 +149,7 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 
 	data := s.newPageData(w, r, "Servers", "servers")
 	data.Data = view
-	if r.Header.Get("HX-Request") == "true" {
+	if isHX {
 		s.renderNamed(w, "servers", "server_table", data)
 		return
 	}
@@ -643,9 +643,13 @@ func applyLiveToRow(row *serverRow, h *prom.HostMetrics, linkSpeed sql.NullInt64
 	if h == nil {
 		return
 	}
-	row.Live = 2
-	if h.Online {
-		row.Live = 1
+	// Online is only meaningful when the `up` query succeeded — otherwise
+	// the row keeps the neutral grey dot (Live 0) while meters still render.
+	if h.OnlineKnown {
+		row.Live = 2
+		if h.Online {
+			row.Live = 1
+		}
 	}
 	row.CPUMeter = meter(h.CPUPct)
 	row.RAMMeter = meter(h.RAMPct)

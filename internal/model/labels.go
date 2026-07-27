@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // MaxLabelsPerService caps label assignments per service.
@@ -117,10 +118,14 @@ func (s *LabelStore) AllWithCounts(ctx context.Context) ([]LabelCount, error) {
 	return out, rows.Err()
 }
 
-// FindOrCreate returns the ID of a label by name, creating it if needed.
+// FindOrCreate returns the ID of a label by name (case-insensitively),
+// creating it if needed. A UNIQUE-conflict on insert — another creator won
+// the race between lookup and insert — re-selects and returns the existing
+// row instead of erroring.
 func (s *LabelStore) FindOrCreate(ctx context.Context, name string) (int64, error) {
 	var id int64
-	err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx, "SELECT id FROM labels WHERE label = ?", name).Scan(&id)
+	err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
+		"SELECT id FROM labels WHERE label = ? COLLATE NOCASE", name).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -129,6 +134,12 @@ func (s *LabelStore) FindOrCreate(ctx context.Context, name string) (int64, erro
 	}
 	res, err := s.DB.ExecContext(ctx, "INSERT INTO labels (label) VALUES (?)", name)
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			if selErr := QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
+				"SELECT id FROM labels WHERE label = ? COLLATE NOCASE", name).Scan(&id); selErr == nil {
+				return id, nil
+			}
+		}
 		return 0, fmt.Errorf("create label: %w", err)
 	}
 	return res.LastInsertId()

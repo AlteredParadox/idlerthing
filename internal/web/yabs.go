@@ -20,7 +20,8 @@ import (
 	"idlerthing/internal/yabs"
 )
 
-// yabsSigWindow is how long an ingest signature stays valid.
+// yabsSigWindow is how long an ingest signature stays valid (defined in
+// the model package — cap pruning depends on the same value).
 //
 // Threat note: the signature covers only {server_id}.{ts} — yabs.sh POSTs
 // its JSON to the URL verbatim (the `-s <url>` contract), so a body hash
@@ -30,7 +31,7 @@ import (
 // (server, payload_hash) dedup makes byte-identical replays idempotent,
 // and the admin can rotate IDLER_SECRET (or delete <db>.secret) to kill
 // leaked signatures. Residual modified-payload window is accepted.
-const yabsSigWindow = 2 * time.Hour
+const yabsSigWindow = model.YABSSigWindow
 
 // signYABS produces the HMAC-SHA256 signature for "{server_id}.{ts}".
 func (s *Server) signYABS(serverID int64, ts int64) string {

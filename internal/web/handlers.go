@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Counts holds per-table row counts shown in the sidebar nav.
@@ -43,8 +44,15 @@ const countsTables = `SELECT
 	(SELECT COUNT(*) FROM yabs),
 	(SELECT COUNT(*) FROM notes)`
 
+// countsTTL backstops the generation key: out-of-band writes (CLI import
+// against the running server's DB, WAL-permitted) never bump gen, so a
+// cached count older than this is re-queried regardless.
+const countsTTL = 5 * time.Minute
+
 // counts runs a cheap COUNT(*) per table. Cached across requests keyed to
-// the dashboard generation: only the first render after a write re-queries.
+// the dashboard generation (plus countsTTL as backstop): only the first
+// render after a write re-queries. A failed query returns zeros WITHOUT
+// caching — transient errors must not become authoritative.
 // (dash is nil in tests that build a bare Server — then no caching.)
 func (s *Server) counts(r *http.Request) Counts {
 	var gen uint64
@@ -52,7 +60,7 @@ func (s *Server) counts(r *http.Request) Counts {
 		s.dash.mu.Lock()
 		gen = s.dash.gen
 		cached, ok := s.dash.counts, s.dash.countsOK
-		stale := !ok || s.dash.countsGen != gen
+		stale := !ok || s.dash.countsGen != gen || time.Since(s.dash.countsAt) > countsTTL
 		s.dash.mu.Unlock()
 		if !stale {
 			return cached
@@ -61,16 +69,19 @@ func (s *Server) counts(r *http.Request) Counts {
 
 	var c Counts
 	// One round trip for all 14 counts.
-	s.db.QueryRowContext(r.Context(), countsTables).Scan(
+	err := s.db.QueryRowContext(r.Context(), countsTables).Scan(
 		&c.Servers, &c.Shared, &c.Reseller, &c.Seedboxes, &c.Domains,
 		&c.Misc, &c.DNS, &c.IPs, &c.Locations, &c.OS, &c.Providers,
 		&c.Labels, &c.YABS, &c.Notes)
+	if err != nil {
+		return Counts{}
+	}
 
 	// Tag with the gen captured BEFORE the query: a write landing mid-query
 	// bumps gen, so the result is stale on arrival and re-queried next time.
 	if s.dash != nil {
 		s.dash.mu.Lock()
-		s.dash.countsGen, s.dash.counts, s.dash.countsOK = gen, c, true
+		s.dash.countsGen, s.dash.counts, s.dash.countsOK, s.dash.countsAt = gen, c, true, time.Now()
 		s.dash.mu.Unlock()
 	}
 	return c
@@ -111,14 +122,8 @@ func (s *Server) handleThemePref(w http.ResponseWriter, r *http.Request) {
 // shortHostnames reports whether the current user prefers hostnames
 // stripped to their first DNS label on the servers list (user_prefs).
 func (s *Server) shortHostnames(r *http.Request) bool {
-	u := userFromCtx(r.Context())
-	if u == nil {
-		return false
-	}
-	var v string
-	err := s.db.QueryRowContext(r.Context(),
-		"SELECT value FROM user_prefs WHERE user_id = ? AND key = 'short_hostnames'", u.ID).Scan(&v)
-	return err == nil && v == "1"
+	v, ok := s.memoPref(r, "short_hostnames")
+	return ok && v == "1"
 }
 
 // listSort resolves the sort column and direction for a list page.
@@ -149,11 +154,11 @@ func (s *Server) listSort(r *http.Request, name, defaultSort string) (sort, dir 
 	}
 
 	if u != nil {
-		var v string
-		err := s.db.QueryRowContext(r.Context(),
-			"SELECT value FROM user_prefs WHERE user_id = ? AND key = 'sort_' || ?", u.ID, name).Scan(&v)
-		if err == nil {
-			if col, d, ok := strings.Cut(v, ","); ok && col != "" {
+		// Read through the per-request memo (the whole prefs table was
+		// already loaded). Pref writes redirect immediately, so there is no
+		// same-request write-then-read to go stale.
+		if v, ok := s.memoPref(r, "sort_"+name); ok {
+			if col, d, found := strings.Cut(v, ","); found && col != "" {
 				if d != "desc" {
 					d = "asc"
 				}

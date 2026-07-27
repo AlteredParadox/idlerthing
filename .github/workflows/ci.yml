@@ -1,0 +1,51 @@
+# Merge gate: the checks a change must pass. `make vet` (gofmt + go vet) and
+# `make test` are the project's own targets, so CI runs exactly what a
+# developer runs locally; the race suite runs separately because it is the
+# slow part (~4 min for internal/web) and only ever needs the one invocation.
+name: ci
+
+# push only on main; branch pushes are covered by their pull_request run,
+# so PRs (including Dependabot's) don't run this twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: this job only reads the repo.
+permissions:
+  contents: read
+
+# A new push to the same ref supersedes the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions pinned to full commit SHAs (a retagged action can't change
+      # under us); the trailing comment records the tag. Keep the comment at
+      # the FULL version — Dependabot only refreshes a comment that already
+      # carries one, and a bare "# v7" silently goes stale as the SHA moves.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # gofmt -l (fails on any unformatted file) + go vet ./...
+      - name: make vet
+        run: make vet
+
+      # The trimmed static binary the README documents.
+      - name: make build
+        run: make build
+
+      - name: make test
+        run: make test
+
+      # The caches (dashboard/counts, prometheus, rates singleflight) are
+      # concurrent by design — this is the suite that pins them.
+      - name: Race tests
+        run: go test -race ./...

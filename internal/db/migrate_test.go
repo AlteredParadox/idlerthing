@@ -1,6 +1,7 @@
 package db
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -423,5 +424,35 @@ func TestMigration0012NotesTargetCheck(t *testing.T) {
 	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body IN ('svc', 'ipn')").Scan(&legit)
 	if violators != 0 || legit != 2 {
 		t.Fatalf("violators=%d (want 0), legit=%d (want 2)", violators, legit)
+	}
+}
+
+// Batch Q — delete-bearing migrations log the affected row count.
+func TestMigrationDeleteLogging(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO notes (body) VALUES ('neither')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 11"); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil))) })
+	if _, err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "migration deleted rows") || !strings.Contains(out, "0012") ||
+		!strings.Contains(out, "table=notes") || !strings.Contains(out, "rows=1") {
+		t.Fatalf("expected the delete log line, got %q", out)
 	}
 }

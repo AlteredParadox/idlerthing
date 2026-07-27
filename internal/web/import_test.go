@@ -143,8 +143,10 @@ func TestImportRoundTrip(t *testing.T) {
 	}
 }
 
-// Batch P 3a — strict import envelope: decode errors, trailing garbage,
-// missing/wrong format marker, and wrong-shaped sections are all rejected.
+// Batch P 3a / Batch Q N1 — strict import envelope: decode errors, trailing
+// garbage, unrecognized format markers, and wrong-shaped sections are
+// rejected; a MISSING marker is a legacy (pre-marker) backup and imports
+// with a warning.
 func TestImportGarbage(t *testing.T) {
 	dbB := freshDB(t)
 	ctx := context.Background()
@@ -152,8 +154,8 @@ func TestImportGarbage(t *testing.T) {
 		`{nope`,               // not JSON
 		`{} trailing`,         // garbage after the value
 		`{"format": 1} extra`, // garbage after a valid doc
-		`{}`,                  // missing format marker
-		`{"format": 2}`,       // wrong format version
+		`{"format": 2}`,       // unrecognized format version
+		`{"format": "1"}`,     // wrong marker type
 		`{"format": 1, "servers": {"server": {}}}`, // section not an array
 	} {
 		if _, err := importer.Import(ctx, freshDB(t), strings.NewReader(doc), false); err == nil {
@@ -168,6 +170,25 @@ func TestImportGarbage(t *testing.T) {
 	if summary.Servers != 0 || summary.Shared != 0 || summary.Domains != 0 ||
 		summary.Pricings != 0 || len(summary.Warnings) != 0 {
 		t.Fatalf("empty doc should be a no-op: %+v", summary)
+	}
+
+	// N1 — a legacy backup (no format key) imports with a warning.
+	legacy := `{"servers": [{"server": {"id": 1, "hostname": "legacy-01", "server_type": 1, "active": true}}]}`
+	summary, err = importer.Import(ctx, freshDB(t), strings.NewReader(legacy), false)
+	if err != nil {
+		t.Fatalf("legacy backup: %v", err)
+	}
+	if summary.Servers != 1 {
+		t.Fatalf("legacy rows should import: %+v", summary)
+	}
+	found := false
+	for _, w := range summary.Warnings {
+		if strings.Contains(w, "legacy format") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the legacy-format warning, got %v", summary.Warnings)
 	}
 }
 

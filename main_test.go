@@ -207,3 +207,54 @@ func TestRunPasswd(t *testing.T) {
 		t.Fatal("short password must be refused")
 	}
 }
+
+// Batch Q N5 — passwd reads piped stdin; bad invocation shows usage.
+func TestRunPasswdStdin(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	t.Setenv("IDLER_DB", dbPath)
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Migrate(database); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedAdmin(database, "old-password-1"); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+
+	// Pipe the password via stdin (no argv).
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString("stdin-password-9\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	oldStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldStdin })
+
+	if err := runPasswd(nil); err != nil {
+		t.Fatalf("runPasswd(stdin): %v", err)
+	}
+	database, err = db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var hash string
+	database.QueryRow("SELECT password_hash FROM users").Scan(&hash)
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte("stdin-password-9")) != nil {
+		t.Fatal("stdin password should verify")
+	}
+
+	// Bad invocation → usage error.
+	if err := runPasswd([]string{"a", "b"}); err == nil || !strings.Contains(err.Error(), "usage: idlerthing passwd") {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+}

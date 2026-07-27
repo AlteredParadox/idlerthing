@@ -6,11 +6,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,10 +45,15 @@ func main() {
 	}
 }
 
-// runPasswd implements `idlerthing passwd [new-password]`: resets the admin
-// password (generated+printed when no arg is given), revoking all sessions
-// and the API token — the same fallout as the settings password change.
+// runPasswd implements `idlerthing passwd [new-password]`: resets the
+// (single) user row's password — single-admin app, so the UPDATE needs no
+// WHERE — revoking all sessions and the API token, the same fallout as the
+// settings password change. The password comes from argv (automation, with
+// a ps/shell-history warning), piped stdin, or is generated+printed on a TTY.
 func runPasswd(args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("usage: idlerthing passwd [new-password]  (better: echo '<pw>' | idlerthing passwd)")
+	}
 	cfg := config.Load()
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {
@@ -59,14 +66,25 @@ func runPasswd(args []string) error {
 
 	password := ""
 	generated := false
-	if len(args) > 0 {
+	switch {
+	case len(args) == 1:
 		password = args[0]
-	} else {
-		password, err = randomPassword(16)
-		if err != nil {
-			return err
+		fmt.Fprintln(os.Stderr, "warning: a password on the command line is visible in ps/shell history — prefer piping it via stdin")
+	default:
+		// No arg: piped stdin wins; an interactive TTY gets a generated one.
+		if fi, _ := os.Stdin.Stat(); fi != nil && fi.Mode()&os.ModeCharDevice == 0 {
+			raw, err := io.ReadAll(io.LimitReader(os.Stdin, 256))
+			if err != nil {
+				return fmt.Errorf("read password from stdin: %w", err)
+			}
+			password = strings.TrimSpace(string(raw))
+		} else {
+			password, err = randomPassword(16)
+			if err != nil {
+				return err
+			}
+			generated = true
 		}
-		generated = true
 	}
 	// bcrypt reads at most 72 bytes; the settings UI enforces the same range.
 	if len(password) < 8 || len(password) > 72 {

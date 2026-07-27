@@ -80,16 +80,19 @@ in-app ping tool.
   related records (pricings/ips/dns/notes/labels/yabs) and are marked
   `"partial": true`; only a full export restores everything.
 - Restore: `idlerthing import [--force] backup.json` — imports the app's own
-  export format. Catalogs are merged by name; services are always inserted
-  fresh, so importing into a non-empty database requires `--force` (and
-  duplicates services). Users, sessions, and settings are never imported.
+  export format. Current exports carry a `"format": 1` envelope marker;
+  older backups without one restore as **legacy format** (with a warning),
+  while an unrecognized marker is rejected. Catalogs are merged by name;
+  services are always inserted fresh, so importing into a non-empty
+  database requires `--force` (and duplicates services). Users, sessions,
+  and settings are never imported.
 
 ## Upgrading
 
 - Early docs showed example admin passwords verbatim. If your deployment
   dates from that era, the server logs a loud warning at startup when the
   admin password matches one — reset it with `idlerthing passwd` (prints a
-  generated one) or `idlerthing passwd '<new>'`, or in **Settings →
+  generated one) or `echo '<new>' | idlerthing passwd`, or in **Settings →
   Account**. All sessions and the API token are revoked either way.
 
 ## JSON API

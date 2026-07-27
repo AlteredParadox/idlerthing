@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -39,11 +40,13 @@ type fsRow struct {
 // prometheus baseURL — a settings change to a new server invalidates it.
 // inFlight singleflights a cold burst onto one upstream batch.
 type liveMonCache struct {
-	mu       sync.Mutex
-	baseURL  string
-	at       map[string]time.Time
-	v        map[string]*liveMonView
-	inFlight chan struct{}
+	mu      sync.Mutex
+	baseURL string
+	at      map[string]time.Time
+	v       map[string]*liveMonView
+	// inFlight singleflights PER INSTANCE — a global channel would
+	// serialize server B behind server A's ≤12s batch for no dedup gain.
+	inFlight map[string]chan struct{}
 }
 
 // liveMonEntry fetches + caches the section for one instance.
@@ -59,6 +62,7 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 		if s.livemon.at == nil || s.livemon.baseURL != baseURL {
 			s.livemon.at = map[string]time.Time{}
 			s.livemon.v = map[string]*liveMonView{}
+			s.livemon.inFlight = map[string]chan struct{}{}
 			s.livemon.baseURL = baseURL
 		}
 		at, ok := s.livemon.at[instance]
@@ -71,19 +75,26 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 			s.livemon.mu.Unlock()
 			return cached
 		}
-		if s.livemon.inFlight != nil {
-			ch := s.livemon.inFlight
+		if ch, flying := s.livemon.inFlight[instance]; flying {
 			s.livemon.mu.Unlock()
-			<-ch
-			continue
+			select {
+			case <-ch:
+				continue
+			case <-r.Context().Done():
+				return cached
+			}
 		}
-		s.livemon.inFlight = make(chan struct{})
+		ch := make(chan struct{})
+		s.livemon.inFlight[instance] = ch
 		s.livemon.mu.Unlock()
 		break
 	}
 
-	// Host batch and filesystems run CONCURRENTLY — sequentially they add
-	// up to ~22s worst case (12s host deadline + 10s filesystems).
+	// Host batch and filesystems run CONCURRENTLY on a DETACHED context —
+	// a disconnecting leader must not cancel the batch its followers wait
+	// on (HostDetail has its own 12s deadline, the HTTP client 5s per
+	// query, so this stays bounded).
+	ctx := context.Background()
 	client := prom.New(baseURL)
 	var detail *prom.Detail
 	var filesystems []prom.Filesystem
@@ -91,20 +102,22 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		detail = client.HostDetail(r.Context(), instance)
+		detail = client.HostDetail(ctx, instance)
 	}()
 	go func() {
 		defer wg.Done()
-		filesystems, _ = client.Filesystems(r.Context(), instance) // tolerate failure
+		filesystems, _ = client.Filesystems(ctx, instance) // tolerate failure
 	}()
 	wg.Wait()
 	view := buildLiveMonView(detail, filesystems)
 
 	// Store only when settings still point at the fetched endpoint.
-	stillCurrent := s.currentPromURL(r) == baseURL
+	stillCurrent := s.currentPromURL() == baseURL
 	s.livemon.mu.Lock()
-	close(s.livemon.inFlight)
-	s.livemon.inFlight = nil
+	if ch, ok := s.livemon.inFlight[instance]; ok {
+		close(ch)
+		delete(s.livemon.inFlight, instance)
+	}
 	if stillCurrent {
 		s.livemon.at[instance] = time.Now()
 		s.livemon.v[instance] = view

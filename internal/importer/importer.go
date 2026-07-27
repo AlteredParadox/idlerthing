@@ -55,13 +55,21 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("decode export JSON: %w", err)
 	}
-	// Strict envelope: one document, nothing after it, format marker present.
+	// Strict envelope: one document, nothing after it. The format marker
+	// arrived in the same release as this check, so an ABSENT key is a
+	// legacy (pre-marker) backup — restore it with a warning. A present
+	// but unrecognized value is rejected.
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("trailing garbage after the JSON document")
 	}
-	if v, _ := doc["format"].(float64); v != 1 {
-		return nil, fmt.Errorf("missing or wrong \"format\" marker — expected an idlerthing JSON export")
+	legacyFormat := false
+	if raw, present := doc["format"]; present {
+		if v, _ := raw.(float64); v != 1 {
+			return nil, fmt.Errorf("unrecognized \"format\" marker — expected an idlerthing JSON export")
+		}
+	} else {
+		legacyFormat = true
 	}
 	for _, key := range exportSections {
 		if raw, present := doc[key]; present {
@@ -112,6 +120,10 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	}
 
 	imp := &importer{tx: conn, seenIPs: map[string]bool{}}
+	if legacyFormat {
+		imp.sum.Warnings = append(imp.sum.Warnings,
+			"backup predates the format marker — restoring as legacy format")
+	}
 	if err := imp.run(ctx, doc); err != nil {
 		return nil, err
 	}

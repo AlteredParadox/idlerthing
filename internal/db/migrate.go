@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,10 +14,18 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// deleteTableRe finds delete targets in a migration body. Table names come
+// from the trusted embedded SQL files, so COUNT interpolation is safe.
+// (Statement-level RowsAffected isn't available from a multi-statement
+// Exec, and splitting the body naively breaks on semicolons inside SQL
+// comments — 0007 has them.)
+var deleteTableRe = regexp.MustCompile(`(?i)DELETE\s+FROM\s+(\w+)`)
+
 // Migrate applies any pending migrations to db and returns the list of
 // migration versions applied during this call. Migrations are tracked via
 // PRAGMA user_version; each embedded migrations/NNNN_name.sql file whose
 // numeric prefix exceeds the current version is applied in a transaction.
+// Delete-bearing migrations log the affected row count per target table.
 func Migrate(db *sql.DB) ([]int, error) {
 	var current int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&current); err != nil {
@@ -73,9 +83,23 @@ func Migrate(db *sql.DB) ([]int, error) {
 		if err != nil {
 			return applied, fmt.Errorf("begin migration %s: %w", m.name, err)
 		}
+		// Row counts before, for delete-logging after (see deleteTableRe).
+		before := map[string]int{}
+		for _, dm := range deleteTableRe.FindAllStringSubmatch(string(body), -1) {
+			var n int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM " + dm[1]).Scan(&n); err == nil {
+				before[dm[1]] = n
+			}
+		}
 		if _, err := tx.Exec(string(body)); err != nil {
 			tx.Rollback()
 			return applied, fmt.Errorf("apply migration %s: %w", m.name, err)
+		}
+		for table, n := range before {
+			var after int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&after); err == nil && after != n {
+				slog.Info("migration deleted rows", "migration", m.name, "table", table, "rows", n-after)
+			}
 		}
 		// user_version cannot be set as a bound parameter; version comes from
 		// the trusted embedded filename so interpolation is safe.

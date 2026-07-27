@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -46,11 +47,12 @@ type promCache struct {
 }
 
 // currentPromURL re-reads the prometheus URL straight from the DB (NOT the
-// per-request memo) — used to decide whether a slow fetch still belongs in
-// the cache after a possible mid-fetch settings change.
-func (s *Server) currentPromURL(r *http.Request) string {
+// per-request memo, and detached from any request ctx — a disconnecting
+// leader must not fail this check) — used to decide whether a slow fetch
+// still belongs in the cache after a possible mid-fetch settings change.
+func (s *Server) currentPromURL() string {
 	var u string
-	s.db.QueryRowContext(r.Context(),
+	s.db.QueryRowContext(context.Background(),
 		"SELECT prometheus_url FROM settings WHERE id = 1").Scan(&u)
 	return strings.TrimRight(strings.TrimSpace(u), "/")
 }
@@ -78,16 +80,28 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 		}
 		cached = s.prom.metrics
 		fresh := cached != nil && time.Since(s.prom.at) < 45*time.Second
-		backoff := time.Since(s.prom.lastTry) < 30*time.Second
-		if fresh || backoff {
+		if fresh {
 			s.prom.mu.Unlock()
 			return cached
 		}
+		// Join the in-flight batch BEFORE the backoff check — the leader
+		// just stamped lastTry, which must not read as "recent failure".
 		if s.prom.inFlight != nil {
 			ch := s.prom.inFlight
 			s.prom.mu.Unlock()
-			<-ch
-			continue
+			select {
+			case <-ch:
+				continue
+			case <-r.Context().Done():
+				// Disconnecting waiter: serve stale immediately instead of
+				// parking until the leader finishes.
+				return cached
+			}
+		}
+		backoff := time.Since(s.prom.lastTry) < 30*time.Second
+		if backoff {
+			s.prom.mu.Unlock()
+			return cached
 		}
 		s.prom.inFlight = make(chan struct{})
 		s.prom.lastTry = time.Now()
@@ -95,11 +109,14 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 		break
 	}
 
-	m := prom.New(baseURL).ServerMetrics(r.Context())
+	// Fetch on a DETACHED context: a disconnecting leader must not cancel
+	// the batch its followers are waiting on (ServerMetrics applies its own
+	// 8s deadline internally, so this stays bounded).
+	m := prom.New(baseURL).ServerMetrics(context.Background())
 
 	// Store only when settings STILL point at the same endpoint — a slow
 	// fetch to A must not land in B's cache slot after a switch.
-	stillCurrent := s.currentPromURL(r) == baseURL
+	stillCurrent := s.currentPromURL() == baseURL
 	s.prom.mu.Lock()
 	close(s.prom.inFlight)
 	s.prom.inFlight = nil
@@ -322,7 +339,7 @@ func (s *Server) uptime30d(r *http.Request, instance string) string {
 
 	// Same store-guard as liveMetrics: only cache against the endpoint the
 	// fetch actually went to.
-	stillCurrent := s.currentPromURL(r) == baseURL
+	stillCurrent := s.currentPromURL() == baseURL
 	s.uptime.mu.Lock()
 	close(s.uptime.inFlight)
 	s.uptime.inFlight = nil

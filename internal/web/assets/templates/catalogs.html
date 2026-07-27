@@ -15,7 +15,7 @@
   <form class="inline-add" method="post" action="/catalogs/{{$v.Kind}}"
         hx-post="/catalogs/{{$v.Kind}}" hx-target="#catalog-list" hx-swap="innerHTML">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <input type="text" name="name" placeholder="Name…" required>
+    <input type="text" name="name" placeholder="Name…" required aria-label="New name">
     <button class="btn btn-primary" type="submit">Add</button>
   </form>
 </div>
@@ -36,7 +36,7 @@
         <form class="row-edit" method="post" action="/catalogs/{{$v.Kind}}/{{.ID}}/update"
               hx-post="/catalogs/{{$v.Kind}}/{{.ID}}/update" hx-target="#catalog-list" hx-swap="innerHTML">
           <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-          <input type="text" name="name" value="{{.Name}}" required>
+          <input type="text" name="name" value="{{.Name}}" required aria-label="Name">
           <button class="icon-btn" type="submit" title="Save">✓</button>
         </form>
       </td>

@@ -149,9 +149,14 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess := sessionFromCtx(r.Context()); sess != nil {
 		s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE token = ?", sess.Token)
 	}
+	// The clearing cookie carries the SAME attributes as the one it replaces.
+	// Behind a TLS proxy the session cookie is Secure, and browsers implement
+	// "leave secure cookies alone" (RFC 6265bis): a non-Secure Set-Cookie may
+	// be refused, leaving a stale cookie in the browser. The session row is
+	// already gone server-side either way, so this is tidiness, not auth.
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookieName, Value: "", Path: "/",
-		HttpOnly: true, MaxAge: -1,
+		HttpOnly: true, Secure: s.cookieSecure(r), MaxAge: -1,
 	})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }

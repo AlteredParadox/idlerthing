@@ -68,12 +68,12 @@
     <div class="form-grid">
       <label class="field">
         <span class="field-label">Disk</span>
-        {{template "size_input" dict "name" "disk_as_mb" "val" $h.DiskAsMB}}
+        {{template "size_input" dict "label" "Disk" "name" "disk_as_mb" "val" $h.DiskAsMB}}
         {{with index $v.Errors "disk_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
       </label>
       <label class="field">
         <span class="field-label">Bandwidth</span>
-        {{template "size_input" dict "name" "bandwidth_as_mb" "val" $h.BandwidthAsMB "unlimited" true}}
+        {{template "size_input" dict "label" "Bandwidth" "name" "bandwidth_as_mb" "val" $h.BandwidthAsMB "unlimited" true}}
         {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
       </label>
       <label class="field">

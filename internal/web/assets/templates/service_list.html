@@ -30,7 +30,7 @@
     <a class="pill{{if eq $v.Status "all"}} active{{end}}" href="{{$v.StatusLink "all"}}"
        hx-get="{{$v.StatusLink "all"}}" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">All</a>
   </div>
-  <input type="search" name="q" value="{{$v.Q}}" placeholder="{{$v.SearchHint}}"
+  <input type="search" name="q" value="{{$v.Q}}" aria-label="Search" placeholder="{{$v.SearchHint}}"
          class="search-input"
          hx-get="{{$v.Base}}?status={{$v.Status}}&sort={{$v.Sort}}&dir={{$v.Dir}}"
          hx-trigger="keyup changed delay:300ms" hx-target="#list-table-wrap" hx-swap="innerHTML" hx-push-url="true">

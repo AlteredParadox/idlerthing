@@ -24,7 +24,7 @@ type flash struct {
 }
 
 // assetVersion busts the immutable static-asset cache when assets change.
-const assetVersion = "19"
+const assetVersion = "20"
 
 // pageData is the root template context for full-page renders.
 type pageData struct {
@@ -225,8 +225,12 @@ func (s *Server) popFlash(w http.ResponseWriter, r *http.Request) *flash {
 	if err != nil || cookie.Value == "" {
 		return nil
 	}
+	// Same attributes as the cookie being cleared (see handleLogout): a
+	// non-Secure clear can be refused where the original was Secure, which
+	// would make the flash sticky instead of one-shot.
 	http.SetCookie(w, &http.Cookie{
-		Name: flashCookieName, Value: "", Path: "/", HttpOnly: true, MaxAge: -1,
+		Name: flashCookieName, Value: "", Path: "/", HttpOnly: true,
+		Secure: s.cookieSecure(r), MaxAge: -1,
 	})
 	raw, err := url.QueryUnescape(cookie.Value)
 	if err != nil {

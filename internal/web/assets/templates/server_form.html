@@ -62,12 +62,12 @@
       </label>
       <label class="field">
         <span class="field-label">RAM</span>
-        {{template "size_input" dict "name" "ram_as_mb" "val" $s.RamAsMB}}
+        {{template "size_input" dict "label" "RAM" "name" "ram_as_mb" "val" $s.RamAsMB}}
         {{with index $v.Errors "ram_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
       </label>
       <label class="field">
         <span class="field-label">Bandwidth</span>
-        {{template "size_input" dict "name" "bandwidth_as_mb" "val" $s.BandwidthAsMB "unlimited" true}}
+        {{template "size_input" dict "label" "Bandwidth" "name" "bandwidth_as_mb" "val" $s.BandwidthAsMB "unlimited" true}}
         {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
       </label>
       <label class="field">
@@ -145,9 +145,9 @@
         <label class="field">
           <span class="field-label">Size</span>
           {{if $d}}
-          {{template "size_input" dict "name" (printf "disk%d_size" $i) "val" $d.SizeAsMB}}
+          {{template "size_input" dict "label" "Disk size" "name" (printf "disk%d_size" $i) "val" $d.SizeAsMB}}
           {{else}}
-          {{template "size_input" dict "name" (printf "disk%d_size" $i)}}
+          {{template "size_input" dict "label" "Disk size" "name" (printf "disk%d_size" $i)}}
           {{end}}
         </label>
         <label class="field">
@@ -197,11 +197,7 @@
 
   <div class="form-actions">
     <button class="btn btn-primary" type="submit">{{if $v.IsEdit}}Save changes{{else}}Add server{{end}}</button>
-    {{if $v.IsEdit}}
-    <a class="btn" href="/servers/{{$s.ID}}">Cancel</a>
-    {{else}}
-    <a class="btn" href="/servers">Cancel</a>
-    {{end}}
+    <a class="btn" href="{{if $v.IsEdit}}/servers/{{$s.ID}}{{else}}/servers{{end}}">Cancel</a>
   </div>
 </form>
 {{end}}

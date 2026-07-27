@@ -87,7 +87,7 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 		srv.Ns2 = sql.NullString{String: j.Ns2, Valid: true}
 	}
 	if j.OwnedSince != "" {
-		if _, err := time.Parse("2006-01-02", j.OwnedSince); err != nil {
+		if _, err := time.Parse(time.DateOnly, j.OwnedSince); err != nil {
 			errs["owned_since"] = "invalid date (want yyyy-mm-dd)"
 		} else {
 			srv.OwnedSince = sql.NullString{String: j.OwnedSince, Valid: true}
@@ -141,7 +141,7 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 			}
 			pricing = &model.Pricing{Currency: currency, Price: j.Pricing.Price, Term: term}
 			if j.Pricing.NextDueDate != "" {
-				if _, err := time.Parse("2006-01-02", j.Pricing.NextDueDate); err != nil {
+				if _, err := time.Parse(time.DateOnly, j.Pricing.NextDueDate); err != nil {
 					errs["next_due_date"] = "invalid date (want yyyy-mm-dd)"
 				} else {
 					pricing.NextDueDate = sql.NullString{String: j.Pricing.NextDueDate, Valid: true}

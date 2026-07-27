@@ -281,7 +281,7 @@ func TestDashboardDueSoonExcludesInactive(t *testing.T) {
 	ts, _ := newTestServer(t)
 	client := authedClient(t, ts)
 
-	soon := time.Now().AddDate(0, 0, 5).Format("2006-01-02")
+	soon := time.Now().AddDate(0, 0, 5).Format(time.DateOnly)
 
 	// Active shared due soon → appears.
 	resp := postForm(t, client, ts, "/shared", url.Values{

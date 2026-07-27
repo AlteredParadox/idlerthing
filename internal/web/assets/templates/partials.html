@@ -77,11 +77,11 @@
       <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
       <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
       <input type="hidden" name="back" value="{{$e.BackURL}}">
-      <select name="label_id">
+      <select name="label_id" aria-label="Label">
         <option value="">Pick label…</option>
         {{range $e.AllLabels}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
       </select>
-      <input type="text" name="new_label" placeholder="or new label">
+      <input type="text" name="new_label" placeholder="or new label" aria-label="New label">
       <button class="btn" type="submit">Add</button>
     </form>
     {{end}}
@@ -109,7 +109,7 @@
       <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
       <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
       <input type="hidden" name="back" value="{{$e.BackURL}}">
-      <textarea name="body" rows="2" placeholder="Add a note…" required></textarea>
+      <textarea name="body" rows="2" placeholder="Add a note…" required aria-label="Note"></textarea>
       <button class="btn" type="submit">Add note</button>
     </form>
   </section>
@@ -118,6 +118,9 @@
     <h2 class="section-title">IPs</h2>
     {{if $e.IPs}}
     <table class="tbl mini">
+      <thead class="sr-only">
+        <tr><th scope="col">Address</th><th scope="col">Version</th><th scope="col">Location</th><th scope="col">Actions</th></tr>
+      </thead>
       <tbody>
         {{range $e.IPs}}
         <tr>
@@ -150,7 +153,7 @@
       <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
       <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
       <input type="hidden" name="back" value="{{$e.BackURL}}">
-      <input type="text" name="address" placeholder="203.0.113.10 or 2001:db8::1" required>
+      <input type="text" name="address" placeholder="203.0.113.10 or 2001:db8::1" required aria-label="IP address">
       <button class="btn" type="submit">Add IP</button>
     </form>
   </section>
@@ -160,6 +163,9 @@
     <h2 class="section-title">DNS</h2>
     {{if $e.DNS}}
     <table class="tbl mini">
+      <thead class="sr-only">
+        <tr><th scope="col">Hostname</th><th scope="col">Type</th><th scope="col">Address</th></tr>
+      </thead>
       <tbody>
         {{range $e.DNS}}
         <tr>
@@ -182,9 +188,14 @@
 
 {{define "size_input"}}
 {{/* number + unit input-group for MB-stored sizes; .unlimited adds the checkbox */}}
+{{/* A wrapping <label> associates with only the FIRST control inside it, so
+     the unit <select> would otherwise be unnamed for a screen reader. Name
+     both explicitly; .label falls back to the field name. */}}
+{{$lbl := .label}}{{if not $lbl}}{{$lbl = .name}}{{end}}
 <div class="input-group">
-  <input type="number" name="{{.name}}" min="0" step="any" value="{{unitVal .val}}">
-  <select name="{{.name}}_unit">
+  <input type="number" name="{{.name}}" min="0" step="any" value="{{unitVal .val}}"
+         aria-label="{{$lbl}} amount">
+  <select name="{{.name}}_unit" aria-label="{{$lbl}} unit">
     {{$u := unitName .val}}
     <option value="MB" {{if eq $u "MB"}}selected{{end}}>MB</option>
     <option value="GB" {{if eq $u "GB"}}selected{{end}}>GB</option>

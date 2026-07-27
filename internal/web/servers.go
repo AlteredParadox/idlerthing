@@ -258,7 +258,7 @@ func dueDisplay(next sql.NullString, dueSoonDays int) (string, string) {
 	if len(date) > 10 {
 		date = date[:10]
 	}
-	t, err := time.ParseInLocation("2006-01-02", date, time.Local)
+	t, err := time.ParseInLocation(time.DateOnly, date, time.Local)
 	if err != nil {
 		return date, ""
 	}
@@ -640,7 +640,7 @@ func dateFormValue(r *http.Request, errs map[string]string, name string) sql.Nul
 	if raw == "" {
 		return sql.NullString{}
 	}
-	if _, err := time.Parse("2006-01-02", raw); err != nil {
+	if _, err := time.Parse(time.DateOnly, raw); err != nil {
 		errs[name] = "Invalid date."
 		return sql.NullString{}
 	}

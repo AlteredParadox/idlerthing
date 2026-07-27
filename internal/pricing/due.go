@@ -14,7 +14,7 @@ import (
 // arithmetic is clamped (Jan 31 + 1 month → Feb 28/29), matching PHP's
 // addMonthsNoOverflow. Returns the number of rows updated.
 func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
-	today := time.Now().Format("2006-01-02")
+	today := time.Now().Format(time.DateOnly)
 
 	// Select candidates and update INSIDE one transaction, with a
 	// compare-and-swap WHERE on the old date — a concurrent pricing edit
@@ -55,9 +55,9 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 	// Compare against the SAME local "today" the SELECT used, not UTC
 	// midnight — otherwise early-morning rows in UTC+N zones get selected
 	// but never advanced.
-	todayStart, _ := time.Parse("2006-01-02", today)
+	todayStart, _ := time.Parse(time.DateOnly, today)
 	for _, dr := range pending {
-		due, err := time.Parse("2006-01-02", dr.due)
+		due, err := time.Parse(time.DateOnly, dr.due)
 		if err != nil {
 			continue // unparseable stored value — leave it alone
 		}
@@ -70,7 +70,7 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 		}
 		res, err := tx.ExecContext(ctx,
 			"UPDATE pricings SET next_due_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND next_due_date = ?",
-			due.Format("2006-01-02"), dr.id, dr.due)
+			due.Format(time.DateOnly), dr.id, dr.due)
 		if err != nil {
 			return updated, err
 		}

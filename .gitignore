@@ -13,3 +13,6 @@ tmp-seed/
 
 # reference material (my-idlers fork, design mockups)
 ai_examples/
+
+# test binaries
+*.test

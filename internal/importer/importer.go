@@ -532,6 +532,20 @@ func (imp *importer) insertPricing(ctx context.Context, pm map[string]any, servi
 	return err
 }
 
+// boundedInt re-validates a nullable numeric against the same plausibility
+// caps the web form + JSON API use; out-of-range → NULL + warning.
+func (imp *importer) boundedInt(v sql.NullInt64, max int64, field, host string) sql.NullInt64 {
+	if !v.Valid {
+		return v
+	}
+	if v.Int64 < 0 || v.Int64 > max {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"server %q: %s %d out of range — storing NULL", host, field, v.Int64))
+		return sql.NullInt64{}
+	}
+	return v
+}
+
 // ---------- servers ----------
 
 func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
@@ -556,9 +570,9 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 			imp.remapCatalog("os", nget(s, "os_id")),
 			imp.remapCatalog("providers", nget(s, "provider_id")),
 			imp.remapCatalog("locations", nget(s, "location_id")),
-			nget(s, "ram_as_mb"), nget(s, "cpu"), sgetN(s, "cpu_model"),
-			nget(s, "bandwidth_as_mb"), nget(s, "link_speed"), sgetN(s, "network_type"),
-			sgetN(s, "ns1"), sgetN(s, "ns2"), nget(s, "ssh_port"),
+			imp.boundedInt(nget(s, "ram_as_mb"), 1<<30, "ram_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "cpu"), 1024, "cpu", sget(s, "hostname")), sgetN(s, "cpu_model"),
+			nget(s, "bandwidth_as_mb"), imp.boundedInt(nget(s, "link_speed"), 1<<20, "link_speed", sget(s, "hostname")), sgetN(s, "network_type"),
+			sgetN(s, "ns1"), sgetN(s, "ns2"), imp.boundedInt(nget(s, "ssh_port"), 65535, "ssh_port", sget(s, "hostname")),
 			bint(bget(s, "active")), bint(bget(s, "show_public")),
 			bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
 			imp.normOwned(sgetN(s, "owned_since"), sget(s, "hostname")))

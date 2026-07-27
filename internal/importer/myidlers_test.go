@@ -302,38 +302,45 @@ func TestMyDedup(t *testing.T) {
 	}
 }
 
+// Batch N M1 — a record listing the same IP twice imports anyway (IP kept
+// once, real warning) instead of being discarded by the UNIQUE constraint.
 func TestMyRowFailureTolerance(t *testing.T) {
 	database := testDB(t)
 	ctx := context.Background()
 
-	// One record has the SAME ip twice: the second ip insert violates
-	// UNIQUE(service_id, service_type, address) → the row is skipped with
-	// a warning, the transaction stays usable, later rows still import.
-	records, _, err := ParseMyJSON(strings.NewReader(`[
+	records, parseWarnings, err := ParseMyJSON(strings.NewReader(`[
 		{"hostname": "ok-01.example.com", "server_type": 1,
 		 "pricing": {"price": 5, "currency": "USD", "term": 1}},
-		{"hostname": "bad-02.example.com", "server_type": 1,
+		{"hostname": "dup-02.example.com", "server_type": 1,
 		 "ips": [{"address": "203.0.113.99", "is_ipv4": 1},
-		         {"address": "203.0.113.99", "is_ipv4": 1}]},
+		         {"address": "203.0.113.99", "is_ipv4": 1},
+		         {"address": "2001:db8::99", "is_ipv4": 0}]},
 		{"hostname": "ok-03.example.com", "server_type": 1}
 	]`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum, err := ImportMyIdlers(ctx, database, records, nil)
+	sum, err := ImportMyIdlers(ctx, database, records, parseWarnings)
 	if err != nil {
 		t.Fatalf("ImportMyIdlers should not abort: %v", err)
 	}
-	if sum.Imported != 2 {
-		t.Fatalf("expected 2 imports (1 warned row), got %d: %+v", sum.Imported, sum)
+	if sum.Imported != 3 {
+		t.Fatalf("expected all 3 imports, got %d: %+v", sum.Imported, sum)
 	}
-	if len(sum.Warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %v", sum.Warnings)
+	if len(sum.Warnings) != 1 || !strings.Contains(sum.Warnings[0], "duplicate IP 203.0.113.99") {
+		t.Fatalf("expected the duplicate-IP warning, got %v", sum.Warnings)
+	}
+	// The duplicated address is stored once; the distinct v6 survives too.
+	var ipCount int
+	database.QueryRow(`SELECT COUNT(*) FROM ips i JOIN servers s ON s.id = i.service_id
+		WHERE s.hostname = 'dup-02.example.com'`).Scan(&ipCount)
+	if ipCount != 2 {
+		t.Fatalf("expected 2 IPs (dup kept once + distinct v6), got %d", ipCount)
 	}
 	var count int
 	database.QueryRow("SELECT COUNT(*) FROM servers").Scan(&count)
-	if count != 2 {
-		t.Fatalf("expected 2 servers committed, got %d", count)
+	if count != 3 {
+		t.Fatalf("expected 3 servers committed, got %d", count)
 	}
 }
 
@@ -446,4 +453,151 @@ func TestMyCSVGuards(t *testing.T) {
 		t.Fatalf("v6 with is_ipv4=1 must stay v6: %+v", recs[4].IPs)
 	}
 	_ = warnings
+}
+
+// Batch N M2 — an out-of-range pricing term skips the pricing with a
+// warning (never silently clamped to monthly).
+func TestMyPricingTermSkipped(t *testing.T) {
+	recs, warnings, err := ParseMyJSON(strings.NewReader(`[
+		{"hostname": "tri.example.com",
+		 "pricing": {"price": 100, "currency": "USD", "term": 99}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].Pricing != nil {
+		t.Fatalf("term 99 must skip the pricing, got %+v", recs[0].Pricing)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "term 99 out of range") {
+		t.Fatalf("expected the term warning, got %v", warnings)
+	}
+
+	database := testDB(t)
+	sum, err := ImportMyIdlers(context.Background(), database, recs, warnings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Pricings != 0 {
+		t.Fatalf("no pricing may be attached: %+v", sum)
+	}
+}
+
+// Batch N M3 — cpu/ram/link_speed/ssh_port bounded in both my-idlers paths.
+func TestMyBounds(t *testing.T) {
+	recs, warnings, err := ParseMyJSON(strings.NewReader(`[
+		{"hostname": "huge-cpu", "cpu": 999999999, "ram_as_mb": 2048, "ssh": 22}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].CPU != nil {
+		t.Fatalf("cpu 999999999 must be absent, got %d", *recs[0].CPU)
+	}
+	if recs[0].RamAsMB == nil || *recs[0].RamAsMB != 2048 || recs[0].SSHPort == nil || *recs[0].SSHPort != 22 {
+		t.Fatal("valid values must pass through")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "cpu 999999999 out of range") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the cpu warning, got %v", warnings)
+	}
+
+	csvDoc := "hostname,server_type_name,cpu,ram_as_mb\nhuge-cpu-csv,KVM,999999999,4096\n"
+	csvRecs, csvWarnings, err := ParseMyCSV(strings.NewReader(csvDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if csvRecs[0].CPU != nil {
+		t.Fatalf("CSV cpu 999999999 must be absent, got %d", *csvRecs[0].CPU)
+	}
+	if csvRecs[0].RamAsMB == nil || *csvRecs[0].RamAsMB != 4096 {
+		t.Fatal("valid CSV values must pass through")
+	}
+	found = false
+	for _, w := range csvWarnings {
+		if strings.Contains(w, "cpu 999999999 out of range") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the CSV cpu warning, got %v", csvWarnings)
+	}
+}
+
+// Batch N M3 (native) — the same caps apply to idlerthing export imports.
+func TestNativeBounds(t *testing.T) {
+	database := testDB(t)
+	fixture := `{"servers": [{"server": {"id": 1, "hostname": "huge-native",
+		"server_type": 1, "active": true, "cpu": 999999999, "ssh_port": 22}}]}`
+	summary, err := Import(context.Background(), database, strings.NewReader(fixture), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cpu any
+	var port int
+	database.QueryRow("SELECT cpu, ssh_port FROM servers").Scan(&cpu, &port)
+	if cpu != nil {
+		t.Fatalf("cpu 999999999 must be NULL, got %v", cpu)
+	}
+	if port != 22 {
+		t.Fatalf("valid ssh_port must pass through, got %d", port)
+	}
+	found := false
+	for _, w := range summary.Warnings {
+		if strings.Contains(w, "cpu 999999999 out of range") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the cpu warning, got %v", summary.Warnings)
+	}
+}
+
+// Batch N M4 — catalog get-or-create is case-insensitive.
+func TestMyCatalogCaseInsensitive(t *testing.T) {
+	database := testDB(t)
+	recs, _, err := ParseMyJSON(strings.NewReader(`[
+		{"hostname": "a.example.com", "provider": {"name": "OVH"}},
+		{"hostname": "b.example.com", "provider": {"name": "ovh"}}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, err := ImportMyIdlers(context.Background(), database, recs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Providers != 1 {
+		t.Fatalf("expected 1 provider, got %+v", sum)
+	}
+	var providers, linked int
+	database.QueryRow("SELECT COUNT(*) FROM providers").Scan(&providers)
+	database.QueryRow("SELECT COUNT(*) FROM servers WHERE provider_id IS NOT NULL").Scan(&linked)
+	if providers != 1 || linked != 2 {
+		t.Fatalf("OVH/ovh must merge into one provider used by both servers: %d providers, %d linked", providers, linked)
+	}
+}
+
+// Batch N M5 — CSV warnings reference the FILE line (header is line 1).
+func TestMyCSVWarningRowNumbers(t *testing.T) {
+	csvDoc := "hostname,server_type_name,owned_since\n" +
+		"first.example.com,KVM,not-a-date\n" +
+		"second.example.com,KVM,also-bad\n"
+	_, warnings, err := ParseMyCSV(strings.NewReader(csvDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %v", warnings)
+	}
+	if !strings.Contains(warnings[0], "row 2") {
+		t.Fatalf("first data row is file line 2: %q", warnings[0])
+	}
+	if !strings.Contains(warnings[1], "row 3") {
+		t.Fatalf("second data row is file line 3: %q", warnings[1])
+	}
 }

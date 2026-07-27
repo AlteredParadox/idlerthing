@@ -216,12 +216,14 @@ func fetchExportFrom(t *testing.T, srv *Server) []byte {
 	return recorder.Body.Bytes()
 }
 
-// #2 — myidlers: a failed first row doesn't suppress a later valid row with
-// the same hostname, and doesn't inflate counts.
+// #2 — myidlers: parse-time IP dedupe means the first row imports (warning
+// attached, counts exact); the second same-hostname row is the skipped
+// duplicate. (Batch N M1 made parse-driven row failures unreachable — the
+// savepoint machinery remains as a safety net.)
 func TestMyIdlersFailedRowDoesntSuppress(t *testing.T) {
 	dbB := freshDB(t)
 	ctx := context.Background()
-	records, _, err := importer.ParseMyJSON(strings.NewReader(`[
+	records, parseWarnings, err := importer.ParseMyJSON(strings.NewReader(`[
 		{"hostname": "retry-01", "server_type": 1,
 		 "os": {"name": "Debian 12"},
 		 "ips": [{"address": "203.0.113.5", "is_ipv4": 1},
@@ -233,17 +235,17 @@ func TestMyIdlersFailedRowDoesntSuppress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum, err := importer.ImportMyIdlers(ctx, dbB, records, nil)
+	sum, err := importer.ImportMyIdlers(ctx, dbB, records, parseWarnings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Imported != 1 {
-		t.Fatalf("later valid row should import: %+v", sum)
+	if sum.Imported != 1 || sum.SkippedDup != 1 {
+		t.Fatalf("first row imports, second is the skipped dup: %+v", sum)
 	}
-	if len(sum.Warnings) != 1 {
-		t.Fatalf("expected 1 warning for the failed row: %+v", sum)
+	if len(sum.Warnings) != 1 || !strings.Contains(sum.Warnings[0], "duplicate IP") {
+		t.Fatalf("expected the duplicate-IP warning: %+v", sum)
 	}
-	// Counters must match the DB exactly — the failed row inflated nothing.
+	// Counters must match the DB exactly — the dup IP inflated nothing.
 	var servers, ips, osCount int
 	dbB.QueryRow("SELECT COUNT(*) FROM servers").Scan(&servers)
 	dbB.QueryRow("SELECT COUNT(*) FROM ips").Scan(&ips)

@@ -172,11 +172,11 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 			Transferrable: intBool(j.Transferrable),
 			Active:        j.Active == nil || *j.Active != 0, // default active
 			ShowPublic:    intBool(j.ShowPublic),
-			CPU:           j.CPU,
-			RamAsMB:       j.RamAsMB,
-			LinkSpeed:     j.LinkSpeed,
-			SSHPort:       j.SSH,
 		}
+		s.CPU = capMy(j.CPU, 1024, "cpu", s.Hostname, &warnings)
+		s.RamAsMB = capMy(j.RamAsMB, 1<<30, "ram_as_mb", s.Hostname, &warnings)
+		s.LinkSpeed = capMy(j.LinkSpeed, 1<<20, "link_speed", s.Hostname, &warnings)
+		s.SSHPort = capMy(j.SSH, 65535, "ssh_port", s.Hostname, &warnings)
 		if j.Ns1 != nil {
 			s.Ns1 = *j.Ns1
 		}
@@ -228,6 +228,7 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 			}
 		}
 
+		seenIPs := map[string]bool{}
 		for _, ip := range j.IPs {
 			if ip.Address == "" {
 				continue
@@ -239,6 +240,13 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 				warnings = append(warnings, fmt.Sprintf("%s: invalid ip %q — skipped", s.Hostname, ip.Address))
 				continue
 			}
+			// A duplicated address would fail the whole row on
+			// UNIQUE(service_id, service_type, address) — keep it once.
+			if seenIPs[ip.Address] {
+				warnings = append(warnings, fmt.Sprintf("%s: duplicate IP %s listed twice — kept once", s.Hostname, ip.Address))
+				continue
+			}
+			seenIPs[ip.Address] = true
 			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
 		}
 		s.Labels = parseLabels(j.Labels)
@@ -247,6 +255,10 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 			cur, ok := normCurrency(j.Pricing.Currency)
 			if !ok {
 				warnings = append(warnings, fmt.Sprintf("%s: invalid currency %q — pricing skipped", s.Hostname, j.Pricing.Currency))
+				goto noPricing
+			}
+			if j.Pricing.Term < 1 || j.Pricing.Term > 7 {
+				warnings = append(warnings, fmt.Sprintf("%s: term %d out of range — pricing skipped", s.Hostname, j.Pricing.Term))
 				goto noPricing
 			}
 			p := &myPricing{
@@ -346,19 +358,15 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 	for i, row := range rows[1:] {
 		owned, ownedOK := normDate(cell(row, "owned_since"))
 		if !ownedOK {
-			warnings = append(warnings, fmt.Sprintf("row %d: invalid owned_since %q — storing NULL", i+1, cell(row, "owned_since")))
+			warnings = append(warnings, fmt.Sprintf("row %d: invalid owned_since %q — storing NULL", i+2, cell(row, "owned_since")))
 		}
 		s := MyServer{
 			Hostname:      cell(row, "hostname"),
 			Ns1:           cell(row, "ns1"),
 			Ns2:           cell(row, "ns2"),
 			ServerType:    1,
-			CPU:           atoi(cell(row, "cpu")),
 			CPUModel:      cell(row, "cpu_model"),
-			RamAsMB:       atoi(cell(row, "ram_as_mb")),
 			NetworkType:   mapNetworkTypeStr(cell(row, "network_type")),
-			SSHPort:       atoi(cell(row, "ssh")),
-			LinkSpeed:     atoi(cell(row, "link_speed")),
 			WasPromo:      csvBool(cell(row, "was_promo")),
 			Transferrable: csvBool(cell(row, "transferrable")),
 			Active:        cell(row, "active") != "0",
@@ -371,8 +379,13 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 		if st := atoi(cell(row, "server_type")); st != nil && *st >= 1 && *st <= 7 {
 			s.ServerType = int(*st)
 		}
+		rowLabel := fmt.Sprintf("row %d", i+2)
+		s.CPU = capMy(atoi(cell(row, "cpu")), 1024, "cpu", rowLabel, &warnings)
+		s.RamAsMB = capMy(atoi(cell(row, "ram_as_mb")), 1<<30, "ram_as_mb", rowLabel, &warnings)
+		s.LinkSpeed = capMy(atoi(cell(row, "link_speed")), 1<<20, "link_speed", rowLabel, &warnings)
+		s.SSHPort = capMy(atoi(cell(row, "ssh")), 65535, "ssh_port", rowLabel, &warnings)
 		if bw, bad := convertBandwidth(atof(cell(row, "bandwidth"))); bad {
-			warnings = append(warnings, fmt.Sprintf("row %d: implausible bandwidth — storing NULL", i+1))
+			warnings = append(warnings, fmt.Sprintf("row %d: implausible bandwidth — storing NULL", i+2))
 		} else {
 			s.BandwidthAsMB = bw
 		}
@@ -380,14 +393,14 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 		var disks []miJSONDisk
 		if raw := cell(row, "disks"); raw != "" {
 			if err := json.Unmarshal([]byte(raw), &disks); err != nil {
-				warnings = append(warnings, fmt.Sprintf("row %d (%s): bad disks JSON", i+1, s.Hostname))
+				warnings = append(warnings, fmt.Sprintf("row %d (%s): bad disks JSON", i+2, s.Hostname))
 			}
 		}
 		for _, d := range disks {
 			if mb := diskToMB(d.Size, d.Unit); mb > 0 {
 				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
 			} else if d.Size > 0 {
-				warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+1))
+				warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+2))
 			}
 		}
 		if len(s.Disks) == 0 {
@@ -395,7 +408,7 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 				if mb := diskToMB(*gb, "GB"); mb > 0 {
 					s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: "SSD"})
 				} else {
-					warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+1))
+					warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+2))
 				}
 			}
 		}
@@ -403,9 +416,10 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 		var ips []miJSONIP
 		if raw := cell(row, "ips"); raw != "" {
 			if err := json.Unmarshal([]byte(raw), &ips); err != nil {
-				warnings = append(warnings, fmt.Sprintf("row %d (%s): bad ips JSON", i+1, s.Hostname))
+				warnings = append(warnings, fmt.Sprintf("row %d (%s): bad ips JSON", i+2, s.Hostname))
 			}
 		}
+		seenIPs := map[string]bool{}
 		for _, ip := range ips {
 			if ip.Address == "" {
 				continue
@@ -413,9 +427,14 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			// is_ipv4 derived from the address, not the file's flag.
 			addr, err := netip.ParseAddr(ip.Address)
 			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", i+1, ip.Address))
+				warnings = append(warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", i+2, ip.Address))
 				continue
 			}
+			if seenIPs[ip.Address] {
+				warnings = append(warnings, fmt.Sprintf("row %d: duplicate IP %s listed twice — kept once", i+2, ip.Address))
+				continue
+			}
+			seenIPs[ip.Address] = true
 			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
 		}
 		s.Labels = parseLabels(json.RawMessage(cell(row, "labels")))
@@ -427,10 +446,12 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 			}
 			due, dueOK := normDate(cell(row, "pricing_next_due_date"))
 			if !dueOK {
-				warnings = append(warnings, fmt.Sprintf("row %d: invalid next_due_date %q — storing NULL", i+1, cell(row, "pricing_next_due_date")))
+				warnings = append(warnings, fmt.Sprintf("row %d: invalid next_due_date %q — storing NULL", i+2, cell(row, "pricing_next_due_date")))
 			}
-			if cur, ok := normCurrency(cell(row, "pricing_currency")); !ok {
-				warnings = append(warnings, fmt.Sprintf("row %d: invalid currency %q — pricing skipped", i+1, cell(row, "pricing_currency")))
+			if term < 1 || term > 7 {
+				warnings = append(warnings, fmt.Sprintf("row %d: term %d out of range — pricing skipped", i+2, term))
+			} else if cur, ok := normCurrency(cell(row, "pricing_currency")); !ok {
+				warnings = append(warnings, fmt.Sprintf("row %d: invalid currency %q — pricing skipped", i+2, cell(row, "pricing_currency")))
 			} else {
 				s.Pricing = &myPricing{
 					Currency:    cur,
@@ -479,6 +500,20 @@ func safeInt(f float64, max int64) (int64, bool) {
 		return 0, false
 	}
 	return int64(f + 0.5), true
+}
+
+// capMy bounds an optional integer to the same plausibility caps the web
+// form + JSON API use; out-of-range → nil + warning (label is the hostname
+// for JSON rows, "row N" for CSV rows).
+func capMy(v *int64, max int64, field, label string, warnings *[]string) *int64 {
+	if v == nil {
+		return nil
+	}
+	if *v < 0 || *v > max {
+		*warnings = append(*warnings, fmt.Sprintf("%s: %s %d out of range — storing NULL", label, field, *v))
+		return nil
+	}
+	return v
 }
 
 // convertBandwidth: my-idlers stores GB → MB (1024-based); 0/nil → NULL
@@ -722,14 +757,10 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySumm
 		}
 	}
 	if rec.Pricing != nil {
-		term := rec.Pricing.Term
-		if term < 1 || term > 7 {
-			term = 1
-		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO pricings (service_id, service_type, currency, price, term, next_due_date)
 			VALUES (?, 1, ?, ?, ?, ?)`,
-			serverID, rec.Pricing.Currency, rec.Pricing.Price, term,
+			serverID, rec.Pricing.Currency, rec.Pricing.Price, rec.Pricing.Term,
 			nullStr(rec.Pricing.NextDueDate)); err != nil {
 			return err
 		}
@@ -741,8 +772,10 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySumm
 // getOrCreateCatalogTx is the tx-scoped catalog get-or-create.
 func getOrCreateCatalogTx(ctx context.Context, tx *sql.Tx, table, nameCol, name string) (int64, bool, error) {
 	var id int64
+	// Case-insensitive lookup: "OVH" and "ovh" from a source file are one
+	// provider (the row's first-seen casing is kept).
 	err := tx.QueryRowContext(ctx,
-		"SELECT id FROM "+table+" WHERE "+nameCol+" = ?", name).Scan(&id)
+		"SELECT id FROM "+table+" WHERE "+nameCol+" = ? COLLATE NOCASE", name).Scan(&id)
 	if err == nil {
 		return id, false, nil
 	}

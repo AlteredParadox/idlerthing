@@ -114,8 +114,9 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 	// 8s deadline internally, so this stays bounded).
 	m := prom.New(baseURL).ServerMetrics(context.Background())
 
-	// Store only when settings STILL point at the same endpoint — a slow
-	// fetch to A must not land in B's cache slot after a switch.
+	// Store only when settings STILL point at the same endpoint AND the
+	// cache slot still belongs to it — a slow fetch to A must not land in
+	// B's slot after a switch (or a triple flip A→B→A).
 	stillCurrent := s.currentPromURL() == baseURL
 	s.prom.mu.Lock()
 	close(s.prom.inFlight)
@@ -125,7 +126,7 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 		return cached // fetch failed: stale (or nil) until the backoff expires
 	}
 	// Zero results from a HEALTHY prometheus is a valid state — store it.
-	if stillCurrent {
+	if stillCurrent && s.prom.baseURL == baseURL {
 		s.prom.metrics = m
 		s.prom.at = time.Now()
 	}
@@ -327,23 +328,31 @@ func (s *Server) uptime30d(r *http.Request, instance string) string {
 		if s.uptime.inFlight != nil {
 			ch := s.uptime.inFlight
 			s.uptime.mu.Unlock()
-			<-ch
-			continue
+			select {
+			case <-ch:
+				continue
+			case <-r.Context().Done():
+				// Disconnecting waiter: degrade now, don't park.
+				return "—"
+			}
 		}
 		s.uptime.inFlight = make(chan struct{})
 		s.uptime.mu.Unlock()
 		break
 	}
 
-	v, err := prom.New(baseURL).UptimePct(r.Context(), instance)
+	// Detached fetch (bounded by the client's 5s timeout): a disconnecting
+	// leader must not cancel the query its followers wait on or stamp a
+	// spurious failure entry.
+	v, err := prom.New(baseURL).UptimePct(context.Background(), instance)
 
 	// Same store-guard as liveMetrics: only cache against the endpoint the
-	// fetch actually went to.
+	// fetch actually went to AND while the slot still belongs to it.
 	stillCurrent := s.currentPromURL() == baseURL
 	s.uptime.mu.Lock()
 	close(s.uptime.inFlight)
 	s.uptime.inFlight = nil
-	if stillCurrent {
+	if stillCurrent && s.uptime.baseURL == baseURL {
 		s.uptime.at[instance] = time.Now()
 		if err != nil {
 			s.uptime.failed[instance] = true

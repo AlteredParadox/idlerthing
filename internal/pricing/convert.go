@@ -40,6 +40,20 @@ func NewRates() *Rates {
 	return &Rates{BaseURL: DefaultRatesURL, client: &http.Client{Timeout: 5 * time.Second}}
 }
 
+// ExpireForTest backdates the cache past the TTL (test hook, like BaseURL).
+func (r *Rates) ExpireForTest() {
+	r.mu.Lock()
+	r.fetchedAt = time.Now().Add(-(ratesTTL + time.Hour))
+	r.mu.Unlock()
+}
+
+// usable reports whether the cached rates are within their TTL (call with
+// r.mu held). Stale rates are still RETURNED for conversion, just flagged
+// ok=false so the UI can show the "rates unavailable" note.
+func (r *Rates) usable() bool {
+	return r.rates != nil && time.Since(r.fetchedAt) < ratesTTL
+}
+
 // Get returns rates (units per 1 USD) and whether they are usable.
 // Fresh cache hits answer immediately; a concurrent cold fetch is joined
 // (singleflight) so followers receive the leader's result; otherwise one
@@ -60,20 +74,20 @@ func (r *Rates) Get(ctx context.Context) (map[string]float64, bool) {
 		case <-ch:
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			return r.rates, r.rates != nil
+			return r.rates, r.usable()
 		case <-ctx.Done():
 			// Caller gave up waiting — fall through to whatever is cached.
 			r.mu.Lock()
-			stale := r.rates
+			stale, ok := r.rates, r.usable()
 			r.mu.Unlock()
-			return stale, stale != nil
+			return stale, ok
 		}
 	}
 	// Negative cache: a failed fetch backs off for 60s.
 	if time.Since(r.lastTry) < 60*time.Second && !r.lastTry.IsZero() {
-		stale := r.rates
+		stale, ok := r.rates, r.usable()
 		r.mu.Unlock()
-		return stale, stale != nil
+		return stale, ok
 	}
 	r.inFlight = make(chan struct{})
 	r.lastTry = time.Now()
@@ -94,7 +108,7 @@ func (r *Rates) Get(ctx context.Context) (map[string]float64, bool) {
 	}
 	close(r.inFlight)
 	r.inFlight = nil
-	out, outOk := r.rates, r.rates != nil
+	out, outOk := r.rates, r.usable()
 	r.mu.Unlock()
 	return out, outOk
 }

@@ -2,6 +2,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"embed"
@@ -116,7 +117,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /static/accent.css", s.handleAccentCSS)
 	mux.Handle("GET /static/", s.withCacheHeaders(http.StripPrefix("/static/", http.FileServerFS(staticFS))))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.db.PingContext(r.Context()); err != nil {
+		// Bounded: Ping would otherwise queue behind the single connection
+		// for as long as a slow write takes.
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.db.PingContext(ctx); err != nil {
 			http.Error(w, "unhealthy\n", http.StatusServiceUnavailable)
 			return
 		}
@@ -260,12 +265,36 @@ func (s *Server) protect(next http.Handler) http.Handler {
 	return s.requireAuth(s.csrfProtect(next))
 }
 
+// cacheStatusWriter injects the immutable Cache-Control only when the
+// response is 2xx — a 404 for a missing asset must not be pinned in
+// browsers for a year.
+type cacheStatusWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *cacheStatusWriter) WriteHeader(code int) {
+	if !w.wrote {
+		w.wrote = true
+		if code >= 200 && code < 300 {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *cacheStatusWriter) Write(b []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
 // withCacheHeaders marks static assets as immutable; templates reference them
 // with a version query param (e.g. app.css?v=1) for cache busting.
 func (s *Server) withCacheHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(&cacheStatusWriter{ResponseWriter: w}, r)
 	})
 }
 

@@ -81,12 +81,16 @@ func TestRatesFetchAndFailure(t *testing.T) {
 		t.Fatal("unreachable endpoint should report ok=false")
 	}
 
-	// Broken endpoint with stale cache: keeps stale data, ok=true.
+	// Broken endpoint with stale cache PAST the TTL: data kept for
+	// conversion, but flagged unusable (Batch R #4).
 	r.BaseURL = "http://127.0.0.1:1/unreachable"
-	r.fetchedAt = time.Now().Add(-8 * 24 * time.Hour) // force refetch attempt
+	r.fetchedAt = time.Now().Add(-8 * 24 * time.Hour) // force refetch attempt, past ratesTTL
 	stale, ok := r.Get(context.Background())
-	if !ok || stale["EUR"] != 0.9 {
-		t.Fatalf("stale cache should be kept: %v %v", stale, ok)
+	if stale["EUR"] != 0.9 {
+		t.Fatalf("stale cache should be kept: %v", stale)
+	}
+	if ok {
+		t.Fatal("stale-past-TTL rates must report ok=false")
 	}
 }
 
@@ -355,5 +359,30 @@ func TestRatesLeaderCtxCancelDoesNotPoisonFollowers(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 1 {
 		t.Fatalf("expected 1 fetch, got %d", n)
+	}
+}
+
+// Batch R #4 — rates past their TTL are returned for conversion but
+// flagged ok=false (the "rates unavailable" note must appear).
+func TestRatesStaleReportedUnusable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"base":"USD","rates":{"EUR":0.9}}`))
+	}))
+	defer ts.Close()
+
+	r := &Rates{BaseURL: ts.URL}
+	if _, ok := r.Get(context.Background()); !ok {
+		t.Fatal("fresh fetch should be ok")
+	}
+
+	// Expire past the TTL and break the endpoint: stale data, ok=false.
+	r.fetchedAt = time.Now().Add(-(ratesTTL + time.Hour))
+	r.BaseURL = "http://127.0.0.1:1/down"
+	stale, ok := r.Get(context.Background())
+	if ok {
+		t.Fatal("stale-past-TTL rates must report ok=false")
+	}
+	if stale["EUR"] != 0.9 {
+		t.Fatalf("stale data should still be returned: %v", stale)
 	}
 }

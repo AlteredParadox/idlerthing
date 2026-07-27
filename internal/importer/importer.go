@@ -55,6 +55,9 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("decode export JSON: %w", err)
 	}
+	if doc == nil {
+		return nil, fmt.Errorf("not an idlerthing export (expected a JSON object)")
+	}
 	// Strict envelope: one document, nothing after it. The format marker
 	// arrived in the same release as this check, so an ABSENT key is a
 	// legacy (pre-marker) backup — restore it with a warning. A present
@@ -180,10 +183,10 @@ func (imp *importer) run(ctx context.Context, doc map[string]any) error {
 	if err := imp.servers(ctx, doc); err != nil {
 		return err
 	}
-	if err := imp.hosting(ctx, doc, "shared", "shared_hosting", "shared_type", 2, &imp.sum.Shared); err != nil {
+	if err := imp.hosting(ctx, doc, "shared", "shared_hosting", "shared_type", "shared_hosting", "shared_type", 2, &imp.sum.Shared); err != nil {
 		return err
 	}
-	if err := imp.hosting(ctx, doc, "reseller", "reseller_hosting", "reseller_type", 3, &imp.sum.Reseller); err != nil {
+	if err := imp.hosting(ctx, doc, "reseller", "shared_hosting", "shared_type", "reseller_hosting", "reseller_type", 3, &imp.sum.Reseller); err != nil {
 		return err
 	}
 	if err := imp.seedboxes(ctx, doc); err != nil {
@@ -766,12 +769,16 @@ func (imp *importer) insertIP(ctx context.Context, im map[string]any, serviceID 
 
 // ---------- shared/reseller ----------
 
-func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, table, typeCol string, serviceType int, count *int) error {
-	entityKey := "shared_hosting"
+func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, entityKey, typeKey, table, typeCol string, serviceType int, count *int) error {
+	// entityKey/typeKey are the DOCUMENT's keys ("shared_hosting"/
+	// "shared_type" for BOTH types — the export flattens the embedded
+	// SharedHosting struct); table/typeCol are the database targets.
 	for _, item := range arr(doc, key) {
 		it, _ := item.(map[string]any)
 		h := mget(it, entityKey)
 		if h == nil {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"%s: item without a %q object, skipped", key, entityKey))
 			continue
 		}
 		res, err := imp.tx.ExecContext(ctx, `
@@ -780,7 +787,7 @@ func (imp *importer) hosting(ctx context.Context, doc map[string]any, key, table
 				disk_as_mb, bandwidth_as_mb, has_dedicated_ip, ip,
 				active, show_public, was_promo, owned_since)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sget(h, "main_domain"), sgetN(h, "shared_type"),
+			sget(h, "main_domain"), sgetN(h, typeKey),
 			imp.remapCatalog("providers", nget(h, "provider_id")),
 			imp.remapCatalog("locations", nget(h, "location_id")),
 			imp.boundedInt(nget(h, "domains_limit"), 1<<20, "domains_limit", sget(h, "main_domain")),

@@ -57,9 +57,15 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 	}
 
 	var cached *liveMonView
+	var ch chan struct{}
 	for {
 		s.livemon.mu.Lock()
 		if s.livemon.at == nil || s.livemon.baseURL != baseURL {
+			// Wake followers of the OLD map before replacing it — orphaned
+			// channels would otherwise park them until their ctx dies.
+			for _, old := range s.livemon.inFlight {
+				close(old)
+			}
 			s.livemon.at = map[string]time.Time{}
 			s.livemon.v = map[string]*liveMonView{}
 			s.livemon.inFlight = map[string]chan struct{}{}
@@ -75,16 +81,16 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 			s.livemon.mu.Unlock()
 			return cached
 		}
-		if ch, flying := s.livemon.inFlight[instance]; flying {
+		if flying, ok := s.livemon.inFlight[instance]; ok {
 			s.livemon.mu.Unlock()
 			select {
-			case <-ch:
+			case <-flying:
 				continue
 			case <-r.Context().Done():
 				return cached
 			}
 		}
-		ch := make(chan struct{})
+		ch = make(chan struct{})
 		s.livemon.inFlight[instance] = ch
 		s.livemon.mu.Unlock()
 		break
@@ -111,14 +117,19 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 	wg.Wait()
 	view := buildLiveMonView(detail, filesystems)
 
-	// Store only when settings still point at the fetched endpoint.
+	// Store only when settings still point at the fetched endpoint AND the
+	// cache slot still belongs to it (a triple flip A→B→A mid-flight must
+	// not store A's data into B's slot).
 	stillCurrent := s.currentPromURL() == baseURL
 	s.livemon.mu.Lock()
-	if ch, ok := s.livemon.inFlight[instance]; ok {
+	// Close+remove OUR channel only when it still IS the map entry: after a
+	// reset the map (and possibly a new leader) owns it — the reset already
+	// closed ours, and a second close would panic.
+	if s.livemon.inFlight[instance] == ch {
 		close(ch)
 		delete(s.livemon.inFlight, instance)
 	}
-	if stillCurrent {
+	if stillCurrent && s.livemon.baseURL == baseURL {
 		s.livemon.at[instance] = time.Now()
 		s.livemon.v[instance] = view
 	}

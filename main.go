@@ -1,3 +1,19 @@
+// idlerthing — a lightweight, self-hosted inventory for hosting services.
+// Copyright (C) 2026 AlteredParadox
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at your
+// option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+// for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package main
 
 import (
@@ -7,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -30,6 +47,10 @@ import (
 var version = "dev"
 
 func main() {
+	// journald stamps every entry, so Go's own date prefix is redundant —
+	// and dropping it lets the fail2ban filter anchor its patterns at ^.
+	log.SetFlags(0)
+
 	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {
 		fmt.Println("idlerthing", version)
 		return
@@ -249,6 +270,8 @@ func run() error {
 	webServer.SetBehindTLSProxy(cfg.BehindTLSProxy)
 	webServer.SetAllowHTTPIngest(cfg.AllowHTTPIngest)
 	webServer.SetBaseURL(cfg.BaseURL)
+	webServer.SetLegal(License, ThirdPartyLicenses)
+	webServer.SetVersion(version)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

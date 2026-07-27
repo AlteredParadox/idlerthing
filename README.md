@@ -61,6 +61,44 @@ relative to the unit's `WorkingDirectory`). See the comments in the unit file
 for memory limits, hardening notes, and the `CAP_NET_RAW` caveat for the
 in-app ping tool.
 
+## Banning brute-force logins (fail2ban)
+
+idlerthing logs authentication events to stderr — the systemd journal — in a
+fail2ban-friendly form. The binary calls `log.SetFlags(0)` because journald
+already stamps every entry, so a line is exactly:
+
+```
+WARN login: failed authentication from=203.0.113.7 user=someone@example.com
+WARN login: rate-limited from=203.0.113.7
+WARN login: failed password-change verification from=203.0.113.7
+INFO login: authenticated from=203.0.113.7 user=admin@localhost
+```
+
+The attempted username is attacker-controlled, so it is only ever emitted
+**after** the address (and slog escapes it) — a crafted value cannot shift the
+filter's `<HOST>` capture. Successful logins are audited in the same stream and
+excluded by the filter's `ignoreregex`. Blocked attempts log at most once per
+minute per source, so a flood of already-refused requests cannot amplify into
+unbounded journald writes.
+
+A ready-made filter and jail ship in [`deploy/fail2ban/`](deploy/fail2ban):
+
+```sh
+sudo install -m 0644 deploy/fail2ban/idlerthing.conf /etc/fail2ban/filter.d/idlerthing.conf
+sudo install -m 0644 deploy/fail2ban/jail.local      /etc/fail2ban/jail.d/idlerthing.conf
+sudo systemctl restart fail2ban
+sudo fail2ban-client status idlerthing
+```
+
+> **The address is only the real client when the deployment says so.** It is
+> idlerthing's rate-limiter key, which trusts `X-Forwarded-For` only with
+> `IDLER_BEHIND_TLS_PROXY=1`. Without that, behind a reverse proxy, every line
+> carries the *proxy's* address — and banning it locks out everyone. Fix the
+> config before enabling the jail.
+
+The jail bans with the native `nftables` backend, since Debian 13 ships no
+iptables by default, and covers TCP and UDP so a ban also applies over QUIC.
+
 ## Configuration
 
 | Variable              | Default                  | Purpose                                  |
@@ -137,6 +175,43 @@ duplicate submissions are ignored.
   (1 GB = 1024 MB, 1 TB = 1024 GB); the UI enters/displays friendly units
   and converts server-side. NULL bandwidth means unlimited (∞).
 
+## License
+
+idlerthing is free software under the **GNU Affero General Public License v3
+or later** ([`LICENSE`](LICENSE)).
+
+The AGPL's §13 obligation is to offer the Corresponding Source to everyone who
+interacts with the program *over a network*, so these three routes are
+deliberately **unauthenticated** — a login wall would defeat the offer:
+
+| Route | Serves |
+| --- | --- |
+| `/license` | the AGPL text embedded in this binary |
+| `/third-party-licenses` | every bundled dependency's licence and notices |
+| `/source` | redirects to the Corresponding Source, pinned to the running version |
+
+They are linked from the login page and from **Settings → About & licensing**.
+A stamped release points `/source` at its own tag, so the source you are
+offered is the source that is running; an unstamped build can only point at
+the repository.
+
+`THIRD_PARTY_LICENSES.md` is generated from the modules **actually linked into
+the binary** (read back off a probe build) plus the embedded front-end assets,
+whose licence texts are vendored in `internal/web/assets/vendor/` beside them:
+
+```sh
+make notices        # regenerate (also runs automatically as part of `make build`)
+make notices-check  # fail if the committed copy is stale
+```
+
+`make build` regenerates it, so what ships always matches what is linked in.
+`notices-check` gates the **release** workflow rather than every PR: Dependabot
+bumps `go.mod` but cannot regenerate the file, and gating PRs on it would make
+every dependency PR red for a reason the bot cannot fix.
+
+Every first-party source file carries the AGPL notice; `make license-check`
+(part of CI) fails if one is missing, and `make license-headers` adds it.
+
 ## Development
 
 ```sh
@@ -144,5 +219,9 @@ make build   # trimmed static binary
 make run     # go run .
 make test    # go test ./...
 make vet     # gofmt -l + go vet ./...
+make license-check    # every first-party source carries the AGPL notice
+make license-headers  # ...add it to any that don't
+make notices          # regenerate THIRD_PARTY_LICENSES.md
+make notices-check    # fail if it is stale (gates the release workflow)
 make clean
 ```

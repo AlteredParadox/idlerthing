@@ -1,8 +1,25 @@
+// idlerthing — a lightweight, self-hosted inventory for hosting services.
+// Copyright (C) 2026 AlteredParadox
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at your
+// option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+// for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package web
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +44,7 @@ type settingsView struct {
 	Currencies        []string
 	TokenSet          bool
 	RevealedToken     string // shown once after generation
+	Version           string // build version, shown in the About panel
 	Errors            map[string]string
 }
 
@@ -51,6 +69,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, view set
 	view.PrometheusEnabled = row.PrometheusEnabled
 	view.PrometheusURL = row.PrometheusURL
 	view.Currencies = currencies
+	view.Version = s.Version()
 	view.RevealedToken = s.popRevealedToken(w, r)
 
 	u := userFromCtx(r.Context())
@@ -156,6 +175,9 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
+		// Same proxy-aware source as the login failures, so one fail2ban
+		// filter catches an attacker who got as far as a session too.
+		slog.Warn("login: failed password-change verification", "from", s.clientIP(r))
 		s.setFlash(w, r, "err", "Current password is wrong.")
 		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return

@@ -62,7 +62,7 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	// arrived in the same release as this check, so an ABSENT key is a
 	// legacy (pre-marker) backup — restore it with a warning. A present
 	// but unrecognized value is rejected.
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
+	if dec.Decode(new(any)) != io.EOF {
 		return nil, fmt.Errorf("trailing garbage after the JSON document")
 	}
 	legacyFormat := false

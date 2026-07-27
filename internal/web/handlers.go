@@ -111,7 +111,7 @@ func (s *Server) handleThemePref(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.db.ExecContext(r.Context(),
 		"UPDATE settings SET theme = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", next); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -181,7 +181,7 @@ func (s *Server) handleShortHostnamesPref(w http.ResponseWriter, r *http.Request
 		if _, err := s.db.ExecContext(r.Context(),
 			`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'short_hostnames', ?)
 			 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`, u.ID, next); err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 	}

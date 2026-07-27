@@ -164,121 +164,147 @@ func ParseMyJSON(r io.Reader) ([]MyServer, []string, error) {
 	var out []MyServer
 	var warnings []string
 	for _, j := range rows {
-		s := MyServer{
-			Hostname:      strings.TrimSpace(j.Hostname),
-			ServerType:    1,
-			NetworkType:   mapNetworkType(j.NetworkType),
-			WasPromo:      intBool(j.WasPromo),
-			Transferrable: intBool(j.Transferrable),
-			Active:        j.Active == nil || *j.Active != 0, // default active
-			ShowPublic:    intBool(j.ShowPublic),
-		}
-		s.CPU = capMy(j.CPU, 1024, "cpu", s.Hostname, &warnings)
-		s.RamAsMB = capMy(j.RamAsMB, 1<<30, "ram_as_mb", s.Hostname, &warnings)
-		s.LinkSpeed = capMy(j.LinkSpeed, 1<<20, "link_speed", s.Hostname, &warnings)
-		s.SSHPort = capMy(j.SSH, 65535, "ssh_port", s.Hostname, &warnings)
-		if j.Ns1 != nil {
-			s.Ns1 = *j.Ns1
-		}
-		if j.Ns2 != nil {
-			s.Ns2 = *j.Ns2
-		}
-		if j.CPUModel != nil {
-			s.CPUModel = *j.CPUModel
-		}
-		if j.OwnedSince != nil {
-			if d, ok := normDate(*j.OwnedSince); ok {
-				s.OwnedSince = d
-			} else {
-				warnings = append(warnings, fmt.Sprintf("%s: invalid owned_since %q — storing NULL", s.Hostname, *j.OwnedSince))
-			}
-		}
-		if j.ServerType != nil && *j.ServerType >= 1 && *j.ServerType <= 7 {
-			s.ServerType = *j.ServerType
-		}
-		if j.OS != nil {
-			s.OSName = j.OS.Name
-		}
-		if j.Location != nil {
-			s.LocationName = j.Location.Name
-		}
-		if j.Provider != nil {
-			s.ProviderName = j.Provider.Name
-		}
-
-		if bw, bad := convertBandwidth(j.Bandwidth); bad {
-			warnings = append(warnings, fmt.Sprintf("%s: implausible bandwidth — storing NULL", s.Hostname))
-		} else {
-			s.BandwidthAsMB = bw
-		}
-
-		for _, d := range j.Disks {
-			if mb := diskToMB(d.Size, d.Unit); mb > 0 {
-				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
-			} else if d.Size > 0 {
-				warnings = append(warnings, fmt.Sprintf("%s: implausible disk size — skipped", s.Hostname))
-			}
-		}
-		if len(s.Disks) == 0 && j.DiskAsGB != nil && *j.DiskAsGB > 0 {
-			// Legacy single-disk fallback.
-			if mb := diskToMB(*j.DiskAsGB, "GB"); mb > 0 {
-				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: "SSD"})
-			} else {
-				warnings = append(warnings, fmt.Sprintf("%s: implausible disk size — skipped", s.Hostname))
-			}
-		}
-
-		seenIPs := map[string]bool{}
-		for _, ip := range j.IPs {
-			if ip.Address == "" {
-				continue
-			}
-			// is_ipv4 is derived from the address itself — the file's flag
-			// is ignored when it contradicts (v6 with is_ipv4=1 stays v6).
-			addr, err := netip.ParseAddr(ip.Address)
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("%s: invalid ip %q — skipped", s.Hostname, ip.Address))
-				continue
-			}
-			// A duplicated address would fail the whole row on
-			// UNIQUE(service_id, service_type, address) — keep it once.
-			if seenIPs[ip.Address] {
-				warnings = append(warnings, fmt.Sprintf("%s: duplicate IP %s listed twice — kept once", s.Hostname, ip.Address))
-				continue
-			}
-			seenIPs[ip.Address] = true
-			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
-		}
-		s.Labels = parseLabels(j.Labels)
-
-		if j.Pricing != nil && validImportPrice(j.Pricing.Price) {
-			cur, ok := normCurrency(j.Pricing.Currency)
-			if !ok {
-				warnings = append(warnings, fmt.Sprintf("%s: invalid currency %q — pricing skipped", s.Hostname, j.Pricing.Currency))
-				goto noPricing
-			}
-			if j.Pricing.Term < 1 || j.Pricing.Term > 7 {
-				warnings = append(warnings, fmt.Sprintf("%s: term %d out of range — pricing skipped", s.Hostname, j.Pricing.Term))
-				goto noPricing
-			}
-			p := &myPricing{
-				Currency:    cur,
-				Price:       j.Pricing.Price,
-				Term:        j.Pricing.Term,
-				NextDueDate: j.Pricing.NextDueDate,
-			}
-			if d, ok := normDate(p.NextDueDate); ok {
-				p.NextDueDate = d
-			} else {
-				warnings = append(warnings, fmt.Sprintf("%s: invalid next_due_date %q — storing NULL", s.Hostname, p.NextDueDate))
-				p.NextDueDate = ""
-			}
-			s.Pricing = p
-		}
-	noPricing:
-		out = append(out, s)
+		out = append(out, myServerFromJSON(j, &warnings))
 	}
 	return out, warnings, nil
+}
+
+// myServerFromJSON normalizes one my-idlers JSON record.
+func myServerFromJSON(j miJSON, warnings *[]string) MyServer {
+	s := MyServer{
+		Hostname:      strings.TrimSpace(j.Hostname),
+		ServerType:    1,
+		NetworkType:   mapNetworkType(j.NetworkType),
+		WasPromo:      intBool(j.WasPromo),
+		Transferrable: intBool(j.Transferrable),
+		Active:        j.Active == nil || *j.Active != 0, // default active
+		ShowPublic:    intBool(j.ShowPublic),
+	}
+	s.CPU = capMy(j.CPU, 1024, "cpu", s.Hostname, warnings)
+	s.RamAsMB = capMy(j.RamAsMB, 1<<30, "ram_as_mb", s.Hostname, warnings)
+	s.LinkSpeed = capMy(j.LinkSpeed, 1<<20, "link_speed", s.Hostname, warnings)
+	s.SSHPort = capMy(j.SSH, 65535, "ssh_port", s.Hostname, warnings)
+	myJSONNames(&s, j, warnings)
+
+	if bw, bad := convertBandwidth(j.Bandwidth); bad {
+		*warnings = append(*warnings, fmt.Sprintf("%s: implausible bandwidth — storing NULL", s.Hostname))
+	} else {
+		s.BandwidthAsMB = bw
+	}
+
+	s.Disks = myJSONDisks(j, s.Hostname, warnings)
+	s.IPs = myJSONIPs(j.IPs, s.Hostname, warnings)
+	s.Labels = parseLabels(j.Labels)
+	s.Pricing = myJSONPricing(j.Pricing, s.Hostname, warnings)
+	return s
+}
+
+// myJSONNames maps the optional string/named fields of one record.
+func myJSONNames(s *MyServer, j miJSON, warnings *[]string) {
+	if j.Ns1 != nil {
+		s.Ns1 = *j.Ns1
+	}
+	if j.Ns2 != nil {
+		s.Ns2 = *j.Ns2
+	}
+	if j.CPUModel != nil {
+		s.CPUModel = *j.CPUModel
+	}
+	if j.OwnedSince != nil {
+		if d, ok := normDate(*j.OwnedSince); ok {
+			s.OwnedSince = d
+		} else {
+			*warnings = append(*warnings, fmt.Sprintf("%s: invalid owned_since %q — storing NULL", s.Hostname, *j.OwnedSince))
+		}
+	}
+	if j.ServerType != nil && *j.ServerType >= 1 && *j.ServerType <= 7 {
+		s.ServerType = *j.ServerType
+	}
+	if j.OS != nil {
+		s.OSName = j.OS.Name
+	}
+	if j.Location != nil {
+		s.LocationName = j.Location.Name
+	}
+	if j.Provider != nil {
+		s.ProviderName = j.Provider.Name
+	}
+}
+
+// myJSONDisks converts the disk list, with the legacy single-disk fallback.
+func myJSONDisks(j miJSON, host string, warnings *[]string) []myDisk {
+	var disks []myDisk
+	for _, d := range j.Disks {
+		if mb := diskToMB(d.Size, d.Unit); mb > 0 {
+			disks = append(disks, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
+		} else if d.Size > 0 {
+			*warnings = append(*warnings, fmt.Sprintf("%s: implausible disk size — skipped", host))
+		}
+	}
+	if len(disks) == 0 && j.DiskAsGB != nil && *j.DiskAsGB > 0 {
+		// Legacy single-disk fallback.
+		if mb := diskToMB(*j.DiskAsGB, "GB"); mb > 0 {
+			disks = append(disks, myDisk{SizeMB: mb, Media: "SSD"})
+		} else {
+			*warnings = append(*warnings, fmt.Sprintf("%s: implausible disk size — skipped", host))
+		}
+	}
+	return disks
+}
+
+// myJSONIPs converts + dedupes the IP list (is_ipv4 derived from the
+// address itself — the file's flag is ignored when it contradicts).
+func myJSONIPs(ips []miJSONIP, host string, warnings *[]string) []myIP {
+	var out []myIP
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		if ip.Address == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(ip.Address)
+		if err != nil {
+			*warnings = append(*warnings, fmt.Sprintf("%s: invalid ip %q — skipped", host, ip.Address))
+			continue
+		}
+		// A duplicated address would fail the whole row on
+		// UNIQUE(service_id, service_type, address) — keep it once.
+		if seen[ip.Address] {
+			*warnings = append(*warnings, fmt.Sprintf("%s: duplicate IP %s listed twice — kept once", host, ip.Address))
+			continue
+		}
+		seen[ip.Address] = true
+		out = append(out, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
+	}
+	return out
+}
+
+// myJSONPricing converts the optional pricing block (nil when skipped).
+func myJSONPricing(jp *miJSONPricing, host string, warnings *[]string) *myPricing {
+	if jp == nil || !validImportPrice(jp.Price) {
+		return nil
+	}
+	cur, ok := normCurrency(jp.Currency)
+	if !ok {
+		*warnings = append(*warnings, fmt.Sprintf("%s: invalid currency %q — pricing skipped", host, jp.Currency))
+		return nil
+	}
+	if jp.Term < 1 || jp.Term > 7 {
+		*warnings = append(*warnings, fmt.Sprintf("%s: term %d out of range — pricing skipped", host, jp.Term))
+		return nil
+	}
+	p := &myPricing{
+		Currency:    cur,
+		Price:       jp.Price,
+		Term:        jp.Term,
+		NextDueDate: jp.NextDueDate,
+	}
+	if d, ok := normDate(p.NextDueDate); ok {
+		p.NextDueDate = d
+	} else {
+		*warnings = append(*warnings, fmt.Sprintf("%s: invalid next_due_date %q — storing NULL", host, p.NextDueDate))
+		p.NextDueDate = ""
+	}
+	return p
 }
 
 // parseLabels handles labels as ["a","b"] or [{"label":"a"},...] (and null).
@@ -332,149 +358,186 @@ func ParseMyCSV(r io.Reader) ([]MyServer, []string, error) {
 	if len(rows) == 0 {
 		return nil, nil, fmt.Errorf("empty CSV")
 	}
-	header := map[string]int{}
+	c := &csvCells{header: map[string]int{}}
 	for i, col := range rows[0] {
-		header[col] = i
+		c.header[col] = i
 	}
-	cell := func(row []string, name string) string {
-		if i, ok := header[name]; ok && i < len(row) {
-			return strings.TrimSpace(row[i])
-		}
-		return ""
-	}
-	atoi := func(v string) *int64 {
-		if v == "" {
-			return nil
-		}
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return nil
-		}
-		return &n
-	}
-	atof := func(v string) *float64 {
-		if v == "" {
-			return nil
-		}
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return nil
-		}
-		return &f
-	}
-	csvBool := func(v string) bool { return v == "1" }
 
 	var out []MyServer
 	var warnings []string
 	for i, row := range rows[1:] {
-		owned, ownedOK := normDate(cell(row, "owned_since"))
-		if !ownedOK {
-			warnings = append(warnings, fmt.Sprintf("row %d: invalid owned_since %q — storing NULL", i+2, cell(row, "owned_since")))
-		}
-		s := MyServer{
-			Hostname:      cell(row, "hostname"),
-			Ns1:           cell(row, "ns1"),
-			Ns2:           cell(row, "ns2"),
-			ServerType:    1,
-			CPUModel:      cell(row, "cpu_model"),
-			NetworkType:   mapNetworkTypeStr(cell(row, "network_type")),
-			WasPromo:      csvBool(cell(row, "was_promo")),
-			Transferrable: csvBool(cell(row, "transferrable")),
-			Active:        cell(row, "active") != "0",
-			ShowPublic:    csvBool(cell(row, "show_public")),
-			OwnedSince:    owned,
-			OSName:        cell(row, "os_name"),
-			LocationName:  cell(row, "location_name"),
-			ProviderName:  cell(row, "provider_name"),
-		}
-		if st := atoi(cell(row, "server_type")); st != nil && *st >= 1 && *st <= 7 {
-			s.ServerType = int(*st)
-		}
-		rowLabel := fmt.Sprintf("row %d", i+2)
-		s.CPU = capMy(atoi(cell(row, "cpu")), 1024, "cpu", rowLabel, &warnings)
-		s.RamAsMB = capMy(atoi(cell(row, "ram_as_mb")), 1<<30, "ram_as_mb", rowLabel, &warnings)
-		s.LinkSpeed = capMy(atoi(cell(row, "link_speed")), 1<<20, "link_speed", rowLabel, &warnings)
-		s.SSHPort = capMy(atoi(cell(row, "ssh")), 65535, "ssh_port", rowLabel, &warnings)
-		if bw, bad := convertBandwidth(atof(cell(row, "bandwidth"))); bad {
-			warnings = append(warnings, fmt.Sprintf("row %d: implausible bandwidth — storing NULL", i+2))
-		} else {
-			s.BandwidthAsMB = bw
-		}
-
-		var disks []miJSONDisk
-		if raw := cell(row, "disks"); raw != "" {
-			if err := json.Unmarshal([]byte(raw), &disks); err != nil {
-				warnings = append(warnings, fmt.Sprintf("row %d (%s): bad disks JSON", i+2, s.Hostname))
-			}
-		}
-		for _, d := range disks {
-			if mb := diskToMB(d.Size, d.Unit); mb > 0 {
-				s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
-			} else if d.Size > 0 {
-				warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+2))
-			}
-		}
-		if len(s.Disks) == 0 {
-			if gb := atof(cell(row, "disk_as_gb")); gb != nil && *gb > 0 {
-				if mb := diskToMB(*gb, "GB"); mb > 0 {
-					s.Disks = append(s.Disks, myDisk{SizeMB: mb, Media: "SSD"})
-				} else {
-					warnings = append(warnings, fmt.Sprintf("row %d: implausible disk size — skipped", i+2))
-				}
-			}
-		}
-
-		var ips []miJSONIP
-		if raw := cell(row, "ips"); raw != "" {
-			if err := json.Unmarshal([]byte(raw), &ips); err != nil {
-				warnings = append(warnings, fmt.Sprintf("row %d (%s): bad ips JSON", i+2, s.Hostname))
-			}
-		}
-		seenIPs := map[string]bool{}
-		for _, ip := range ips {
-			if ip.Address == "" {
-				continue
-			}
-			// is_ipv4 derived from the address, not the file's flag.
-			addr, err := netip.ParseAddr(ip.Address)
-			if err != nil {
-				warnings = append(warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", i+2, ip.Address))
-				continue
-			}
-			if seenIPs[ip.Address] {
-				warnings = append(warnings, fmt.Sprintf("row %d: duplicate IP %s listed twice — kept once", i+2, ip.Address))
-				continue
-			}
-			seenIPs[ip.Address] = true
-			s.IPs = append(s.IPs, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
-		}
-		s.Labels = parseLabels(json.RawMessage(cell(row, "labels")))
-
-		if price := atof(cell(row, "pricing_price")); price != nil && validImportPrice(*price) {
-			term := 1
-			if t := atoi(cell(row, "pricing_term")); t != nil {
-				term = int(*t)
-			}
-			due, dueOK := normDate(cell(row, "pricing_next_due_date"))
-			if !dueOK {
-				warnings = append(warnings, fmt.Sprintf("row %d: invalid next_due_date %q — storing NULL", i+2, cell(row, "pricing_next_due_date")))
-			}
-			if term < 1 || term > 7 {
-				warnings = append(warnings, fmt.Sprintf("row %d: term %d out of range — pricing skipped", i+2, term))
-			} else if cur, ok := normCurrency(cell(row, "pricing_currency")); !ok {
-				warnings = append(warnings, fmt.Sprintf("row %d: invalid currency %q — pricing skipped", i+2, cell(row, "pricing_currency")))
-			} else {
-				s.Pricing = &myPricing{
-					Currency:    cur,
-					Price:       *price,
-					Term:        term,
-					NextDueDate: due,
-				}
-			}
-		}
-		out = append(out, s)
+		out = append(out, parseCSVRow(c, row, i+2, &warnings)) // header is line 1
 	}
 	return out, warnings, nil
+}
+
+// csvCells resolves column names against the CSV header.
+type csvCells struct {
+	header map[string]int
+}
+
+func (c *csvCells) cell(row []string, name string) string {
+	if i, ok := c.header[name]; ok && i < len(row) {
+		return strings.TrimSpace(row[i])
+	}
+	return ""
+}
+
+func csvInt(v string) *int64 {
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
+func csvFloat(v string) *float64 {
+	if v == "" {
+		return nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return nil
+	}
+	return &f
+}
+
+func csvBool(v string) bool { return v == "1" }
+
+// parseCSVRow normalizes one CSV data row (line is the 1-based file line).
+func parseCSVRow(c *csvCells, row []string, line int, warnings *[]string) MyServer {
+	owned, ownedOK := normDate(c.cell(row, "owned_since"))
+	if !ownedOK {
+		*warnings = append(*warnings, fmt.Sprintf("row %d: invalid owned_since %q — storing NULL", line, c.cell(row, "owned_since")))
+	}
+	s := MyServer{
+		Hostname:      c.cell(row, "hostname"),
+		Ns1:           c.cell(row, "ns1"),
+		Ns2:           c.cell(row, "ns2"),
+		ServerType:    1,
+		CPUModel:      c.cell(row, "cpu_model"),
+		NetworkType:   mapNetworkTypeStr(c.cell(row, "network_type")),
+		WasPromo:      csvBool(c.cell(row, "was_promo")),
+		Transferrable: csvBool(c.cell(row, "transferrable")),
+		Active:        c.cell(row, "active") != "0",
+		ShowPublic:    csvBool(c.cell(row, "show_public")),
+		OwnedSince:    owned,
+		OSName:        c.cell(row, "os_name"),
+		LocationName:  c.cell(row, "location_name"),
+		ProviderName:  c.cell(row, "provider_name"),
+	}
+	if st := csvInt(c.cell(row, "server_type")); st != nil && *st >= 1 && *st <= 7 {
+		s.ServerType = int(*st)
+	}
+	rowLabel := fmt.Sprintf("row %d", line)
+	s.CPU = capMy(csvInt(c.cell(row, "cpu")), 1024, "cpu", rowLabel, warnings)
+	s.RamAsMB = capMy(csvInt(c.cell(row, "ram_as_mb")), 1<<30, "ram_as_mb", rowLabel, warnings)
+	s.LinkSpeed = capMy(csvInt(c.cell(row, "link_speed")), 1<<20, "link_speed", rowLabel, warnings)
+	s.SSHPort = capMy(csvInt(c.cell(row, "ssh")), 65535, "ssh_port", rowLabel, warnings)
+	if bw, bad := convertBandwidth(csvFloat(c.cell(row, "bandwidth"))); bad {
+		*warnings = append(*warnings, fmt.Sprintf("row %d: implausible bandwidth — storing NULL", line))
+	} else {
+		s.BandwidthAsMB = bw
+	}
+
+	s.Disks = csvDisks(c, row, line, s.Hostname, warnings)
+	s.IPs = csvIPs(c, row, line, s.Hostname, warnings)
+	s.Labels = parseLabels(json.RawMessage(c.cell(row, "labels")))
+	s.Pricing = csvPricing(c, row, line, warnings)
+	return s
+}
+
+// csvDisks converts the nested disks JSON cell, with the legacy
+// disk_as_gb fallback.
+func csvDisks(c *csvCells, row []string, line int, host string, warnings *[]string) []myDisk {
+	var out []myDisk
+	var disks []miJSONDisk
+	if raw := c.cell(row, "disks"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &disks); err != nil {
+			*warnings = append(*warnings, fmt.Sprintf("row %d (%s): bad disks JSON", line, host))
+		}
+	}
+	for _, d := range disks {
+		if mb := diskToMB(d.Size, d.Unit); mb > 0 {
+			out = append(out, myDisk{SizeMB: mb, Media: diskMedia(d.Media)})
+		} else if d.Size > 0 {
+			*warnings = append(*warnings, fmt.Sprintf("row %d: implausible disk size — skipped", line))
+		}
+	}
+	if len(out) == 0 {
+		if gb := csvFloat(c.cell(row, "disk_as_gb")); gb != nil && *gb > 0 {
+			if mb := diskToMB(*gb, "GB"); mb > 0 {
+				out = append(out, myDisk{SizeMB: mb, Media: "SSD"})
+			} else {
+				*warnings = append(*warnings, fmt.Sprintf("row %d: implausible disk size — skipped", line))
+			}
+		}
+	}
+	return out
+}
+
+// csvIPs converts + dedupes the nested ips JSON cell (is_ipv4 derived from
+// the address, not the file's flag).
+func csvIPs(c *csvCells, row []string, line int, host string, warnings *[]string) []myIP {
+	var out []myIP
+	var ips []miJSONIP
+	if raw := c.cell(row, "ips"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &ips); err != nil {
+			*warnings = append(*warnings, fmt.Sprintf("row %d (%s): bad ips JSON", line, host))
+		}
+	}
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		if ip.Address == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(ip.Address)
+		if err != nil {
+			*warnings = append(*warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", line, ip.Address))
+			continue
+		}
+		if seen[ip.Address] {
+			*warnings = append(*warnings, fmt.Sprintf("row %d: duplicate IP %s listed twice — kept once", line, ip.Address))
+			continue
+		}
+		seen[ip.Address] = true
+		out = append(out, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
+	}
+	return out
+}
+
+// csvPricing converts the pricing_* columns (nil when skipped).
+func csvPricing(c *csvCells, row []string, line int, warnings *[]string) *myPricing {
+	price := csvFloat(c.cell(row, "pricing_price"))
+	if price == nil || !validImportPrice(*price) {
+		return nil
+	}
+	term := 1
+	if t := csvInt(c.cell(row, "pricing_term")); t != nil {
+		term = int(*t)
+	}
+	due, dueOK := normDate(c.cell(row, "pricing_next_due_date"))
+	if !dueOK {
+		*warnings = append(*warnings, fmt.Sprintf("row %d: invalid next_due_date %q — storing NULL", line, c.cell(row, "pricing_next_due_date")))
+	}
+	if term < 1 || term > 7 {
+		*warnings = append(*warnings, fmt.Sprintf("row %d: term %d out of range — pricing skipped", line, term))
+		return nil
+	}
+	cur, ok := normCurrency(c.cell(row, "pricing_currency"))
+	if !ok {
+		*warnings = append(*warnings, fmt.Sprintf("row %d: invalid currency %q — pricing skipped", line, c.cell(row, "pricing_currency")))
+		return nil
+	}
+	return &myPricing{
+		Currency:    cur,
+		Price:       *price,
+		Term:        term,
+		NextDueDate: due,
+	}
 }
 
 // ---------- shared mapping helpers ----------

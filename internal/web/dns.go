@@ -31,7 +31,7 @@ func (s *Server) handleDNSIndex(w http.ResponseWriter, r *http.Request) {
 	st := &model.DNSStore{DB: s.db}
 	items, err := st.List(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	var rows []dnsRow
@@ -223,7 +223,7 @@ func (s *Server) handleDNSCreate(w http.ResponseWriter, r *http.Request) {
 			redirectBack(w, r, "/dns")
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.setFlash(w, r, "ok", "DNS record added.")
@@ -245,7 +245,7 @@ func (s *Server) handleDNSEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	servers, _ := s.serverOptions(r)
@@ -277,7 +277,7 @@ func (s *Server) handleDNSUpdate(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.setFlash(w, r, "ok", "DNS record saved.")

@@ -5,7 +5,7 @@
 // input — keep it that way, it is assigned straight to location.
 document.addEventListener('click', function (e) {
   const row = e.target.closest('tr.row-link');
-  if (!row || !row.dataset.href) return;
+  if (!row?.dataset.href) return;
   if (e.target.closest('a, button, form, input, select, textarea')) return;
   window.location.href = row.dataset.href;
 });

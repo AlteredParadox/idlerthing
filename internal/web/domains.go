@@ -159,7 +159,7 @@ func (s *Server) handleDomainEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.renderDomainForm(w, r, domainFormView{
@@ -197,7 +197,7 @@ func (s *Server) handleDomainCreate(w http.ResponseWriter, r *http.Request) {
 	st := &model.DomainStore{DB: s.db}
 	id, err := st.Create(r.Context(), d, pricing)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -226,7 +226,7 @@ func (s *Server) handleDomainUpdate(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()

@@ -31,7 +31,7 @@ var exportTypes = map[string]int{
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) (context.Context, *sql.Tx, bool) {
 	tx, err := s.db.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return nil, nil, false
 	}
 	return model.WithTx(r.Context(), tx), tx, true
@@ -63,7 +63,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	if typeName == "" || typeName == "servers" {
 		servers, err := s.exportServers(r)
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 		out["servers"] = servers
@@ -74,7 +74,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		items, err := s.exportService(r, st)
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 		out[name] = items
@@ -82,115 +82,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 
 	if typeName == "" {
 		// Full export adds the shared/reference tables.
-		exportErr := false
-		addKey := func(key string, fn func() (any, error)) {
-			if err := s.addJSONKey(r, out, key, fn); err != nil {
-				exportErr = true
-			}
-		}
-		addKey("pricings", func() (any, error) {
-			rows, err := model.QuerierFrom(r.Context(), s.db).QueryContext(r.Context(), `
-				SELECT id, service_id, service_type, currency, price, term,
-					next_due_date, active, created_at, updated_at
-				FROM pricings ORDER BY service_type, service_id`)
-			if err != nil {
-				return nil, err
-			}
-			defer rows.Close()
-			var items []any
-			for rows.Next() {
-				var p model.Pricing
-				var active int
-				var ca, ua string
-				if err := rows.Scan(&p.ID, &p.ServiceID, &p.ServiceType, &p.Currency,
-					&p.Price, &p.Term, &p.NextDueDate, &active, &ca, &ua); err != nil {
-					return nil, err
-				}
-				p.Active = active != 0
-				m := flatten(p).(map[string]any)
-				m["created_at"] = ca
-				m["updated_at"] = ua
-				items = append(items, m)
-			}
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			// A typed nil slice would marshal as null, not [].
-			if items == nil {
-				items = []any{}
-			}
-			return items, nil
-		})
-		addKey("ips", func() (any, error) {
-			v, err := (&model.IPStore{DB: s.db}).ListAll(r.Context())
-			return flattenSlice(v), err
-		})
-		addKey("dns", func() (any, error) {
-			v, err := (&model.DNSStore{DB: s.db}).List(r.Context())
-			return flattenSlice(v), err
-		})
-		addKey("labels", func() (any, error) {
-			v, err := (&model.LabelStore{DB: s.db}).AllWithCounts(r.Context())
-			return flattenSlice(v), err
-		})
-		addKey("yabs", func() (any, error) {
-			return s.exportYABS(r)
-		})
-		addKey("labels_assigned", func() (any, error) {
-			rows, err := model.QuerierFrom(r.Context(), s.db).QueryContext(r.Context(),
-				"SELECT label_id, service_id, service_type FROM labels_assigned ORDER BY service_type, service_id")
-			if err != nil {
-				return nil, err
-			}
-			defer rows.Close()
-			var items []any
-			for rows.Next() {
-				var labelID, serviceID int64
-				var serviceType int
-				if err := rows.Scan(&labelID, &serviceID, &serviceType); err != nil {
-					return nil, err
-				}
-				items = append(items, map[string]any{
-					"label_id": labelID, "service_id": serviceID, "service_type": serviceType,
-				})
-			}
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-			if items == nil {
-				items = []any{}
-			}
-			return items, nil
-		})
-		addKey("notes", func() (any, error) {
-			notes := &model.NoteStore{DB: s.db}
-			v, err := notes.ListAll(r.Context())
-			if err != nil {
-				return nil, err
-			}
-			ipNotes, err := notes.ListIPNotes(r.Context())
-			if err != nil {
-				return nil, err
-			}
-			out := flattenSlice(v)
-			for _, n := range ipNotes {
-				// Match the {"note": {...}} shape flatten gives embedded
-				// NoteWithTarget, and rename "ipid" → "ip_id" (flatten
-				// names IPID "ipid"; the import format is "ip_id").
-				m := flatten(n).(map[string]any)
-				m["ip_id"] = m["ipid"]
-				delete(m, "ipid")
-				out = append(out, map[string]any{"note": m})
-			}
-			return out, nil
-		})
-		for _, kindStr := range []string{"providers", "locations", "os"} {
-			addKey(kindStr, func() (any, error) {
-				v, err := s.catalogs.List(r.Context(), model.Catalogs[kindStr])
-				return flattenSlice(v), err
-			})
-		}
-		if exportErr {
+		if !s.addSharedSections(r, out) {
 			http.Error(w, "export failed", http.StatusInternalServerError)
 			return
 		}
@@ -199,7 +91,7 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	// Close the snapshot BEFORE writing — a slow client must not pin the
 	// single SQLite connection for the whole response.
 	if err := tx.Commit(); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -210,6 +102,131 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	filename += "-" + time.Now().Format("20060102") + ".json"
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// addSharedSections adds the reference tables to a full export document.
+// Returns false on any query error (a missing section would look like an
+// empty table, so the whole export fails).
+func (s *Server) addSharedSections(r *http.Request, out map[string]any) bool {
+	ok := true
+	addKey := func(key string, fn func() (any, error)) {
+		if err := s.addJSONKey(r, out, key, fn); err != nil {
+			ok = false
+		}
+	}
+	addKey("pricings", func() (any, error) { return s.exportPricings(r) })
+	addKey("ips", func() (any, error) {
+		v, err := (&model.IPStore{DB: s.db}).ListAll(r.Context())
+		return flattenSlice(v), err
+	})
+	addKey("dns", func() (any, error) {
+		v, err := (&model.DNSStore{DB: s.db}).List(r.Context())
+		return flattenSlice(v), err
+	})
+	addKey("labels", func() (any, error) {
+		v, err := (&model.LabelStore{DB: s.db}).AllWithCounts(r.Context())
+		return flattenSlice(v), err
+	})
+	addKey("yabs", func() (any, error) {
+		return s.exportYABS(r)
+	})
+	addKey("labels_assigned", func() (any, error) { return s.exportLabelsAssigned(r) })
+	addKey("notes", func() (any, error) { return s.exportNotes(r) })
+	for _, kindStr := range []string{"providers", "locations", "os"} {
+		addKey(kindStr, func() (any, error) {
+			v, err := s.catalogs.List(r.Context(), model.Catalogs[kindStr])
+			return flattenSlice(v), err
+		})
+	}
+	return ok
+}
+
+// exportPricings returns the standalone pricings table with timestamps.
+func (s *Server) exportPricings(r *http.Request) (any, error) {
+	rows, err := model.QuerierFrom(r.Context(), s.db).QueryContext(r.Context(), `
+		SELECT id, service_id, service_type, currency, price, term,
+			next_due_date, active, created_at, updated_at
+		FROM pricings ORDER BY service_type, service_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []any
+	for rows.Next() {
+		var p model.Pricing
+		var active int
+		var ca, ua string
+		if err := rows.Scan(&p.ID, &p.ServiceID, &p.ServiceType, &p.Currency,
+			&p.Price, &p.Term, &p.NextDueDate, &active, &ca, &ua); err != nil {
+			return nil, err
+		}
+		p.Active = active != 0
+		m := flatten(p).(map[string]any)
+		m["created_at"] = ca
+		m["updated_at"] = ua
+		items = append(items, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// A typed nil slice would marshal as null, not [].
+	if items == nil {
+		items = []any{}
+	}
+	return items, nil
+}
+
+// exportLabelsAssigned returns the labels_assigned join table.
+func (s *Server) exportLabelsAssigned(r *http.Request) (any, error) {
+	rows, err := model.QuerierFrom(r.Context(), s.db).QueryContext(r.Context(),
+		"SELECT label_id, service_id, service_type FROM labels_assigned ORDER BY service_type, service_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []any
+	for rows.Next() {
+		var labelID, serviceID int64
+		var serviceType int
+		if err := rows.Scan(&labelID, &serviceID, &serviceType); err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{
+			"label_id": labelID, "service_id": serviceID, "service_type": serviceType,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if items == nil {
+		items = []any{}
+	}
+	return items, nil
+}
+
+// exportNotes returns service notes plus ip-keyed notes in the import's
+// {"note": ...} shape.
+func (s *Server) exportNotes(r *http.Request) (any, error) {
+	notes := &model.NoteStore{DB: s.db}
+	v, err := notes.ListAll(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	ipNotes, err := notes.ListIPNotes(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	out := flattenSlice(v)
+	for _, n := range ipNotes {
+		// Match the {"note": {...}} shape flatten gives embedded
+		// NoteWithTarget, and rename "ipid" → "ip_id" (flatten
+		// names IPID "ipid"; the import format is "ip_id").
+		m := flatten(n).(map[string]any)
+		m["ip_id"] = m["ipid"]
+		delete(m, "ipid")
+		out = append(out, map[string]any{"note": m})
+	}
+	return out, nil
 }
 
 // addJSONKey runs fn and stores the result; a query error aborts the
@@ -456,7 +473,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	// Close the snapshot BEFORE compressing — zip building must not pin the
 	// single SQLite connection.
 	if err := tx.Commit(); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -465,7 +482,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	for _, f := range computed {
 		fw, err := zw.Create(f.name)
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 		cw := csv.NewWriter(fw)
@@ -476,7 +493,7 @@ func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 		cw.Flush()
 	}
 	if err := zw.Close(); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")

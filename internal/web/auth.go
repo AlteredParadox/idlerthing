@@ -61,7 +61,7 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := s.issueLoginCSRF(w, r)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.renderLogin(w, r, token, "")
@@ -84,7 +84,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	token, err := s.issueLoginCSRF(w, r) // rotate on every attempt
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		err = nil
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
@@ -133,7 +133,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.createSession(w, r, u.ID); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	// Lazy cleanup of expired sessions and past-window yabs capabilities.

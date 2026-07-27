@@ -323,7 +323,7 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 		defer func() {
 			if err := recover(); err != nil {
 				slog.Error("panic serving request", "err", err, "path", r.URL.Path)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)

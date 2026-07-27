@@ -698,3 +698,96 @@ func TestNativeSelectiveBounds(t *testing.T) {
 		t.Fatalf("seedbox bounds: %v %d", port, sbBw)
 	}
 }
+
+// JSON warning branches not covered by the other fixtures: ns2 set,
+// invalid owned_since/ip/currency/next_due_date.
+func TestMyJSONWarningBranches(t *testing.T) {
+	recs, warnings, err := ParseMyJSON(strings.NewReader(`[{
+		"hostname": "warn-01", "ns1": "ns1.example.com", "ns2": "ns2.example.com",
+		"owned_since": "not-a-date",
+		"ips": [{"address": "999.1.1.1", "is_ipv4": 1}, {"address": "203.0.113.5", "is_ipv4": 1}],
+		"pricing": {"price": 5, "currency": "US$", "term": 1, "next_due_date": "garbage"}
+	}]`))
+	if err != nil {
+		t.Fatalf("ParseMyJSON: %v", err)
+	}
+	s := recs[0]
+	if s.Ns2 != "ns2.example.com" {
+		t.Fatalf("ns2 should be stored, got %q", s.Ns2)
+	}
+	if s.OwnedSince != "" {
+		t.Fatalf("invalid owned_since should be NULL, got %q", s.OwnedSince)
+	}
+	if len(s.IPs) != 1 || s.IPs[0].Address != "203.0.113.5" {
+		t.Fatalf("invalid ip skipped, valid kept: %+v", s.IPs)
+	}
+	if s.Pricing != nil {
+		t.Fatalf("invalid currency should skip pricing: %+v", s.Pricing)
+	}
+	// owned_since + ip + currency = 3 warnings (pricing skipped before the
+	// next_due_date check).
+	var owned, ip, cur bool
+	for _, w := range warnings {
+		owned = owned || strings.Contains(w, `invalid owned_since "not-a-date"`)
+		ip = ip || strings.Contains(w, `invalid ip "999.1.1.1"`)
+		cur = cur || strings.Contains(w, `invalid currency "US$"`)
+	}
+	if !owned || !ip || !cur {
+		t.Fatalf("missing warnings (owned=%v ip=%v cur=%v): %v", owned, ip, cur, warnings)
+	}
+
+	// Valid currency but garbage next_due_date → pricing kept, date NULL.
+	recs2, warnings2, err := ParseMyJSON(strings.NewReader(`[{
+		"hostname": "warn-02",
+		"pricing": {"price": 5, "currency": "USD", "term": 1, "next_due_date": "garbage"}
+	}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs2[0].Pricing == nil || recs2[0].Pricing.NextDueDate != "" {
+		t.Fatalf("pricing kept with NULL due date: %+v", recs2[0].Pricing)
+	}
+	if len(warnings2) != 1 || !strings.Contains(warnings2[0], `invalid next_due_date "garbage"`) {
+		t.Fatalf("expected the due-date warning, got %v", warnings2)
+	}
+}
+
+// CSV warning branches not covered by TestMyCSVGuards: bad nested JSON
+// cells, implausible (huge) disk size in the disks cell, duplicate IP,
+// bad term. (Negative sizes skip silently by design — see diskToMB.)
+func TestMyCSVWarningBranches(t *testing.T) {
+	csvDoc := "hostname,server_type_name,disks,ips,pricing_price,pricing_currency,pricing_term\n" +
+		`bad-disks,KVM,"[{oops]",,` + "\n" +
+		`big-disk,KVM,"[{""disk_size"": 1e300, ""disk_unit"": ""TB""}]",,` + "\n" +
+		`bad-ips,KVM,,"[{oops]",` + "\n" +
+		`dup-ip,KVM,,"[{""address"": ""203.0.113.9""}, {""address"": ""203.0.113.9""}]",` + "\n" +
+		`bad-term,KVM,,,5,USD,99` + "\n"
+	recs, warnings, err := ParseMyCSV(strings.NewReader(csvDoc))
+	if err != nil {
+		t.Fatalf("ParseMyCSV: %v", err)
+	}
+	if len(recs) != 5 {
+		t.Fatalf("all rows should parse: %d", len(recs))
+	}
+	if len(recs[1].Disks) != 0 {
+		t.Fatalf("negative disk size should be skipped: %+v", recs[1].Disks)
+	}
+	if len(recs[3].IPs) != 1 {
+		t.Fatalf("duplicate IP kept once: %+v", recs[3].IPs)
+	}
+	if recs[4].Pricing != nil {
+		t.Fatalf("term 99 should skip pricing: %+v", recs[4].Pricing)
+	}
+	var badDisks, bigDisk, badIPs, dupIP, term bool
+	for _, w := range warnings {
+		badDisks = badDisks || strings.Contains(w, "bad disks JSON")
+		bigDisk = bigDisk || strings.Contains(w, "implausible disk size")
+		badIPs = badIPs || strings.Contains(w, "bad ips JSON")
+		dupIP = dupIP || strings.Contains(w, "duplicate IP 203.0.113.9 listed twice")
+		term = term || strings.Contains(w, "term 99 out of range")
+	}
+	if !badDisks || !bigDisk || !badIPs || !dupIP || !term {
+		t.Fatalf("missing warnings (disks=%v big=%v ips=%v dup=%v term=%v): %v",
+			badDisks, bigDisk, badIPs, dupIP, term, warnings)
+	}
+}

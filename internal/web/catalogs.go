@@ -36,7 +36,7 @@ func (s *Server) handleCatalogList(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.catalogs.List(r.Context(), kind)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	view := catalogView{Kind: kindStr, Title: kind.Title, Items: items}
@@ -147,7 +147,7 @@ func (s *Server) respondCatalogMutation(w http.ResponseWriter, r *http.Request, 
 	}
 	items, err := s.catalogs.List(r.Context(), kind)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	data := s.newPageData(w, r, kind.Title, kindStr)

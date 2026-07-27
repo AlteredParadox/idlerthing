@@ -232,7 +232,7 @@ func (s *Server) handleNotesIndex(w http.ResponseWriter, r *http.Request) {
 	notes := &model.NoteStore{DB: s.db}
 	all, err := notes.ListAll(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	var rows []noteIndexRow
@@ -442,7 +442,7 @@ func (s *Server) handleIPsIndex(w http.ResponseWriter, r *http.Request) {
 	ips := &model.IPStore{DB: s.db}
 	all, err := ips.ListAll(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	var rows []ipIndexRow

@@ -70,7 +70,7 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 		case err != nil && err != sql.ErrNoRows:
 			// A DB error must surface as 500 — masking it as 401 would send
 			// operators chasing tokens while the database is broken.
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 			return
 		// No token row, no stored hash, or a mismatch are all "unauthorized"
 		// and must stay indistinguishable. The || short-circuits before
@@ -92,7 +92,7 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -261,35 +261,35 @@ func (s *Server) handleAPIServiceList(serviceType int) http.HandlerFunc {
 		case model.ServiceShared:
 			v, err := (&model.SharedStore{DB: s.db}).List(r.Context(), opts)
 			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 				return
 			}
 			writeTypedList(w, r, v)
 		case model.ServiceReseller:
 			v, err := (&model.ResellerStore{DB: s.db}).List(r.Context(), opts)
 			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 				return
 			}
 			writeTypedList(w, r, v)
 		case model.ServiceSeedbox:
 			v, err := (&model.SeedboxStore{DB: s.db}).List(r.Context(), opts)
 			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 				return
 			}
 			writeTypedList(w, r, v)
 		case model.ServiceDomain:
 			v, err := (&model.DomainStore{DB: s.db}).List(r.Context(), opts)
 			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 				return
 			}
 			writeTypedList(w, r, v)
 		case model.ServiceMisc:
 			v, err := (&model.MiscStore{DB: s.db}).List(r.Context(), opts)
 			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "internal error")
+				writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 				return
 			}
 			writeTypedList(w, r, v)
@@ -302,7 +302,7 @@ func (s *Server) handleAPIServiceGet(serviceType int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		if err != nil {
-			writeAPIError(w, http.StatusNotFound, "not found")
+			writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 			return
 		}
 		var entity any
@@ -320,11 +320,11 @@ func (s *Server) handleAPIServiceGet(serviceType int) http.HandlerFunc {
 			entity, pricing, err = (&model.MiscStore{DB: s.db}).Get(r.Context(), id)
 		}
 		if err == sql.ErrNoRows {
-			writeAPIError(w, http.StatusNotFound, "not found")
+			writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 			return
 		}
 		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -342,7 +342,7 @@ func (s *Server) handleAPIPricings(w http.ResponseWriter, r *http.Request) {
 			`+model.TargetNameSQL+` AS service_name
 		FROM pricings a ORDER BY a.service_type, a.service_id`)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	defer rows.Close()
@@ -356,7 +356,7 @@ func (s *Server) handleAPIPricings(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&p.ID, &p.ServiceID, &p.ServiceType, &p.Currency,
 			&p.Price, &p.Term, &p.NextDueDate, &active, &createdAt, &updatedAt,
 			&serviceName); err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 			return
 		}
 		p.Active = active != 0
@@ -366,7 +366,7 @@ func (s *Server) handleAPIPricings(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 
@@ -394,7 +394,7 @@ func (s *Server) handleAPIPricings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIIPs(w http.ResponseWriter, r *http.Request) {
 	items, err := (&model.IPStore{DB: s.db}).ListAll(r.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeTypedList(w, r, items)
@@ -404,7 +404,7 @@ func (s *Server) handleAPIIPs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIDNS(w http.ResponseWriter, r *http.Request) {
 	items, err := (&model.DNSStore{DB: s.db}).List(r.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeTypedList(w, r, items)
@@ -414,7 +414,7 @@ func (s *Server) handleAPIDNS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPILabels(w http.ResponseWriter, r *http.Request) {
 	items, err := (&model.LabelStore{DB: s.db}).AllWithCounts(r.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeTypedList(w, r, items)
@@ -424,7 +424,7 @@ func (s *Server) handleAPILabels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPINotes(w http.ResponseWriter, r *http.Request) {
 	items, err := (&model.NoteStore{DB: s.db}).ListAll(r.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeTypedList(w, r, items)
@@ -435,12 +435,12 @@ func (s *Server) handleAPICatalog(kindStr string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		kind, ok := model.Catalogs[kindStr]
 		if !ok {
-			writeAPIError(w, http.StatusNotFound, "not found")
+			writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 			return
 		}
 		items, err := s.catalogs.List(r.Context(), kind)
 		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 			return
 		}
 		writeTypedList(w, r, items)

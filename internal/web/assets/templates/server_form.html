@@ -60,16 +60,16 @@
         <span class="field-label">CPU model</span>
         <input type="text" name="cpu_model" value="{{nstr $s.CPUModel}}" placeholder="AMD EPYC 7443P">
       </label>
-      <label class="field">
+      <div class="field">
         <span class="field-label">RAM</span>
         {{template "size_input" dict "label" "RAM" "name" "ram_as_mb" "val" $s.RamAsMB}}
         {{with index $v.Errors "ram_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
-      </label>
-      <label class="field">
+      </div>
+      <div class="field">
         <span class="field-label">Bandwidth</span>
         {{template "size_input" dict "label" "Bandwidth" "name" "bandwidth_as_mb" "val" $s.BandwidthAsMB "unlimited" true}}
         {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
-      </label>
+      </div>
       <label class="field">
         <span class="field-label">Link speed (mbps)</span>
         <input type="number" name="link_speed" min="0" value="{{nint $s.LinkSpeed}}">

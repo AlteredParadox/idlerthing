@@ -268,7 +268,7 @@ func (s *Server) handleHostingEdit(w http.ResponseWriter, r *http.Request, cfg *
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.renderHostingForm(w, r, cfg, hostingFormView{
@@ -309,7 +309,7 @@ func (s *Server) handleHostingCreate(w http.ResponseWriter, r *http.Request, cfg
 	}
 	id, err := cfg.store.Create(r.Context(), h, pricing)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -339,7 +339,7 @@ func (s *Server) handleHostingUpdate(w http.ResponseWriter, r *http.Request, cfg
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()

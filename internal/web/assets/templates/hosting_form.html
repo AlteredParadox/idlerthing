@@ -66,16 +66,16 @@
   <section class="panel form-section">
     <h2 class="section-title">Resources</h2>
     <div class="form-grid">
-      <label class="field">
+      <div class="field">
         <span class="field-label">Disk</span>
         {{template "size_input" dict "label" "Disk" "name" "disk_as_mb" "val" $h.DiskAsMB}}
         {{with index $v.Errors "disk_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
-      </label>
-      <label class="field">
+      </div>
+      <div class="field">
         <span class="field-label">Bandwidth</span>
         {{template "size_input" dict "label" "Bandwidth" "name" "bandwidth_as_mb" "val" $h.BandwidthAsMB "unlimited" true}}
         {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
-      </label>
+      </div>
       <label class="field">
         <span class="field-label">IP</span>
         <input type="text" name="ip" value="{{nstr $h.IP}}">

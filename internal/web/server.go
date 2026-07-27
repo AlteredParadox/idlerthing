@@ -1,3 +1,19 @@
+// idlerthing — a lightweight, self-hosted inventory for hosting services.
+// Copyright (C) 2026 AlteredParadox
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at your
+// option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+// for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 // Package web implements the HTTP layer: routes, middleware, auth, and templates.
 package web
 
@@ -37,6 +53,7 @@ type Server struct {
 	tmpl       *templates
 	limit      *rateLimiter
 	emailLimit *rateLimiter
+	blockLog   *rateLimiter // throttles the 'rate-limited' journal line
 	pingLimit  *rateLimiter
 	servers    *model.ServerStore
 	catalogs   *model.CatalogStore
@@ -54,6 +71,12 @@ type Server struct {
 	allowHTTPIngest bool           // IDLER_BEHIND_TLS_PROXY
 	baseURL         string         // IDLER_BASE_URL ("" = derive from request)
 	whoisRate       whoisRateLimit // per-server whois throttle (fresh in tests)
+
+	// AGPL §13 texts, injected from package main (go:embed cannot reach the
+	// repo root from here) — see legal.go.
+	license    []byte
+	thirdParty []byte
+	version    string
 }
 
 // New creates a Server backed by db.
@@ -71,14 +94,16 @@ func New(db *sql.DB) (*Server, error) {
 		tmpl:       t,
 		limit:      newRateLimiter(10, time.Minute),
 		emailLimit: newRateLimiter(10, time.Minute),
-		pingLimit:  newRateLimiter(10, time.Minute),
-		servers:    &model.ServerStore{DB: db},
-		catalogs:   &model.CatalogStore{DB: db},
-		pricings:   &model.PricingStore{DB: db},
-		rates:      pricing.NewRates(),
-		dash:       &dashboardCache{},
-		secret:     secret,
-		prom:       &promCache{},
+		// One line per source per window (see Server.logBlocked).
+		blockLog:  newRateLimiter(1, time.Minute),
+		pingLimit: newRateLimiter(10, time.Minute),
+		servers:   &model.ServerStore{DB: db},
+		catalogs:  &model.CatalogStore{DB: db},
+		pricings:  &model.PricingStore{DB: db},
+		rates:     pricing.NewRates(),
+		dash:      &dashboardCache{},
+		secret:    secret,
+		prom:      &promCache{},
 	}, nil
 }
 
@@ -116,6 +141,12 @@ func (s *Server) Handler() http.Handler {
 	// Public routes.
 	mux.HandleFunc("GET /static/accent.css", s.handleAccentCSS)
 	mux.Handle("GET /static/", s.withCacheHeaders(http.StripPrefix("/static/", http.FileServerFS(staticFS))))
+	// AGPL §13: the license, the third-party notices, and the Corresponding
+	// Source offer must reach every network user, so these sit OUTSIDE
+	// requireAuth alongside the other public routes.
+	mux.HandleFunc("GET /license", s.serveLegalText(func() []byte { return s.license }, "license text unavailable"))
+	mux.HandleFunc("GET /third-party-licenses", s.serveLegalText(func() []byte { return s.thirdParty }, "third-party notices unavailable"))
+	mux.HandleFunc("GET /source", s.handleSource)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		// Bounded: Ping would otherwise queue behind the single connection
 		// for as long as a slow write takes.

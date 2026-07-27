@@ -1,3 +1,19 @@
+// idlerthing — a lightweight, self-hosted inventory for hosting services.
+// Copyright (C) 2026 AlteredParadox
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or (at your
+// option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT
+// ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+// FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+// for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 package web
 
 import (
@@ -6,6 +22,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -92,7 +109,9 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if ip := s.clientIP(r); !s.limit.allow(limiterKey(ip)) {
+	ip := s.clientIP(r)
+	if !s.limit.allow(limiterKey(ip)) {
+		s.logBlocked(ip)
 		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
 	}
@@ -109,6 +128,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// credential-stuffing run against one account still trips.
 	// Limiter keys are hashed so raw input can't bloat the map.
 	if !s.emailLimit.allow(limiterKey(email)) {
+		s.logBlocked(ip)
 		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
 	}
@@ -128,6 +148,10 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+		// The attempted address is attacker-controlled, so it goes AFTER the
+		// source: a crafted value cannot shift the filter's <HOST> capture,
+		// and slog's TextHandler quotes/escapes it.
+		slog.Warn("login: failed authentication", "from", ip, "user", email)
 		s.renderLogin(w, r, token, "Invalid email or password.")
 		return
 	}
@@ -136,6 +160,10 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
+	// Audited alongside the failures so an operator can tell "the owner
+	// signed in" from an attack in the same stream; the fail2ban filter
+	// ignoreregex excludes it.
+	slog.Info("login: authenticated", "from", ip, "user", email)
 	// Lazy cleanup of expired sessions and past-window yabs capabilities.
 	s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE expires_at < ?",
 		time.Now().UTC().Format(time.RFC3339))
@@ -159,6 +187,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: s.cookieSecure(r), MaxAge: -1,
 	})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// logBlocked records a refused-by-rate-limit attempt for a fail2ban-style
+// watcher, at most ONCE per window per source. Blocked requests are refused
+// before the bcrypt verify, so they are cheap to send in bulk — logging every
+// one would let a flood amplify into unbounded journald writes.
+func (s *Server) logBlocked(ip string) {
+	if s.blockLog.allow(limiterKey(ip)) {
+		slog.Warn("login: rate-limited", "from", ip)
+	}
 }
 
 // cookieSecure reports whether cookies must carry the Secure attribute:

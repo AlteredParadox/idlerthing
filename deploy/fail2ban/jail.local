@@ -1,0 +1,38 @@
+# fail2ban jail for idlerthing.
+#
+# Install:  /etc/fail2ban/jail.d/idlerthing.conf
+# Requires: deploy/fail2ban/idlerthing.conf in /etc/fail2ban/filter.d/
+#
+# Reads the systemd journal for the idlerthing unit — no log file to
+# configure. Adjust journalmatch if your unit is named differently.
+
+[idlerthing]
+enabled  = true
+backend  = systemd
+filter   = idlerthing
+# Scope journal matching to idlerthing's unit so an unrelated line that
+# happens to contain "login:" can never match.
+journalmatch = _SYSTEMD_UNIT=idlerthing.service
+
+# Ban with the NATIVE nftables backend. Debian 13 is nftables-based and ships
+# no iptables by default, so the distro-default iptables banaction would fail
+# at ban time on a plain host. nftables-allports drops the source in its own
+# `inet f2b-table`, coexisting with any existing ruleset. protocol=tcp,udp
+# becomes a single `meta l4proto {tcp,udp}` match, so a banned client is
+# blocked over QUIC/UDP as well as TCP. Verify with a real ban:
+#   fail2ban-client set idlerthing banip 203.0.113.7
+#   nft list table inet f2b-table
+banaction = nftables-allports
+protocol  = tcp,udp
+
+# idlerthing already rate-limits per source AND per account (10/min each), so
+# a real attacker produces a steady trickle of failed-auth plus one
+# rate-limited line per minute. A low threshold bans them quickly.
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# Grow the ban for repeat offenders; drop this block for a fixed bantime.
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 1w

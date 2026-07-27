@@ -1,3 +1,21 @@
+{{/*
+idlerthing — a lightweight, self-hosted inventory for hosting services.
+Copyright (C) 2026 AlteredParadox
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/}}
+
 {{define "content"}}
 {{$v := .Data}}
 <header class="page-head">
@@ -136,6 +154,20 @@
       <input type="hidden" name="action" value="token">
       <button class="btn" type="submit">Generate new token</button>
     </form>
+  </section>
+
+  <section class="panel form-section">
+    <h2 class="section-title">About &amp; licensing</h2>
+    <p class="empty-sub">
+      idlerthing <span class="mono">{{$v.Version}}</span> — free software under the
+      GNU Affero General Public License v3 or later. These links are public: the
+      AGPL requires the offer to reach every network user, not just signed-in ones.
+    </p>
+    <div class="row-actions always">
+      <a class="btn" href="/license">License</a>
+      <a class="btn" href="/third-party-licenses">Third-party notices</a>
+      <a class="btn" href="/source">Source code</a>
+    </div>
   </section>
 </div>
 {{end}}

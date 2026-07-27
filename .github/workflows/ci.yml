@@ -38,6 +38,12 @@ jobs:
       - name: make vet
         run: make vet
 
+      # Every first-party source carries the AGPL notice. Cheap and offline,
+      # so unlike notices-check this one is safe to gate every PR on —
+      # Dependabot never touches source headers.
+      - name: make license-check
+        run: make license-check
+
       # The trimmed static binary the README documents.
       - name: make build
         run: make build

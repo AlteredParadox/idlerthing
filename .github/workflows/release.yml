@@ -39,6 +39,15 @@ jobs:
       - name: make test
         run: make test
 
+      - name: make license-check
+        run: make license-check
+
+      # THIRD_PARTY_LICENSES.md is embedded in the binary, so a release must
+      # not ship notices that disagree with what is linked into it. This is
+      # the ONE place the check gates — see the Makefile for why not on PRs.
+      - name: make notices-check
+        run: make notices-check
+
   # Runs on BOTH triggers, so a dispatch proves the build still works.
   # Pure Go (modernc.org/sqlite, no cgo) cross-compiles with nothing but
   # GOARCH — no QEMU, no buildx.

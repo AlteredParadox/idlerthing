@@ -116,7 +116,7 @@ func (s *Server) handleLabelAssign(w http.ResponseWriter, r *http.Request) {
 	serviceID, err1 := formInt64(r, "service_id")
 	serviceType, err2 := formInt64(r, "service_type")
 	if err1 != nil || err2 != nil || serviceType < 1 || serviceType > 6 {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		http.Error(w, errMsgBadRequest, http.StatusBadRequest)
 		return
 	}
 
@@ -158,7 +158,7 @@ func (s *Server) handleLabelUnassign(w http.ResponseWriter, r *http.Request) {
 	serviceID, err2 := formInt64(r, "service_id")
 	serviceType, err3 := formInt64(r, "service_type")
 	if err1 != nil || err2 != nil || err3 != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		http.Error(w, errMsgBadRequest, http.StatusBadRequest)
 		return
 	}
 	labels := &model.LabelStore{DB: s.db}
@@ -179,7 +179,7 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	body := strings.TrimSpace(r.FormValue("body"))
 	if err1 != nil || err2 != nil || serviceType < 1 || serviceType > 6 || body == "" {
 		s.setFlash(w, r, "err", "Note body is required.")
-		redirectBack(w, r, "/notes")
+		redirectBack(w, r, routeNotes)
 		return
 	}
 	if !s.serviceExists(r, int(serviceType), serviceID) {
@@ -197,7 +197,7 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		s.setFlash(w, r, "ok", "Note added.")
 		s.touchDashboard()
 	}
-	redirectBack(w, r, "/notes")
+	redirectBack(w, r, routeNotes)
 }
 
 // handleNoteDelete handles POST /notes/{id}/delete.
@@ -213,7 +213,7 @@ func (s *Server) handleNoteDelete(w http.ResponseWriter, r *http.Request) {
 	} else {
 		s.touchDashboard()
 	}
-	redirectBack(w, r, "/notes")
+	redirectBack(w, r, routeNotes)
 }
 
 // noteIndexRow is one row of the notes index.
@@ -269,7 +269,7 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 	serviceID, err1 := formInt64(r, "service_id")
 	serviceType, err2 := formInt64(r, "service_type")
 	if err1 != nil || err2 != nil || serviceType < 1 || serviceType > 6 {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		http.Error(w, errMsgBadRequest, http.StatusBadRequest)
 		return
 	}
 	if !s.serviceExists(r, int(serviceType), serviceID) {

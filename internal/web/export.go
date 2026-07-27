@@ -53,39 +53,10 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := map[string]any{
-		// Envelope version marker — the importer requires it.
-		"format": 1,
-		// Per-type exports omit the related tables (pricings/ips/dns/notes/
-		// labels_assigned/yabs) — the importer warns on these.
-		"partial": typeName != "",
-	}
-	if typeName == "" || typeName == "servers" {
-		servers, err := s.exportServers(r)
-		if err != nil {
-			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
-			return
-		}
-		out["servers"] = servers
-	}
-	for name, st := range exportTypes {
-		if st == model.ServiceServer || (typeName != "" && typeName != name) {
-			continue
-		}
-		items, err := s.exportService(r, st)
-		if err != nil {
-			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
-			return
-		}
-		out[name] = items
-	}
-
-	if typeName == "" {
-		// Full export adds the shared/reference tables.
-		if !s.addSharedSections(r, out) {
-			http.Error(w, "export failed", http.StatusInternalServerError)
-			return
-		}
+	out, ok := s.buildExportDoc(r, typeName)
+	if !ok {
+		http.Error(w, "export failed", http.StatusInternalServerError)
+		return
 	}
 
 	// Close the snapshot BEFORE writing — a slow client must not pin the
@@ -102,6 +73,40 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	filename += "-" + time.Now().Format("20060102") + ".json"
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// buildExportDoc builds the export document inside the snapshot tx.
+// Returns false on any query error (a missing section would look like an
+// empty table, so the whole export fails).
+func (s *Server) buildExportDoc(r *http.Request, typeName string) (map[string]any, bool) {
+	out := map[string]any{
+		// Envelope version marker — the importer requires it.
+		"format": 1,
+		// Per-type exports omit the related tables (pricings/ips/dns/notes/
+		// labels_assigned/yabs) — the importer warns on these.
+		"partial": typeName != "",
+	}
+	if typeName == "" || typeName == "servers" {
+		servers, err := s.exportServers(r)
+		if err != nil {
+			return nil, false
+		}
+		out["servers"] = servers
+	}
+	for name, st := range exportTypes {
+		if st == model.ServiceServer || (typeName != "" && typeName != name) {
+			continue
+		}
+		items, err := s.exportService(r, st)
+		if err != nil {
+			return nil, false
+		}
+		out[name] = items
+	}
+	if typeName == "" && !s.addSharedSections(r, out) {
+		return nil, false
+	}
+	return out, true
 }
 
 // addSharedSections adds the reference tables to a full export document.

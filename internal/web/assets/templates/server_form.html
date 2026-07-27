@@ -142,14 +142,14 @@
       {{range $i := seq4}}
       {{$d := indexDisk $v.Disks $i}}
       <div class="disk-row">
-        <label class="field">
+        <div class="field">
           <span class="field-label">Size</span>
           {{if $d}}
           {{template "size_input" dict "label" "Disk size" "name" (printf "disk%d_size" $i) "val" $d.SizeAsMB}}
           {{else}}
           {{template "size_input" dict "label" "Disk size" "name" (printf "disk%d_size" $i)}}
           {{end}}
-        </label>
+        </div>
         <label class="field">
           <span class="field-label">Media</span>
           <select name="disk{{$i}}_media">

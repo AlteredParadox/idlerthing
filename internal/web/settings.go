@@ -123,7 +123,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", "Settings saved.")
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+	http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 }
 
 // handleSettingsAccount handles POST /settings/account (action=password|token).
@@ -157,18 +157,18 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
 		s.setFlash(w, r, "err", "Current password is wrong.")
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return
 	}
 	if len(newPass) < 8 || len(newPass) > 72 {
 		// bcrypt reads at most 72 bytes — reject longer instead of 500ing.
 		s.setFlash(w, r, "err", "New password must be 8–72 characters.")
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return
 	}
 	if newPass != confirm {
 		s.setFlash(w, r, "err", "New passwords do not match.")
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		return
 	}
 	s.setFlash(w, r, "ok", "Password changed. All sessions were rotated and the API token was revoked.")
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+	http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 }
 
 // apiTokenCookieName carries the freshly generated API token across the
@@ -233,12 +233,12 @@ func (s *Server) generateAPIToken(w http.ResponseWriter, r *http.Request, u *use
 	http.SetCookie(w, &http.Cookie{
 		Name:     apiTokenCookieName,
 		Value:    token,
-		Path:     "/settings",
+		Path:     routeSettings,
 		HttpOnly: true,
 		Secure:   s.cookieSecure(r),
 		SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+	http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 }
 
 // popRevealedToken reads and clears the one-time API-token cookie.
@@ -248,7 +248,7 @@ func (s *Server) popRevealedToken(w http.ResponseWriter, r *http.Request) string
 		return ""
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: apiTokenCookieName, Value: "", Path: "/settings", HttpOnly: true, MaxAge: -1,
+		Name: apiTokenCookieName, Value: "", Path: routeSettings, HttpOnly: true, MaxAge: -1,
 	})
 	return cookie.Value
 }
@@ -276,13 +276,13 @@ func (s *Server) handlePrometheusTest(w http.ResponseWriter, r *http.Request) {
 	_, baseURL := s.promSettings(r)
 	if baseURL == "" {
 		s.setFlash(w, r, "err", "No Prometheus URL configured — save settings first.")
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return
 	}
 	samples, err := prom.New(baseURL).Query(r.Context(), "up")
 	if err != nil {
 		s.setFlash(w, r, "err", "Connection failed: "+err.Error())
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return
 	}
 	up := 0
@@ -292,5 +292,5 @@ func (s *Server) handlePrometheusTest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.setFlash(w, r, "ok", "Connected — "+strconv.Itoa(up)+" of "+strconv.Itoa(len(samples))+" targets up.")
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+	http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 }

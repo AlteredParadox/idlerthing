@@ -13,7 +13,7 @@ import (
 func (s *Server) domainSection() *section {
 	st := &model.DomainStore{DB: s.db}
 	return &section{
-		Base:        "/domains",
+		Base:        routeDomains,
 		Kind:        "domains",
 		Title:       "Domains",
 		ServiceType: model.ServiceDomain,
@@ -53,12 +53,12 @@ func (s *Server) domainSection() *section {
 					ns = "—"
 				}
 				rows = append(rows, listRow{
-					Link:          "/domains/" + id,
-					EditURL:       "/domains/" + id + "/edit",
-					DeleteURL:     "/domains/" + id + "/delete",
+					Link:          routeDomains + "/" + id,
+					EditURL:       routeDomains + "/" + id + "/edit",
+					DeleteURL:     routeDomains + "/" + id + "/delete",
 					DeleteConfirm: "Delete " + it.Domain.Domain + "?",
 					Cells: []listCell{
-						{Main: it.Domain.Domain, Dot: dot, Link: "/domains/" + id, Class: "mono"},
+						{Main: it.Domain.Domain, Dot: dot, Link: routeDomains + "/" + id, Class: "mono"},
 						{Main: dash(it.Extension.String)},
 						{Main: ns, Sub: nsSub, Class: "mono"},
 						{Main: dash(it.ProviderName)},
@@ -105,8 +105,8 @@ func (s *Server) domainSection() *section {
 				Title:         d.Domain,
 				Mono:          true,
 				Badges:        badges,
-				EditURL:       "/domains/" + sid + "/edit",
-				DeleteURL:     "/domains/" + sid + "/delete",
+				EditURL:       routeDomains + "/" + sid + "/edit",
+				DeleteURL:     routeDomains + "/" + sid + "/delete",
 				DeleteConfirm: "Delete " + d.Domain + "?",
 				Cards: []infoCard{
 					{Title: "Domain", Pairs: []kvPair{
@@ -141,7 +141,7 @@ type domainFormView struct {
 
 func (s *Server) handleDomainNew(w http.ResponseWriter, r *http.Request) {
 	s.renderDomainForm(w, r, domainFormView{
-		Action: "/domains",
+		Action: routeDomains,
 		Domain: &model.Domain{Active: true},
 	})
 }
@@ -163,7 +163,7 @@ func (s *Server) handleDomainEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderDomainForm(w, r, domainFormView{
-		Action:  "/domains/" + strconv.FormatInt(id, 10) + "/update",
+		Action:  routeDomains + "/" + strconv.FormatInt(id, 10) + "/update",
 		IsEdit:  true,
 		Domain:  d,
 		Pricing: pricing,
@@ -176,10 +176,10 @@ func (s *Server) renderDomainForm(w http.ResponseWriter, r *http.Request, view d
 	}
 	view.Currencies = currencies
 	title := "Add domain"
-	view.CancelURL = "/domains"
+	view.CancelURL = routeDomains
 	if view.IsEdit {
 		title = "Edit " + view.Domain.Domain
-		view.CancelURL = "/domains/" + strconv.FormatInt(view.Domain.ID, 10)
+		view.CancelURL = routeDomains + "/" + strconv.FormatInt(view.Domain.ID, 10)
 	}
 	data := s.newPageData(w, r, title, "domains")
 	data.Data = view
@@ -190,7 +190,7 @@ func (s *Server) handleDomainCreate(w http.ResponseWriter, r *http.Request) {
 	d, pricing, errs := parseDomainForm(r)
 	if len(errs) > 0 {
 		s.renderDomainForm(w, r, domainFormView{
-			Action: "/domains", Domain: d, Pricing: pricing, Errors: errs,
+			Action: routeDomains, Domain: d, Pricing: pricing, Errors: errs,
 		})
 		return
 	}
@@ -202,7 +202,7 @@ func (s *Server) handleDomainCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", d.Domain+" added.")
-	http.Redirect(w, r, "/domains/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeDomains+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleDomainUpdate(w http.ResponseWriter, r *http.Request) {
@@ -215,7 +215,7 @@ func (s *Server) handleDomainUpdate(w http.ResponseWriter, r *http.Request) {
 	d.ID = id
 	if len(errs) > 0 {
 		s.renderDomainForm(w, r, domainFormView{
-			Action: "/domains/" + strconv.FormatInt(id, 10) + "/update",
+			Action: routeDomains + "/" + strconv.FormatInt(id, 10) + "/update",
 			IsEdit: true, Domain: d, Pricing: pricing, Errors: errs,
 		})
 		return
@@ -231,7 +231,7 @@ func (s *Server) handleDomainUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", d.Domain+" saved.")
-	http.Redirect(w, r, "/domains/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeDomains+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // parseDomainForm parses + validates the domain form.

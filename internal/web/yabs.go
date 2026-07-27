@@ -306,8 +306,8 @@ func yabsRows(items []model.YABSListItem) []yabsRow {
 		rows = append(rows, yabsRow{
 			ID:         it.ID,
 			ServerName: it.ServerHostname,
-			ServerURL:  "/servers/" + strconv.FormatInt(it.ServerID, 10),
-			URL:        "/servers/" + strconv.FormatInt(it.ServerID, 10) + "/yabs/" + strconv.FormatInt(it.ID, 10),
+			ServerURL:  routeServers + "/" + strconv.FormatInt(it.ServerID, 10),
+			URL:        routeServers + "/" + strconv.FormatInt(it.ServerID, 10) + "/yabs/" + strconv.FormatInt(it.ID, 10),
 			Date:       dateOnly(date),
 			CPU:        it.CPU.String,
 			GbSingle:   niDisplay(it.GbSingle),
@@ -382,11 +382,11 @@ func (s *Server) handleServerYABSDelete(w http.ResponseWriter, r *http.Request) 
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", "YABS run deleted.")
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/servers/"+strconv.FormatInt(serverID, 10)+"/yabs")
+		w.Header().Set("HX-Redirect", routeServers+"/"+strconv.FormatInt(serverID, 10)+"/yabs")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/servers/"+strconv.FormatInt(serverID, 10)+"/yabs", http.StatusSeeOther)
+	http.Redirect(w, r, routeServers+"/"+strconv.FormatInt(serverID, 10)+"/yabs", http.StatusSeeOther)
 }
 
 func sqlNs(s string) sql.NullString {

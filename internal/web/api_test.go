@@ -462,3 +462,66 @@ func mustURL(t *testing.T, raw string) *url.URL {
 	}
 	return u
 }
+
+// API contract: pricing validation on PUT, and 404s for missing ids.
+func TestAPIServerPutValidationAnd404(t *testing.T) {
+	ts, database := newTestServer(t)
+	token := setAPIToken(t, database)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "api-put-01")
+
+	put := func(id string, body string) (*http.Response, map[string]any) {
+		req, _ := http.NewRequest("PUT", ts.URL+"/api/servers/"+id, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		b, _ := io.ReadAll(resp.Body)
+		json.Unmarshal(b, &out)
+		return resp, out
+	}
+
+	// Negative price → 422 with a field error.
+	resp, body := put("1", `{"hostname": "api-put-01", "server_type": 1, "pricing": {"currency": "USD", "price": -5, "term": 1}}`)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("negative price: expected 422, got %d %v", resp.StatusCode, body)
+	}
+	fields, _ := body["fields"].(map[string]any)
+	if fields["price"] == nil {
+		t.Fatalf("expected a price field error: %v", body)
+	}
+
+	// Out-of-range term is clamped to monthly, not rejected.
+	resp, _ = put("1", `{"hostname": "api-put-01", "server_type": 1, "pricing": {"currency": "USD", "price": 10, "term": 99}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("term 99 should clamp, got %d", resp.StatusCode)
+	}
+	var term int
+	database.QueryRow("SELECT term FROM pricings WHERE service_id = 1 AND service_type = 1").Scan(&term)
+	if term != 1 {
+		t.Fatalf("term should clamp to monthly (1), got %d", term)
+	}
+
+	// PUT / DELETE on a nonexistent id → 404 {"error":"not found"}.
+	resp, body = put("999", `{"hostname": "ghost", "server_type": 1}`)
+	if resp.StatusCode != http.StatusNotFound || body["error"] != "not found" {
+		t.Fatalf("PUT 999: expected 404 not found, got %d %v", resp.StatusCode, body)
+	}
+	req, _ := http.NewRequest("DELETE", ts.URL+"/api/servers/999", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var body2 map[string]any
+	b, _ := io.ReadAll(resp2.Body)
+	json.Unmarshal(b, &body2)
+	if resp2.StatusCode != http.StatusNotFound || body2["error"] != "not found" {
+		t.Fatalf("DELETE 999: expected 404 not found, got %d %v", resp2.StatusCode, body2)
+	}
+}

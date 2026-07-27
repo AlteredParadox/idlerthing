@@ -21,8 +21,15 @@ var pingRunner = execPing
 // put it elsewhere; "ping" alone (relative, resolved per-exec) is never used.
 var pingBinary = resolvePing()
 
-func resolvePing() string {
-	for _, p := range []string{"/bin/ping", "/usr/bin/ping", "/sbin/ping", "/usr/sbin/ping"} {
+// pingCandidates are the fixed locations searched before the PATH fallback.
+var pingCandidates = []string{"/bin/ping", "/usr/bin/ping", "/sbin/ping", "/usr/sbin/ping"}
+
+func resolvePing() string { return resolvePingFrom(pingCandidates) }
+
+func resolvePingFrom(candidates []string) string {
+	for _, p := range candidates {
+		// Regular files only: a directory named "ping" on the search list
+		// must not be mistaken for the binary.
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			return p
 		}

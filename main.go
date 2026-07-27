@@ -24,7 +24,16 @@ import (
 	"idlerthing/internal/web"
 )
 
+// version is stamped at build time by the release workflow via
+// -ldflags "-X main.version=vX.Y.Z". Local and development builds report
+// "dev" — a released binary must be identifiable from the binary alone.
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {
+		fmt.Println("idlerthing", version)
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "import" {
 		if err := runImport(os.Args[2:]); err != nil {
 			slog.Error("import failed", "err", err)

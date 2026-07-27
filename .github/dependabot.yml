@@ -1,0 +1,46 @@
+version: 2
+
+# Every Dependabot PR is gated by the `check` job in ci.yml (gofmt, go vet,
+# build, tests, race). The `scan` job in sonarqube.yml is skipped for these
+# PRs — Dependabot events run with a restricted token that cannot read
+# SONAR_TOKEN, so the scan could only fail on auth.
+updates:
+  # Grouping needs an explicit applies-to per kind: a group with no
+  # applies-to covers version updates ONLY, so security updates would arrive
+  # one PR per advisory. Both kinds are grouped here.
+  #
+  # The version-update groups deliberately cover minor and patch ONLY.
+  # Majors fall outside every group and so arrive as one PR each — a grouped
+  # PR labelled "N updates" hides breaking jumps, and one major per PR keeps
+  # them individually reviewable and individually revertable.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go:
+        applies-to: version-updates
+        update-types: ['minor', 'patch']
+        patterns: ['*']
+      go-security:
+        applies-to: security-updates
+        patterns: ['*']
+
+  # github-actions understands the "pinned SHA + # vX.Y.Z" pattern in the
+  # workflows and bumps both together. CAVEAT: it only refreshes a trailing
+  # comment that already carries a FULL version — a bare "# v7" is left
+  # untouched while the SHA advances, so the comment silently starts lying.
+  # After any actions bump, grep `uses: .*@` across .github/workflows/ and
+  # hand-fix mismatches.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ['*']
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ['*']

@@ -1,0 +1,110 @@
+# Build the release binaries and cut a GitHub Release on every version tag.
+#
+# idlerthing ships as a single static binary installed to /usr/local/bin by
+# the systemd unit — there is no container — so the release artifacts are the
+# binaries themselves plus a SHA256SUMS file, not a GHCR image.
+#
+# Trigger: pushing a `vX.Y.Z` tag. A manual `workflow_dispatch` run builds
+# every arch and uploads them as workflow artifacts WITHOUT creating a
+# Release — a cheap "does it still build and pass" check that also exercises
+# this workflow, which a tag push would otherwise be the first thing to run.
+# Both paths gate on the same tests as ci.yml.
+#
+# Least privilege: only the tag-only `publish` job gets contents: write.
+# Actions are pinned to full commit SHAs (a mutable tag can be repointed at
+# malicious code); the trailing comment records the tag. Keep the comment at
+# the FULL version — Dependabot leaves a bare "# v7" stale as the SHA moves.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The same gate as ci.yml. A broken tree must never produce a Release.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: make vet
+        run: make vet
+      - name: make test
+        run: make test
+
+  # Runs on BOTH triggers, so a dispatch proves the build still works.
+  # Pure Go (modernc.org/sqlite, no cgo) cross-compiles with nothing but
+  # GOARCH — no QEMU, no buildx.
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # A dispatch run has no tag, so stamp "dev" — the binary always reports
+      # something, and only a tag build claims a version.
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          v="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = tag ] || v="dev"
+          go build -trimpath -ldflags "-s -w -X main.version=${v}" \
+            -o "idlerthing-linux-${GOARCH}" .
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idlerthing-linux-${{ matrix.goarch }}
+          path: idlerthing-linux-${{ matrix.goarch }}
+          if-no-files-found: error
+
+  # Tag PUSH only: this is the ONLY job granted contents: write. Requiring
+  # event_name == 'push' keeps a manual dispatch — which can target a tag —
+  # out of the publishing path entirely.
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          chmod +x idlerthing-linux-*
+          sha256sum idlerthing-linux-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # gh is preinstalled on the runner — no third-party action, so nothing
+      # beyond GitHub itself ever sees the token. --generate-notes builds the
+      # changelog from the commits since the previous tag.
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/idlerthing-linux-* dist/SHA256SUMS

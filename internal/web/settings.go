@@ -118,7 +118,7 @@ func (s *Server) handleSettingsUpdate(w http.ResponseWriter, r *http.Request) {
 		WHERE id = 1`,
 		defaultCur, dashCur, dueSoon, recent, theme, boolToIntWeb(serversPublic),
 		accent, boolToIntWeb(compact), boolToIntWeb(promEnabled), promURL); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -152,7 +152,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 	var hash string
 	if err := s.db.QueryRowContext(r.Context(),
 		"SELECT password_hash FROM users WHERE id = ?", u.ID).Scan(&hash); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
@@ -174,12 +174,12 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 
 	newHash, err := bcrypt.GenerateFromPassword([]byte(newPass), bcrypt.DefaultCost)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
@@ -187,7 +187,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		`UPDATE users SET password_hash = ?, api_token_hash = NULL,
 			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		string(newHash), u.ID); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	// Invalidate ALL sessions for the user — including the current one,
@@ -195,15 +195,15 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 	// fresh session is issued on the response right after.
 	if _, err := tx.ExecContext(r.Context(),
 		"DELETE FROM sessions WHERE user_id = ?", u.ID); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	if err := s.createSession(w, r, u.ID); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.setFlash(w, r, "ok", "Password changed. All sessions were rotated and the API token was revoked.")
@@ -220,14 +220,14 @@ const apiTokenCookieName = "idler_api_token"
 func (s *Server) generateAPIToken(w http.ResponseWriter, r *http.Request, u *user) {
 	token, err := randomToken(32)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	sum := sha256.Sum256([]byte(token))
 	if _, err := s.db.ExecContext(r.Context(),
 		"UPDATE users SET api_token_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
 		hex.EncodeToString(sum[:]), u.ID); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{

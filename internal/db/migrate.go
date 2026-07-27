@@ -21,6 +21,12 @@ var migrationsFS embed.FS
 // comments — 0007 has them.)
 var deleteTableRe = regexp.MustCompile(`(?i)DELETE\s+FROM\s+(\w+)`)
 
+// migration is one embedded migration file.
+type migration struct {
+	version int
+	name    string
+}
+
 // Migrate applies any pending migrations to db and returns the list of
 // migration versions applied during this call. Migrations are tracked via
 // PRAGMA user_version; each embedded migrations/NNNN_name.sql file whose
@@ -31,32 +37,30 @@ func Migrate(db *sql.DB) ([]int, error) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&current); err != nil {
 		return nil, fmt.Errorf("read user_version: %w", err)
 	}
+	pending, err := pendingMigrations(current)
+	if err != nil {
+		return nil, err
+	}
+	var applied []int
+	for _, m := range pending {
+		if err := applyMigration(db, m); err != nil {
+			return applied, err
+		}
+		applied = append(applied, m.version)
+	}
+	return applied, nil
+}
 
+// pendingMigrations lists the embedded migrations beyond current, sorted by
+// version. A DB from a newer build is refused.
+func pendingMigrations(current int) ([]migration, error) {
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded migrations: %w", err)
 	}
 
-	// Never run against a DB from a newer build.
-	var maxVersion int
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
-			continue
-		}
-		prefix, _, _ := strings.Cut(e.Name(), "_")
-		if v, err := strconv.Atoi(prefix); err == nil && v > maxVersion {
-			maxVersion = v
-		}
-	}
-	if current > maxVersion {
-		return nil, fmt.Errorf("database was created by a newer version of idlerthing (user_version %d > %d)", current, maxVersion)
-	}
-
-	type migration struct {
-		version int
-		name    string
-	}
 	var pending []migration
+	maxVersion := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
 			continue
@@ -66,51 +70,57 @@ func Migrate(db *sql.DB) ([]int, error) {
 		if err != nil {
 			return nil, fmt.Errorf("migration %s: bad numeric prefix: %w", e.Name(), err)
 		}
+		if v > maxVersion {
+			maxVersion = v
+		}
 		if v > current {
 			pending = append(pending, migration{version: v, name: e.Name()})
 		}
 	}
-	sort.Slice(pending, func(i, j int) bool { return pending[i].version < pending[j].version })
-
-	var applied []int
-	for _, m := range pending {
-		body, err := migrationsFS.ReadFile("migrations/" + m.name)
-		if err != nil {
-			return applied, fmt.Errorf("read migration %s: %w", m.name, err)
-		}
-
-		tx, err := db.Begin()
-		if err != nil {
-			return applied, fmt.Errorf("begin migration %s: %w", m.name, err)
-		}
-		// Row counts before, for delete-logging after (see deleteTableRe).
-		before := map[string]int{}
-		for _, dm := range deleteTableRe.FindAllStringSubmatch(string(body), -1) {
-			var n int
-			if err := tx.QueryRow("SELECT COUNT(*) FROM " + dm[1]).Scan(&n); err == nil {
-				before[dm[1]] = n
-			}
-		}
-		if _, err := tx.Exec(string(body)); err != nil {
-			tx.Rollback()
-			return applied, fmt.Errorf("apply migration %s: %w", m.name, err)
-		}
-		for table, n := range before {
-			var after int
-			if err := tx.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&after); err == nil && after != n {
-				slog.Info("migration deleted rows", "migration", m.name, "table", table, "rows", n-after)
-			}
-		}
-		// user_version cannot be set as a bound parameter; version comes from
-		// the trusted embedded filename so interpolation is safe.
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
-			tx.Rollback()
-			return applied, fmt.Errorf("set user_version for %s: %w", m.name, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return applied, fmt.Errorf("commit migration %s: %w", m.name, err)
-		}
-		applied = append(applied, m.version)
+	if current > maxVersion {
+		return nil, fmt.Errorf("database was created by a newer version of idlerthing (user_version %d > %d)", current, maxVersion)
 	}
-	return applied, nil
+	sort.Slice(pending, func(i, j int) bool { return pending[i].version < pending[j].version })
+	return pending, nil
+}
+
+// applyMigration runs one migration in a transaction, logging the rows each
+// DELETE removes (counted before/after — see deleteTableRe).
+func applyMigration(db *sql.DB, m migration) error {
+	body, err := migrationsFS.ReadFile("migrations/" + m.name)
+	if err != nil {
+		return fmt.Errorf("read migration %s: %w", m.name, err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration %s: %w", m.name, err)
+	}
+	defer tx.Rollback()
+
+	before := map[string]int{}
+	for _, dm := range deleteTableRe.FindAllStringSubmatch(string(body), -1) {
+		var n int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM " + dm[1]).Scan(&n); err == nil {
+			before[dm[1]] = n
+		}
+	}
+	if _, err := tx.Exec(string(body)); err != nil {
+		return fmt.Errorf("apply migration %s: %w", m.name, err)
+	}
+	for table, n := range before {
+		var after int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&after); err == nil && after != n {
+			slog.Info("migration deleted rows", "migration", m.name, "table", table, "rows", n-after)
+		}
+	}
+	// user_version cannot be set as a bound parameter; version comes from
+	// the trusted embedded filename so interpolation is safe.
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
+		return fmt.Errorf("set user_version for %s: %w", m.name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", m.name, err)
+	}
+	return nil
 }

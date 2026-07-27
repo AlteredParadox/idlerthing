@@ -115,7 +115,7 @@ func (s *Server) handleServerColsPref(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO user_prefs (user_id, key, value) VALUES (?, 'servers_cols', ?)
 		 ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value`,
 		u.ID, strings.Join(hidden, ",")); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 

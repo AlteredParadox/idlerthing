@@ -44,16 +44,16 @@
         <input type="number" name="port_speed" min="0" value="{{nint $b.PortSpeed}}">
         {{with index $v.Errors "port_speed"}}<span class="field-err">{{.}}</span>{{end}}
       </label>
-      <label class="field">
+      <div class="field">
         <span class="field-label">Disk</span>
         {{template "size_input" dict "label" "Disk" "name" "disk_as_mb" "val" $b.DiskAsMB}}
         {{with index $v.Errors "disk_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
-      </label>
-      <label class="field">
+      </div>
+      <div class="field">
         <span class="field-label">Bandwidth</span>
         {{template "size_input" dict "label" "Bandwidth" "name" "bandwidth_as_mb" "val" $b.BandwidthAsMB "unlimited" true}}
         {{with index $v.Errors "bandwidth_as_mb"}}<span class="field-err">{{.}}</span>{{end}}
-      </label>
+      </div>
     </div>
   </section>
 

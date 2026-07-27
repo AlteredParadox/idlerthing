@@ -96,7 +96,7 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 
 	items, err := s.servers.List(r.Context(), opts)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -108,12 +108,12 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	if !isHX {
 		active, inactive, err = s.servers.StatusCounts(r.Context())
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 		locations, err = s.servers.DistinctLocations(r.Context())
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 	}
@@ -288,14 +288,14 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
 	names := s.lookupNames(r, srv)
 	extras, err := s.buildExtras(r, srv.ID, model.ServiceServer)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	// One live-metrics fetch for both the Live card and the LiveMon section.
@@ -317,7 +317,7 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	runs, err := (&model.YABSStore{DB: s.db}).ListFor(r.Context(), srv.ID)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	view.YABSRuns = yabsRows(runs)
@@ -408,7 +408,7 @@ func (s *Server) handleServerEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.renderServerForm(w, r, serverFormView{
@@ -451,7 +451,7 @@ func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.servers.Create(r.Context(), srv, disks, pricing)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -480,7 +480,7 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -496,7 +496,7 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.servers.Delete(r.Context(), id); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()

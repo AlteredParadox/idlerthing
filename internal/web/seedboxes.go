@@ -187,7 +187,7 @@ func (s *Server) handleSeedboxEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.renderSeedboxForm(w, r, seedboxFormView{
@@ -226,7 +226,7 @@ func (s *Server) handleSeedboxCreate(w http.ResponseWriter, r *http.Request) {
 	st := &model.SeedboxStore{DB: s.db}
 	id, err := st.Create(r.Context(), b, pricing)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -255,7 +255,7 @@ func (s *Server) handleSeedboxUpdate(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()

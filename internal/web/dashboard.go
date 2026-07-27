@@ -119,7 +119,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		var err error
 		view, err = s.computeDashboard(r)
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 		s.dash.mu.Lock()

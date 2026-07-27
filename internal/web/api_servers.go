@@ -52,6 +52,13 @@ type pricingJSON struct {
 // toModel converts + validates the DTO (same rules as the web form).
 func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricing, map[string]string) {
 	errs := map[string]string{}
+	srv := j.serverFields(errs)
+	j.checkBounds(errs)
+	return srv, j.disksToModel(), j.pricingToModel(errs), errs
+}
+
+// serverFields maps the scalar fields and validates them.
+func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 	srv := &model.Server{
 		Hostname:      strings.TrimSpace(j.Hostname),
 		ServerType:    j.ServerType,
@@ -74,26 +81,36 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 	if srv.ServerType < model.TypeKVM || srv.ServerType > model.TypeNAT {
 		srv.ServerType = model.TypeKVM
 	}
-	if j.CPUModel != "" {
-		srv.CPUModel = sql.NullString{String: j.CPUModel, Valid: true}
+	srv.CPUModel = nullStrIf(j.CPUModel)
+	srv.NetworkType = nullStrIf(j.NetworkType)
+	srv.Ns1 = nullStrIf(j.Ns1)
+	srv.Ns2 = nullStrIf(j.Ns2)
+	srv.OwnedSince = jsonDate(errs, "owned_since", j.OwnedSince)
+	return srv
+}
+
+// nullStrIf wraps a non-empty string as a valid NullString.
+func nullStrIf(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
 	}
-	if j.NetworkType != "" {
-		srv.NetworkType = sql.NullString{String: j.NetworkType, Valid: true}
+	return sql.NullString{String: s, Valid: true}
+}
+
+// jsonDate validates a yyyy-mm-dd DTO field, recording an error when invalid.
+func jsonDate(errs map[string]string, field, value string) sql.NullString {
+	if value == "" {
+		return sql.NullString{}
 	}
-	if j.Ns1 != "" {
-		srv.Ns1 = sql.NullString{String: j.Ns1, Valid: true}
+	if _, err := time.Parse(time.DateOnly, value); err != nil {
+		errs[field] = "invalid date (want yyyy-mm-dd)"
+		return sql.NullString{}
 	}
-	if j.Ns2 != "" {
-		srv.Ns2 = sql.NullString{String: j.Ns2, Valid: true}
-	}
-	if j.OwnedSince != "" {
-		if _, err := time.Parse(time.DateOnly, j.OwnedSince); err != nil {
-			errs["owned_since"] = "invalid date (want yyyy-mm-dd)"
-		} else {
-			srv.OwnedSince = sql.NullString{String: j.OwnedSince, Valid: true}
-		}
-	}
-	// Bounds aligned with the web form.
+	return sql.NullString{String: value, Valid: true}
+}
+
+// checkBounds applies the shared numeric caps (aligned with the web form).
+func (j *serverJSON) checkBounds(errs map[string]string) {
 	for _, v := range []struct {
 		name string
 		p    *int64
@@ -114,7 +131,10 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 			errs[fmt.Sprintf("disks[%d].size_as_mb", i)] = "out of range"
 		}
 	}
+}
 
+// disksToModel keeps positive sizes, normalizing media.
+func (j *serverJSON) disksToModel() []model.ServerDisk {
 	var disks []model.ServerDisk
 	for _, d := range j.Disks {
 		if d.SizeAsMB <= 0 {
@@ -128,28 +148,28 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 		}
 		disks = append(disks, model.ServerDisk{SizeAsMB: d.SizeAsMB, Media: media})
 	}
+	return disks
+}
 
-	var pricing *model.Pricing
-	if j.Pricing != nil {
-		if !validPrice(j.Pricing.Price) {
-			errs["price"] = "price must be finite and > 0"
-		} else {
-			currency := validCurrency(j.Pricing.Currency)
-			term := j.Pricing.Term
-			if term < model.TermMonthly || term > model.TermOneTime {
-				term = model.TermMonthly
-			}
-			pricing = &model.Pricing{Currency: currency, Price: j.Pricing.Price, Term: term}
-			if j.Pricing.NextDueDate != "" {
-				if _, err := time.Parse(time.DateOnly, j.Pricing.NextDueDate); err != nil {
-					errs["next_due_date"] = "invalid date (want yyyy-mm-dd)"
-				} else {
-					pricing.NextDueDate = sql.NullString{String: j.Pricing.NextDueDate, Valid: true}
-				}
-			}
-		}
+// pricingToModel converts the optional pricing block.
+func (j *serverJSON) pricingToModel(errs map[string]string) *model.Pricing {
+	if j.Pricing == nil {
+		return nil
 	}
-	return srv, disks, pricing, errs
+	if !validPrice(j.Pricing.Price) {
+		errs["price"] = "price must be finite and > 0"
+		return nil
+	}
+	term := j.Pricing.Term
+	if term < model.TermMonthly || term > model.TermOneTime {
+		term = model.TermMonthly
+	}
+	return &model.Pricing{
+		Currency:    validCurrency(j.Pricing.Currency),
+		Price:       j.Pricing.Price,
+		Term:        term,
+		NextDueDate: jsonDate(errs, "next_due_date", j.Pricing.NextDueDate),
+	}
 }
 
 func ptrToNull(p *int64) sql.NullInt64 {
@@ -202,7 +222,7 @@ func (s *Server) apiServerPayload(r *http.Request, id int64) (map[string]any, er
 func (s *Server) handleAPIServers(w http.ResponseWriter, r *http.Request) {
 	items, err := s.servers.List(r.Context(), model.ListOptions{Status: "all"})
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeTypedList(w, r, items)
@@ -212,16 +232,16 @@ func (s *Server) handleAPIServers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIServerGet(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	}
 	payload, err := s.apiServerPayload(r, id)
 	if err == sql.ErrNoRows {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	}
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
@@ -240,13 +260,13 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := s.servers.Create(r.Context(), srv, disks, pricing)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	s.touchDashboard()
 	payload, err := s.apiServerPayload(r, id)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeJSON(w, http.StatusCreated, payload)
@@ -256,7 +276,7 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	}
 	j, ok := decodeServerJSON(w, r)
@@ -270,16 +290,16 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	srv.ID = id
 	if err := s.servers.Update(r.Context(), srv, disks, pricing); err == sql.ErrNoRows {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	} else if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	s.touchDashboard()
 	payload, err := s.apiServerPayload(r, id)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
@@ -289,14 +309,14 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIServerDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	}
 	if err := s.servers.Delete(r.Context(), id); err == sql.ErrNoRows {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	} else if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	s.touchDashboard()

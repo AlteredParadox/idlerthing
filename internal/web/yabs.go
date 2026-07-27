@@ -115,7 +115,7 @@ func shellQuote(s string) string {
 func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 	serverID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "not found")
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
 		return
 	}
 	ts, _ := strconv.ParseInt(r.URL.Query().Get("ts"), 10, 64)
@@ -147,12 +147,12 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 	hashHex := hex.EncodeToString(hash[:])
 	dup, err := st.IsDuplicate(r.Context(), serverID, "", hashHex)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	if dup {
 		if _, err := st.ConsumeCap(r.Context(), serverID, ts); err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
@@ -165,7 +165,7 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 	// without its body ever being parsed.
 	consumed, err := st.ConsumeCap(r.Context(), serverID, ts)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "internal error")
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
 	}
 	if !consumed {
@@ -227,7 +227,7 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, model.ErrDuplicatePayload) {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
 		} else {
-			writeAPIError(w, http.StatusInternalServerError, "internal error")
+			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		}
 		return
 	}
@@ -241,7 +241,7 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleYABSIndex(w http.ResponseWriter, r *http.Request) {
 	items, err := (&model.YABSStore{DB: s.db}).ListAll(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	data := s.newPageData(w, r, "YABS", "yabs")
@@ -262,12 +262,12 @@ func (s *Server) handleServerYABS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	items, err := (&model.YABSStore{DB: s.db}).ListFor(r.Context(), serverID)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	data := s.newPageData(w, r, "YABS · "+srv.Hostname, "yabs")
@@ -336,7 +336,7 @@ func (s *Server) handleServerYABSDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	if y.ServerID != serverID {
@@ -376,7 +376,7 @@ func (s *Server) handleServerYABSDelete(w http.ResponseWriter, r *http.Request) 
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()

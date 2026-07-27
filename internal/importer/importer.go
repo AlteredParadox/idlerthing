@@ -633,98 +633,124 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 		if s == nil {
 			continue
 		}
-		serverType := int64(fget(s, "server_type"))
-		if serverType < model.TypeKVM || serverType > model.TypeNAT {
-			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
-				"server %q: server_type %d out of range — storing %d (KVM)", sget(s, "hostname"), serverType, model.TypeKVM))
-			serverType = model.TypeKVM
-		}
-		res, err := imp.tx.ExecContext(ctx, `
-			INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
-				ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
-				ssh_port, active, show_public, was_promo, transferrable, owned_since)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sget(s, "hostname"), serverType,
-			imp.remapCatalog("os", nget(s, "os_id")),
-			imp.remapCatalog("providers", nget(s, "provider_id")),
-			imp.remapCatalog("locations", nget(s, "location_id")),
-			imp.boundedInt(nget(s, "ram_as_mb"), 1<<30, "ram_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "cpu"), 1024, "cpu", sget(s, "hostname")), sgetN(s, "cpu_model"),
-			imp.boundedInt(nget(s, "bandwidth_as_mb"), 1<<30, "bandwidth_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "link_speed"), 1<<20, "link_speed", sget(s, "hostname")), sgetN(s, "network_type"),
-			sgetN(s, "ns1"), sgetN(s, "ns2"), imp.boundedInt(nget(s, "ssh_port"), 65535, "ssh_port", sget(s, "hostname")),
-			bint(bget(s, "active")), bint(bget(s, "show_public")),
-			bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
-			imp.normOwned(sgetN(s, "owned_since"), sget(s, "hostname")))
-		if err != nil {
-			return fmt.Errorf("import server %q: %w", sget(s, "hostname"), err)
-		}
-		newID, _ := res.LastInsertId()
-		if old := oldID(s); old > 0 {
-			imp.idMaps[1][old] = newID
-		}
-		imp.sum.Servers++
-		if err := imp.fixTimestamps(ctx, "servers", newID, s); err != nil {
+		if err := imp.importServer(ctx, it, s); err != nil {
 			return err
 		}
+	}
+	return nil
+}
 
-		for _, d := range arr(it, "disks") {
-			dm, _ := d.(map[string]any)
-			size := imp.boundedInt(nget(dm, "size_as_mb"), 1<<30, "disk size_as_mb", sget(s, "hostname"))
-			if !size.Valid || size.Int64 <= 0 {
-				continue
-			}
-			media := sget(dm, "media")
-			switch media {
-			case "SSD", "HDD", "NVMe":
-			case "":
-				media = "SSD"
-			default:
-				imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
-					"server %q: invalid disk media %q — storing SSD", sget(s, "hostname"), media))
-				media = "SSD"
-			}
-			if _, err := imp.tx.ExecContext(ctx,
-				"INSERT INTO server_disks (server_id, size_as_mb, media) VALUES (?, ?, ?)",
-				newID, size.Int64, media); err != nil {
-				return err
-			}
-			imp.sum.Disks++
+// importServer imports one {"server": ...} item with its inlined relations.
+func (imp *importer) importServer(ctx context.Context, it, s map[string]any) error {
+	newID, err := imp.insertServerRow(ctx, s)
+	if err != nil {
+		return err
+	}
+	if old := oldID(s); old > 0 {
+		imp.idMaps[1][old] = newID
+	}
+	imp.sum.Servers++
+	if err := imp.fixTimestamps(ctx, "servers", newID, s); err != nil {
+		return err
+	}
+	if err := imp.insertServerDisks(ctx, it, s, newID); err != nil {
+		return err
+	}
+	if err := imp.assignServerLabels(ctx, it, newID); err != nil {
+		return err
+	}
+
+	// Inlined IPs.
+	for _, ip := range arr(it, "ips") {
+		im, _ := ip.(map[string]any)
+		if err := imp.insertIP(ctx, im, newID, 1); err != nil {
+			return err
 		}
+	}
+	return imp.insertPricing(ctx, mget(it, "pricing"), newID, 1)
+}
 
-		// Inlined labels → assign (get-or-create label, cap 4).
-		for _, l := range arr(it, "labels") {
-			lm, _ := l.(map[string]any)
-			name := sget(lm, "name")
-			if name == "" {
-				continue
-			}
-			labelID, _, err := getOrCreateCatalogTx(ctx, imp.tx, "labels", "label", name)
-			if err != nil {
-				return err
-			}
-			var n int
-			if err := imp.tx.QueryRowContext(ctx,
-				"SELECT COUNT(*) FROM labels_assigned WHERE service_id = ? AND service_type = 1", newID).Scan(&n); err != nil {
-				return err
-			}
-			if n >= model.MaxLabelsPerService {
-				continue
-			}
-			if _, err := imp.tx.ExecContext(ctx,
-				"INSERT OR IGNORE INTO labels_assigned (label_id, service_id, service_type) VALUES (?, ?, 1)",
-				labelID, newID); err != nil {
-				return err
-			}
+// insertServerRow validates server_type and inserts the servers row.
+func (imp *importer) insertServerRow(ctx context.Context, s map[string]any) (int64, error) {
+	serverType := int64(fget(s, "server_type"))
+	if serverType < model.TypeKVM || serverType > model.TypeNAT {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"server %q: server_type %d out of range — storing %d (KVM)", sget(s, "hostname"), serverType, model.TypeKVM))
+		serverType = model.TypeKVM
+	}
+	res, err := imp.tx.ExecContext(ctx, `
+		INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
+			ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
+			ssh_port, active, show_public, was_promo, transferrable, owned_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sget(s, "hostname"), serverType,
+		imp.remapCatalog("os", nget(s, "os_id")),
+		imp.remapCatalog("providers", nget(s, "provider_id")),
+		imp.remapCatalog("locations", nget(s, "location_id")),
+		imp.boundedInt(nget(s, "ram_as_mb"), 1<<30, "ram_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "cpu"), 1024, "cpu", sget(s, "hostname")), sgetN(s, "cpu_model"),
+		imp.boundedInt(nget(s, "bandwidth_as_mb"), 1<<30, "bandwidth_as_mb", sget(s, "hostname")), imp.boundedInt(nget(s, "link_speed"), 1<<20, "link_speed", sget(s, "hostname")), sgetN(s, "network_type"),
+		sgetN(s, "ns1"), sgetN(s, "ns2"), imp.boundedInt(nget(s, "ssh_port"), 65535, "ssh_port", sget(s, "hostname")),
+		bint(bget(s, "active")), bint(bget(s, "show_public")),
+		bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
+		imp.normOwned(sgetN(s, "owned_since"), sget(s, "hostname")))
+	if err != nil {
+		return 0, fmt.Errorf("import server %q: %w", sget(s, "hostname"), err)
+	}
+	newID, _ := res.LastInsertId()
+	return newID, nil
+}
+
+// insertServerDisks imports the inlined disk rows for one server.
+func (imp *importer) insertServerDisks(ctx context.Context, it, s map[string]any, newID int64) error {
+	for _, d := range arr(it, "disks") {
+		dm, _ := d.(map[string]any)
+		size := imp.boundedInt(nget(dm, "size_as_mb"), 1<<30, "disk size_as_mb", sget(s, "hostname"))
+		if !size.Valid || size.Int64 <= 0 {
+			continue
 		}
-
-		// Inlined IPs.
-		for _, ip := range arr(it, "ips") {
-			im, _ := ip.(map[string]any)
-			if err := imp.insertIP(ctx, im, newID, 1); err != nil {
-				return err
-			}
+		media := sget(dm, "media")
+		switch media {
+		case "SSD", "HDD", "NVMe":
+		case "":
+			media = "SSD"
+		default:
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"server %q: invalid disk media %q — storing SSD", sget(s, "hostname"), media))
+			media = "SSD"
 		}
+		if _, err := imp.tx.ExecContext(ctx,
+			"INSERT INTO server_disks (server_id, size_as_mb, media) VALUES (?, ?, ?)",
+			newID, size.Int64, media); err != nil {
+			return err
+		}
+		imp.sum.Disks++
+	}
+	return nil
+}
 
-		if err := imp.insertPricing(ctx, mget(it, "pricing"), newID, 1); err != nil {
+// assignServerLabels assigns the inlined labels (get-or-create, cap 4).
+func (imp *importer) assignServerLabels(ctx context.Context, it map[string]any, newID int64) error {
+	for _, l := range arr(it, "labels") {
+		lm, _ := l.(map[string]any)
+		name := sget(lm, "name")
+		if name == "" {
+			continue
+		}
+		labelID, _, err := getOrCreateCatalogTx(ctx, imp.tx, "labels", "label", name)
+		if err != nil {
+			return err
+		}
+		var n int
+		if err := imp.tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM labels_assigned WHERE service_id = ? AND service_type = 1", newID).Scan(&n); err != nil {
+			return err
+		}
+		if n >= model.MaxLabelsPerService {
+			continue
+		}
+		if _, err := imp.tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO labels_assigned (label_id, service_id, service_type) VALUES (?, ?, 1)",
+			labelID, newID); err != nil {
 			return err
 		}
 	}

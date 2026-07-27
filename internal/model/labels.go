@@ -134,11 +134,10 @@ func (s *LabelStore) FindOrCreate(ctx context.Context, name string) (int64, erro
 	}
 	res, err := s.DB.ExecContext(ctx, "INSERT INTO labels (label) VALUES (?)", name)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			if selErr := QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
-				"SELECT id FROM labels WHERE label = ? COLLATE NOCASE", name).Scan(&id); selErr == nil {
-				return id, nil
-			}
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") &&
+			QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
+				"SELECT id FROM labels WHERE label = ? COLLATE NOCASE", name).Scan(&id) == nil {
+			return id, nil
 		}
 		return 0, fmt.Errorf("create label: %w", err)
 	}

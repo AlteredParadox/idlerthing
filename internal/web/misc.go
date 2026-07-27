@@ -132,7 +132,7 @@ func (s *Server) handleMiscEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.renderMiscForm(w, r, miscFormView{
@@ -167,7 +167,7 @@ func (s *Server) handleMiscCreate(w http.ResponseWriter, r *http.Request) {
 	st := &model.MiscStore{DB: s.db}
 	id, err := st.Create(r.Context(), m, pricing)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -196,7 +196,7 @@ func (s *Server) handleMiscUpdate(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()

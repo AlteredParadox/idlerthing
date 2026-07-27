@@ -57,7 +57,7 @@ func (s *Server) handlePublic(w http.ResponseWriter, r *http.Request) {
 		var err error
 		rows, err = s.computePublicRows(r)
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 			return
 		}
 		s.publicCache.mu.Lock()

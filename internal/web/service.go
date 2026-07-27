@@ -115,7 +115,7 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request, sec *
 
 	rows, err := sec.List(r, opts)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -132,7 +132,7 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request, sec *
 
 	active, inactive, err := sec.Counts(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 
@@ -165,7 +165,7 @@ func (s *Server) handleSectionDelete(w http.ResponseWriter, r *http.Request, sec
 		return
 	}
 	if err := sec.Delete(r.Context(), id); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
@@ -191,12 +191,12 @@ func (s *Server) handleSectionDetail(w http.ResponseWriter, r *http.Request, sec
 		return
 	}
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	view.Extras, err = s.buildExtras(r, id, sec.ServiceType)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	data := s.newPageData(w, r, view.Title, sec.Kind)

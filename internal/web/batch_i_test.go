@@ -200,6 +200,7 @@ func TestYABSGbURLDuplicate(t *testing.T) {
 func TestImportValidationClasses(t *testing.T) {
 	dbB := freshDB(t)
 	fixture := `{
+		"format": 1,
 		"servers": [
 			{"server": {"id": 1, "hostname": "bad-cur", "server_type": 1, "active": true},
 				"pricing": {"currency": "US$", "price": 5, "term": 1}},

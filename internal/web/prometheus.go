@@ -34,13 +34,25 @@ func validPromURL(u string) bool {
 // promCache caches the last successful ServerMetrics batch and the last
 // fetch ATTEMPT time (failures back off refetches instead of re-running
 // ~40s of queries on every request). Keyed by baseURL: a settings change
-// to a different Prometheus must not serve the old server's data.
+// to a different Prometheus must not serve the old server's data. inFlight
+// singleflights a cold burst onto one upstream batch.
 type promCache struct {
-	mu      sync.Mutex
-	baseURL string
-	at      time.Time
-	metrics *prom.Metrics
-	lastTry time.Time
+	mu       sync.Mutex
+	baseURL  string
+	at       time.Time
+	metrics  *prom.Metrics
+	lastTry  time.Time
+	inFlight chan struct{}
+}
+
+// currentPromURL re-reads the prometheus URL straight from the DB (NOT the
+// per-request memo) — used to decide whether a slow fetch still belongs in
+// the cache after a possible mid-fetch settings change.
+func (s *Server) currentPromURL(r *http.Request) string {
+	var u string
+	s.db.QueryRowContext(r.Context(),
+		"SELECT prometheus_url FROM settings WHERE id = 1").Scan(&u)
+	return strings.TrimRight(strings.TrimSpace(u), "/")
 }
 
 // liveMetrics returns metrics when prometheus is enabled, else nil.
@@ -52,38 +64,54 @@ func (s *Server) liveMetrics(r *http.Request) *prom.Metrics {
 		return nil
 	}
 
-	// Check the cache under lock, fetch WITHOUT the lock (a hung
-	// prometheus must not serialize every page behind ~40s of queries),
-	// then re-lock to store. A rare duplicate fetch is acceptable.
-	s.prom.mu.Lock()
-	if s.prom.baseURL != baseURL {
-		s.prom.baseURL = baseURL
-		s.prom.metrics = nil
-		s.prom.at = time.Time{}
-		s.prom.lastTry = time.Time{}
-	}
-	cached := s.prom.metrics
-	fresh := cached != nil && time.Since(s.prom.at) < 45*time.Second
-	backoff := time.Since(s.prom.lastTry) < 30*time.Second
-	s.prom.mu.Unlock()
-	if fresh {
-		return cached
-	}
-	if backoff {
-		return cached // recent failure: serve stale (or nil) without refetching
+	// Check the cache under lock; the leader fetches WITHOUT the lock (a
+	// hung prometheus must not serialize every page), followers wait on the
+	// in-flight batch (singleflight) and re-check.
+	var cached *prom.Metrics
+	for {
+		s.prom.mu.Lock()
+		if s.prom.baseURL != baseURL {
+			s.prom.baseURL = baseURL
+			s.prom.metrics = nil
+			s.prom.at = time.Time{}
+			s.prom.lastTry = time.Time{}
+		}
+		cached = s.prom.metrics
+		fresh := cached != nil && time.Since(s.prom.at) < 45*time.Second
+		backoff := time.Since(s.prom.lastTry) < 30*time.Second
+		if fresh || backoff {
+			s.prom.mu.Unlock()
+			return cached
+		}
+		if s.prom.inFlight != nil {
+			ch := s.prom.inFlight
+			s.prom.mu.Unlock()
+			<-ch
+			continue
+		}
+		s.prom.inFlight = make(chan struct{})
+		s.prom.lastTry = time.Now()
+		s.prom.mu.Unlock()
+		break
 	}
 
-	s.prom.mu.Lock()
-	s.prom.lastTry = time.Now()
-	s.prom.mu.Unlock()
 	m := prom.New(baseURL).ServerMetrics(r.Context())
+
+	// Store only when settings STILL point at the same endpoint — a slow
+	// fetch to A must not land in B's cache slot after a switch.
+	stillCurrent := s.currentPromURL(r) == baseURL
+	s.prom.mu.Lock()
+	close(s.prom.inFlight)
+	s.prom.inFlight = nil
 	if !m.Healthy {
+		s.prom.mu.Unlock()
 		return cached // fetch failed: stale (or nil) until the backoff expires
 	}
 	// Zero results from a HEALTHY prometheus is a valid state — store it.
-	s.prom.mu.Lock()
-	s.prom.metrics = m
-	s.prom.at = time.Now()
+	if stillCurrent {
+		s.prom.metrics = m
+		s.prom.at = time.Now()
+	}
 	s.prom.mu.Unlock()
 	return m
 }
@@ -206,24 +234,27 @@ func throughput(h *prom.HostMetrics) string {
 
 // ---------- detail Live card ----------
 
-// liveView is the Live card payload on the server detail page.
+// liveView is the Live card payload on the server detail page. OnlineKnown
+// false means the `up` query failed — render "unknown", never "down".
 type liveView struct {
-	Online     bool
-	CPU        *meterView
-	RAM        *meterView
-	Disk       *meterView
-	Throughput string
-	Uptime     string
+	Online      bool
+	OnlineKnown bool
+	CPU         *meterView
+	RAM         *meterView
+	Disk        *meterView
+	Throughput  string
+	Uptime      string
 }
 
 // uptimeCache caches 30-day uptime per instance (60s success, 30s failure),
-// keyed by the prometheus baseURL.
+// keyed by the prometheus baseURL, singleflighted on a cold burst.
 type uptimeCache struct {
-	mu      sync.Mutex
-	baseURL string
-	at      map[string]time.Time
-	v       map[string]float64
-	failed  map[string]bool
+	mu       sync.Mutex
+	baseURL  string
+	at       map[string]time.Time
+	v        map[string]float64
+	failed   map[string]bool
+	inFlight chan struct{}
 }
 
 // buildLive builds the Live card for one server from pre-fetched metrics
@@ -234,11 +265,12 @@ func (s *Server) buildLive(r *http.Request, m *prom.Metrics, hostname string) *l
 		return nil
 	}
 	v := &liveView{
-		Online:     h.Online,
-		CPU:        meter(h.CPUPct),
-		RAM:        meter(h.RAMPct),
-		Disk:       meter(h.DiskPct),
-		Throughput: throughput(h),
+		Online:      h.Online,
+		OnlineKnown: h.OnlineKnown,
+		CPU:         meter(h.CPUPct),
+		RAM:         meter(h.RAMPct),
+		Disk:        meter(h.DiskPct),
+		Throughput:  throughput(h),
 	}
 	v.Uptime = s.uptime30d(r, h.Instance)
 	return v
@@ -254,37 +286,59 @@ func (s *Server) uptime30d(r *http.Request, instance string) string {
 		return "—"
 	}
 
-	s.uptime.mu.Lock()
-	if s.uptime.at == nil || s.uptime.baseURL != baseURL {
-		s.uptime.at = map[string]time.Time{}
-		s.uptime.v = map[string]float64{}
-		s.uptime.failed = map[string]bool{}
-		s.uptime.baseURL = baseURL
-	}
-	at, ok := s.uptime.at[instance]
-	cached := s.uptime.v[instance]
-	failed := s.uptime.failed[instance]
-	s.uptime.mu.Unlock()
-	// Failures are cached briefly too — a down prometheus shouldn't be
-	// re-queried on every page view. Check them before the success path.
-	if failed && time.Since(at) < 30*time.Second {
-		return "—"
-	}
-	if ok && !failed && time.Since(at) < 60*time.Second {
-		return fmt.Sprintf("%.2f%%", cached)
+	for {
+		s.uptime.mu.Lock()
+		if s.uptime.at == nil || s.uptime.baseURL != baseURL {
+			s.uptime.at = map[string]time.Time{}
+			s.uptime.v = map[string]float64{}
+			s.uptime.failed = map[string]bool{}
+			s.uptime.baseURL = baseURL
+		}
+		at, ok := s.uptime.at[instance]
+		cached := s.uptime.v[instance]
+		failed := s.uptime.failed[instance]
+		// Failures are cached briefly too — a down prometheus shouldn't be
+		// re-queried on every page view. Check them before the success path.
+		if failed && time.Since(at) < 30*time.Second {
+			s.uptime.mu.Unlock()
+			return "—"
+		}
+		if ok && !failed && time.Since(at) < 60*time.Second {
+			s.uptime.mu.Unlock()
+			return fmt.Sprintf("%.2f%%", cached)
+		}
+		if s.uptime.inFlight != nil {
+			ch := s.uptime.inFlight
+			s.uptime.mu.Unlock()
+			<-ch
+			continue
+		}
+		s.uptime.inFlight = make(chan struct{})
+		s.uptime.mu.Unlock()
+		break
 	}
 
 	v, err := prom.New(baseURL).UptimePct(r.Context(), instance)
+
+	// Same store-guard as liveMetrics: only cache against the endpoint the
+	// fetch actually went to.
+	stillCurrent := s.currentPromURL(r) == baseURL
 	s.uptime.mu.Lock()
-	s.uptime.at[instance] = time.Now()
+	close(s.uptime.inFlight)
+	s.uptime.inFlight = nil
+	if stillCurrent {
+		s.uptime.at[instance] = time.Now()
+		if err != nil {
+			s.uptime.failed[instance] = true
+		} else {
+			s.uptime.failed[instance] = false
+			s.uptime.v[instance] = v
+		}
+	}
+	s.uptime.mu.Unlock()
 	if err != nil {
-		s.uptime.failed[instance] = true
-		s.uptime.mu.Unlock()
 		return "—"
 	}
-	s.uptime.failed[instance] = false
-	s.uptime.v[instance] = v
-	s.uptime.mu.Unlock()
 	return fmt.Sprintf("%.2f%%", v)
 }
 

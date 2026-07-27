@@ -194,7 +194,11 @@ func (s *Server) handleSectionDetail(w http.ResponseWriter, r *http.Request, sec
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	view.Extras = s.buildExtras(r, id, sec.ServiceType)
+	view.Extras, err = s.buildExtras(r, id, sec.ServiceType)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	data := s.newPageData(w, r, view.Title, sec.Kind)
 	data.Data = view
 	s.render(w, r, "service_detail", data)

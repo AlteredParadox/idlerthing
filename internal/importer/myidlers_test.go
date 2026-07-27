@@ -531,7 +531,7 @@ func TestMyBounds(t *testing.T) {
 // Batch N M3 (native) — the same caps apply to idlerthing export imports.
 func TestNativeBounds(t *testing.T) {
 	database := testDB(t)
-	fixture := `{"servers": [{"server": {"id": 1, "hostname": "huge-native",
+	fixture := `{"format": 1, "servers": [{"server": {"id": 1, "hostname": "huge-native",
 		"server_type": 1, "active": true, "cpu": 999999999, "ssh_port": 22}}]}`
 	summary, err := Import(context.Background(), database, strings.NewReader(fixture), false)
 	if err != nil {
@@ -658,6 +658,7 @@ func TestMyLabelsCleanAndDistinctCap(t *testing.T) {
 func TestNativeSelectiveBounds(t *testing.T) {
 	database := testDB(t)
 	fixture := `{
+		"format": 1,
 		"servers": [{"server": {"id": 1, "hostname": "nb-01", "server_type": 1,
 			"active": true, "bandwidth_as_mb": 2147483648},
 			"disks": [{"size_as_mb": 2147483648, "media": "SSD"}, {"size_as_mb": 1024, "media": "SSD"}]}],

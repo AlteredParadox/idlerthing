@@ -23,17 +23,21 @@ type Config struct {
 	// BaseURL overrides the external URL shown in the YABS ingest command
 	// (e.g. "https://idlers.example.com"). Empty = derive from requests.
 	BaseURL string
+	// AllowHTTPIngest permits plain-http YABS ingest URLs on LAN hosts
+	// (RFC1918/link-local/ULA). Loopback http and https always work.
+	AllowHTTPIngest bool
 }
 
 // Load reads configuration from environment variables, applying defaults.
 func Load() Config {
 	return Config{
-		Addr:           getEnv("IDLER_ADDR", "127.0.0.1:8080"),
-		DBPath:         getEnv("IDLER_DB", "./data/idlerthing.db"),
-		AdminPassword:  os.Getenv("IDLER_ADMIN_PASSWORD"),
-		Secret:         os.Getenv("IDLER_SECRET"),
-		BehindTLSProxy: envBool("IDLER_BEHIND_TLS_PROXY"),
-		BaseURL:        os.Getenv("IDLER_BASE_URL"),
+		Addr:            getEnv("IDLER_ADDR", "127.0.0.1:8080"),
+		DBPath:          getEnv("IDLER_DB", "./data/idlerthing.db"),
+		AdminPassword:   os.Getenv("IDLER_ADMIN_PASSWORD"),
+		Secret:          os.Getenv("IDLER_SECRET"),
+		BehindTLSProxy:  envBool("IDLER_BEHIND_TLS_PROXY"),
+		BaseURL:         os.Getenv("IDLER_BASE_URL"),
+		AllowHTTPIngest: envBool("IDLER_ALLOW_HTTP_INGEST"),
 	}
 }
 

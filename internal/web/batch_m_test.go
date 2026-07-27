@@ -54,6 +54,7 @@ func TestImportedInactivePricingHidden(t *testing.T) {
 	database := freshDB(t)
 	ctx := context.Background()
 	fixture := `{
+		"format": 1,
 		"servers": [{"server": {"id": 1, "hostname": "inactive-priced", "server_type": 1, "active": true}}],
 		"pricings": [{"service_id": 1, "service_type": 1, "currency": "USD", "price": 5, "term": 1, "active": false}]
 	}`

@@ -89,7 +89,7 @@ func TestImportRoundTripPreservesYabsAndLabels(t *testing.T) {
 func TestImportPartialCatalogWarning(t *testing.T) {
 	dbB := freshDB(t)
 	// Partial doc: a server referencing provider 7, but no "providers" key.
-	fixture := `{"servers": [{"server": {"id": 1, "hostname": "partial-01", "server_type": 1,
+	fixture := `{"format": 1, "servers": [{"server": {"id": 1, "hostname": "partial-01", "server_type": 1,
 		"provider_id": 7, "location_id": 3, "os_id": 2, "active": true}}]}`
 	sum, err := importer.Import(context.Background(), dbB, strings.NewReader(fixture), false)
 	if err != nil {
@@ -208,7 +208,7 @@ func TestExtrasBogusServiceID(t *testing.T) {
 // #5 — native importer skips out-of-range pricing terms with a warning.
 func TestImportBadPricingTerm(t *testing.T) {
 	dbB := freshDB(t)
-	fixture := `{"servers": [{"server": {"id": 1, "hostname": "term-01", "server_type": 1, "active": true},
+	fixture := `{"format": 1, "servers": [{"server": {"id": 1, "hostname": "term-01", "server_type": 1, "active": true},
 		"pricing": {"currency": "USD", "price": 10, "term": 99}}]}`
 	sum, err := importer.Import(context.Background(), dbB, strings.NewReader(fixture), false)
 	if err != nil {

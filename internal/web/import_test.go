@@ -143,13 +143,25 @@ func TestImportRoundTrip(t *testing.T) {
 	}
 }
 
+// Batch P 3a — strict import envelope: decode errors, trailing garbage,
+// missing/wrong format marker, and wrong-shaped sections are all rejected.
 func TestImportGarbage(t *testing.T) {
 	dbB := freshDB(t)
-	if _, err := importer.Import(context.Background(), dbB, bytes.NewReader([]byte("{nope")), false); err == nil {
-		t.Fatal("expected decode error")
+	ctx := context.Background()
+	for _, doc := range []string{
+		`{nope`,               // not JSON
+		`{} trailing`,         // garbage after the value
+		`{"format": 1} extra`, // garbage after a valid doc
+		`{}`,                  // missing format marker
+		`{"format": 2}`,       // wrong format version
+		`{"format": 1, "servers": {"server": {}}}`, // section not an array
+	} {
+		if _, err := importer.Import(ctx, freshDB(t), strings.NewReader(doc), false); err == nil {
+			t.Fatalf("expected rejection of %q", doc)
+		}
 	}
-	// Empty document imports cleanly as a no-op.
-	summary, err := importer.Import(context.Background(), dbB, bytes.NewReader([]byte("{}")), false)
+	// A bare format-marked document imports cleanly as a no-op.
+	summary, err := importer.Import(ctx, dbB, strings.NewReader(`{"format": 1}`), false)
 	if err != nil {
 		t.Fatalf("empty doc: %v", err)
 	}
@@ -164,6 +176,7 @@ func TestImportGarbage(t *testing.T) {
 func TestImportOutOfRangeServiceType(t *testing.T) {
 	dbB := freshDB(t)
 	fixture := `{
+		"format": 1,
 		"servers": [{"server": {"id": 1, "hostname": "ok-01", "server_type": 1, "active": true}}],
 		"ips": [
 			{"ip": {"service_id": 1, "service_type": 1, "address": "203.0.113.10", "is_ipv4": true}},

@@ -56,10 +56,10 @@ func (s *Server) validYABSSig(serverID int64, ts int64, sig string) bool {
 // when set (validated http(s), no single-quote chars); otherwise the
 // request's Host is used, https when TLS or behind a TLS proxy.
 //
-// Returns "" when the effective URL is plain http on a routable host: an
-// on-path attacker could alter the unsigned first submission, so the command
-// is withheld and the card shows a hint instead. http stays allowed on
-// loopback/RFC1918/link-local/ULA hosts (LAN-only installs).
+// Returns "" when the effective URL is plain http on a non-loopback host:
+// an on-path attacker could alter the unsigned first submission, so the
+// command is withheld and the card shows a hint instead. http stays allowed
+// on loopback, and on LAN hosts when IDLER_ALLOW_HTTP_INGEST opted in.
 func (s *Server) yabsCommand(r *http.Request, serverID int64) string {
 	ts := time.Now().Unix()
 	base := s.baseURL
@@ -70,7 +70,7 @@ func (s *Server) yabsCommand(r *http.Request, serverID int64) string {
 		}
 		base = scheme + "://" + r.Host
 	}
-	if !ingestURLOK(base) {
+	if !s.ingestURLOK(base) {
 		return ""
 	}
 	return fmt.Sprintf("curl -fsSL --proto '=https' https://yabs.sh | bash -s -- -s %s",
@@ -79,8 +79,9 @@ func (s *Server) yabsCommand(r *http.Request, serverID int64) string {
 }
 
 // ingestURLOK reports whether an ingest URL over this base is safe to show:
-// https always; http only for loopback, RFC1918, link-local, or ULA hosts.
-func ingestURLOK(base string) bool {
+// https always; http only for exact loopback (127/8, ::1, localhost) — plus
+// LAN hosts (RFC1918/link-local/ULA) when IDLER_ALLOW_HTTP_INGEST opted in.
+func (s *Server) ingestURLOK(base string) bool {
 	u, err := url.Parse(base)
 	if err != nil {
 		return false
@@ -99,7 +100,10 @@ func ingestURLOK(base string) bool {
 	if err != nil {
 		return false // routable hostname over plain http
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	if ip.IsLoopback() {
+		return true
+	}
+	return s.allowHTTPIngest && (ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
 // shellQuote single-quotes a string for POSIX shells (' → '"'"').

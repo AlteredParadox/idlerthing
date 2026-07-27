@@ -33,35 +33,49 @@ type extrasView struct {
 }
 
 // buildExtras loads the labels/notes/IPs cards for one service. DNS records
-// are only attached for servers and domains.
-func (s *Server) buildExtras(r *http.Request, serviceID int64, serviceType int) *extrasView {
+// are only attached for servers and domains. Relation errors propagate —
+// a detail page with silently-empty cards looks like data loss.
+func (s *Server) buildExtras(r *http.Request, serviceID int64, serviceType int) (*extrasView, error) {
 	ctx := r.Context()
 	v := &extrasView{
 		ServiceID:   serviceID,
 		ServiceType: serviceType,
 		BackURL:     r.URL.Path,
 	}
+	var err error
 	labels := &model.LabelStore{DB: s.db}
-	v.Labels, _ = labels.ListFor(ctx, serviceID, serviceType)
-	v.AllLabels, _ = s.catalogs.List(ctx, model.Catalogs["labels"])
+	if v.Labels, err = labels.ListFor(ctx, serviceID, serviceType); err != nil {
+		return nil, err
+	}
+	if v.AllLabels, err = s.catalogs.List(ctx, model.Catalogs["labels"]); err != nil {
+		return nil, err
+	}
 	v.LabelsFull = len(v.Labels) >= model.MaxLabelsPerService
 
 	notes := &model.NoteStore{DB: s.db}
-	v.Notes, _ = notes.ListFor(ctx, serviceID, serviceType)
+	if v.Notes, err = notes.ListFor(ctx, serviceID, serviceType); err != nil {
+		return nil, err
+	}
 
 	ips := &model.IPStore{DB: s.db}
-	v.IPs, _ = ips.ListFor(ctx, serviceID, serviceType)
+	if v.IPs, err = ips.ListFor(ctx, serviceID, serviceType); err != nil {
+		return nil, err
+	}
 
 	dns := &model.DNSStore{DB: s.db}
 	switch serviceType {
 	case model.ServiceServer:
-		v.DNS, _ = dns.ListForServer(ctx, serviceID)
+		if v.DNS, err = dns.ListForServer(ctx, serviceID); err != nil {
+			return nil, err
+		}
 		v.ShowDNS = true
 	case model.ServiceDomain:
-		v.DNS, _ = dns.ListForDomain(ctx, serviceID)
+		if v.DNS, err = dns.ListForDomain(ctx, serviceID); err != nil {
+			return nil, err
+		}
 		v.ShowDNS = true
 	}
-	return v
+	return v, nil
 }
 
 // redirectBack redirects to the validated "back" form field. Only

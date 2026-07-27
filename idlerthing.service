@@ -12,6 +12,7 @@
 #                                    # proxy: Secure session cookies + trust
 #                                    # the last X-Forwarded-For IP
 #   IDLER_BASE_URL=https://idlers.example.com
+#   IDLER_ALLOW_HTTP_INGEST=1          # opt-in: plain-http ingest URLs on LAN hosts
 #                                    # external URL shown in the YABS
 #                                    # ingest command (default: request Host)
 #

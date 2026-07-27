@@ -30,10 +30,14 @@ type NoteStore struct {
 	DB *sql.DB
 }
 
-// Create inserts a service note — atomically, only when the target
-// service exists (a concurrent delete can't leave an orphan).
+// Create inserts a SERVICE note — atomically, only when the target
+// service exists (a concurrent delete can't leave an orphan). A note
+// targets exactly one thing: (service_id AND service_type) XOR ip_id —
+// SQLite can't enforce that as a constraint, so the write paths do (the
+// importer included; migration 0012 cleans history). IP notes have no app
+// write path; they arrive via import only.
 func (s *NoteStore) Create(ctx context.Context, n *Note) (int64, error) {
-	if !n.ServiceID.Valid || !n.ServiceType.Valid {
+	if n.IPID.Valid || !n.ServiceID.Valid || !n.ServiceType.Valid {
 		return 0, sql.ErrNoRows
 	}
 	serviceType := int(n.ServiceType.Int64)

@@ -71,6 +71,7 @@ in-app ping tool.
 | `IDLER_SECRET`        | *(generated)*            | YABS ingest HMAC key; persisted to `<db>.secret` when unset |
 | `IDLER_BEHIND_TLS_PROXY` | *(off)*             | Set `1`/`true`/`yes` behind an HTTPS-terminating proxy: session cookies go `Secure` and the last `X-Forwarded-For` IP is trusted |
 | `IDLER_BASE_URL`      | *(none)*                 | External URL used in the YABS ingest command (default: request scheme+Host) |
+| `IDLER_ALLOW_HTTP_INGEST` | *(off)*              | Allow plain-http YABS ingest URLs on LAN hosts (loopback http and https always work) |
 
 ## Backup & restore
 
@@ -82,6 +83,14 @@ in-app ping tool.
   export format. Catalogs are merged by name; services are always inserted
   fresh, so importing into a non-empty database requires `--force` (and
   duplicates services). Users, sessions, and settings are never imported.
+
+## Upgrading
+
+- Early docs showed example admin passwords verbatim. If your deployment
+  dates from that era, the server logs a loud warning at startup when the
+  admin password matches one — reset it with `idlerthing passwd` (prints a
+  generated one) or `idlerthing passwd '<new>'`, or in **Settings →
+  Account**. All sessions and the API token are revoked either way.
 
 ## JSON API
 

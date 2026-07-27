@@ -6,9 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
+
+// dsnPath percent-escapes the URI-reserved characters in a file path so a
+// literal path containing %, ?, or # is not reinterpreted as a file: URI
+// (which would silently redirect the database to a truncated path while we
+// chmod the 0-byte decoy). Slashes and spaces stay literal.
+func dsnPath(path string) string {
+	r := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
+	return r.Replace(path)
+}
 
 // Open opens (creating if necessary) the SQLite database at path, creating the
 // parent directory if needed, and applies connection pragmas.
@@ -38,7 +48,7 @@ func Open(path string) (*sql.DB, error) {
 		}
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", path)
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", dsnPath(path))
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)

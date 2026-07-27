@@ -107,6 +107,7 @@ func TestDNSParentValidation(t *testing.T) {
 func TestImportDNSParentWarning(t *testing.T) {
 	dbB := freshDB(t)
 	fixture := `{
+		"format": 1,
 		"dns": [{"dns_record": {"hostname": "orphan.example.com", "dns_type": "A",
 			"address": "203.0.113.9", "server_id": 7}}]
 	}`
@@ -164,6 +165,7 @@ func TestYABSCapPruning(t *testing.T) {
 func TestImportEnumValidation(t *testing.T) {
 	dbB := freshDB(t)
 	fixture := `{
+		"format": 1,
 		"servers": [{"server": {"id": 1, "hostname": "enum-01", "server_type": 99, "active": true},
 			"disks": [{"size_as_mb": 1024, "media": "TAPE"}]}],
 		"dns": [{"dns_record": {"hostname": "enum.example.com", "dns_type": "BOGUS", "address": "203.0.113.5"}}]
@@ -202,14 +204,14 @@ func TestImportGuardCoversContentTables(t *testing.T) {
 		"INSERT INTO dns (hostname, dns_type, address) VALUES ('g.example.com', 'A', '203.0.113.1')"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := importer.Import(context.Background(), dbB, strings.NewReader(`{}`), false)
+	_, err := importer.Import(context.Background(), dbB, strings.NewReader(`{"format": 1}`), false)
 	if err == nil {
 		t.Fatal("import into a DB with only a dns row must be refused without --force")
 	}
 	if !strings.Contains(err.Error(), "dns: 1 rows") || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("refusal should name the blocking table and the remedy: %v", err)
 	}
-	if _, err := importer.Import(context.Background(), dbB, strings.NewReader(`{}`), true); err != nil {
+	if _, err := importer.Import(context.Background(), dbB, strings.NewReader(`{"format": 1}`), true); err != nil {
 		t.Fatalf("with --force it proceeds: %v", err)
 	}
 }

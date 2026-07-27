@@ -53,9 +53,10 @@ const (
 	maxGBScore   = 1e6
 )
 
-// capped returns v, or 0 when |v| exceeds the plausibility bound.
+// capped returns v, or 0 when v is negative or exceeds the plausibility
+// bound (speeds and latencies are never negative).
 func capped(v, max float64) float64 {
-	if math.Abs(v) > max {
+	if v < 0 || math.Abs(v) > max {
 		return 0
 	}
 	return v
@@ -228,10 +229,10 @@ func firstAny(m map[string]any, paths ...string) any {
 }
 
 // firstInt returns the first path's value as an int (implausible
-// magnitudes collapse to 0 instead of overflowing).
+// magnitudes or negatives collapse to 0 instead of overflowing).
 func firstInt(m map[string]any, paths ...string) int {
 	f := numberToFloat(firstAny(m, paths...))
-	if f > 1e7 || f < -1e7 {
+	if f > 1e7 || f < 0 {
 		return 0
 	}
 	return int(f)

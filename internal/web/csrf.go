@@ -37,6 +37,12 @@ func (s *Server) csrfProtect(next http.Handler) http.Handler {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		// Parse explicitly — FormValue swallows parse errors, and a
+		// malformed form must not pass on a header token alone.
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 		// Form field first, then the htmx header.
 		token := r.FormValue("csrf_token")
 		if token == "" {

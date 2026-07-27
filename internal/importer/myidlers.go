@@ -795,7 +795,7 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySumm
 }
 
 // getOrCreateCatalogTx is the tx-scoped catalog get-or-create.
-func getOrCreateCatalogTx(ctx context.Context, tx *sql.Tx, table, nameCol, name string) (int64, bool, error) {
+func getOrCreateCatalogTx(ctx context.Context, tx dbtx, table, nameCol, name string) (int64, bool, error) {
 	var id int64
 	// Case-insensitive lookup: "OVH" and "ovh" from a source file are one
 	// provider (the row's first-seen casing is kept).

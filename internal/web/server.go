@@ -48,10 +48,11 @@ type Server struct {
 	uptime     uptimeCache
 	livemon    liveMonCache
 
-	publicCache    publicCacheEntry
-	behindTLSProxy bool           // IDLER_BEHIND_TLS_PROXY
-	baseURL        string         // IDLER_BASE_URL ("" = derive from request)
-	whoisRate      whoisRateLimit // per-server whois throttle (fresh in tests)
+	publicCache     publicCacheEntry
+	behindTLSProxy  bool
+	allowHTTPIngest bool           // IDLER_BEHIND_TLS_PROXY
+	baseURL         string         // IDLER_BASE_URL ("" = derive from request)
+	whoisRate       whoisRateLimit // per-server whois throttle (fresh in tests)
 }
 
 // New creates a Server backed by db.
@@ -90,6 +91,11 @@ func (s *Server) SetBehindTLSProxy(behind bool) {
 	s.behindTLSProxy = behind
 }
 
+// SetAllowHTTPIngest permits plain-http ingest URLs on LAN hosts.
+func (s *Server) SetAllowHTTPIngest(allow bool) {
+	s.allowHTTPIngest = allow
+}
+
 // SetBaseURL sets the external base URL for the yabs ingest command.
 // Only http(s) URLs without single-quote characters are accepted.
 func (s *Server) SetBaseURL(u string) {
@@ -110,6 +116,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /static/accent.css", s.handleAccentCSS)
 	mux.Handle("GET /static/", s.withCacheHeaders(http.StripPrefix("/static/", http.FileServerFS(staticFS))))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.db.PingContext(r.Context()); err != nil {
+			http.Error(w, "unhealthy\n", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok\n"))
 	})
@@ -260,12 +270,17 @@ func (s *Server) withCacheHeaders(next http.Handler) http.Handler {
 }
 
 // securityHeaders sets baseline hardening headers on every response.
+// Authenticated HTML, the API, and one-time secrets are no-store; the
+// static file handler overrides with its own immutable policy.
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "same-origin")
+		if !strings.HasPrefix(r.URL.Path, "/static/") {
+			h.Set("Cache-Control", "no-store")
+		}
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; script-src 'self'; "+
 				"base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'")

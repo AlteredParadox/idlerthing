@@ -30,10 +30,76 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "passwd" {
+		if err := runPasswd(os.Args[2:]); err != nil {
+			slog.Error("passwd failed", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// runPasswd implements `idlerthing passwd [new-password]`: resets the admin
+// password (generated+printed when no arg is given), revoking all sessions
+// and the API token — the same fallout as the settings password change.
+func runPasswd(args []string) error {
+	cfg := config.Load()
+	database, err := db.Open(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer database.Close()
+	if _, err := db.Migrate(database); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+
+	password := ""
+	generated := false
+	if len(args) > 0 {
+		password = args[0]
+	} else {
+		password, err = randomPassword(16)
+		if err != nil {
+			return err
+		}
+		generated = true
+	}
+	// bcrypt reads at most 72 bytes; the settings UI enforces the same range.
+	if len(password) < 8 || len(password) > 72 {
+		return fmt.Errorf("password must be 8–72 bytes")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	tx, err := database.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec("UPDATE users SET password_hash = ?, api_token_hash = NULL, updated_at = CURRENT_TIMESTAMP",
+		string(hash))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no admin user yet — start the server once first")
+	}
+	if _, err := tx.Exec("DELETE FROM sessions"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if generated {
+		fmt.Printf("generated admin password: %s\n", password)
+	}
+	fmt.Println("admin password updated; all sessions and the API token were revoked")
+	return nil
 }
 
 // runImport implements `idlerthing import [--force] <file>`.
@@ -146,6 +212,7 @@ func run() error {
 	if err := seedAdmin(database, cfg.AdminPassword); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
+	warnDenylistedPassword(database)
 
 	webServer, err := web.New(database)
 	if err != nil {
@@ -153,6 +220,7 @@ func run() error {
 	}
 	webServer.SetSecret(secret)
 	webServer.SetBehindTLSProxy(cfg.BehindTLSProxy)
+	webServer.SetAllowHTTPIngest(cfg.AllowHTTPIngest)
 	webServer.SetBaseURL(cfg.BaseURL)
 
 	srv := &http.Server{
@@ -182,7 +250,8 @@ func run() error {
 	}
 
 	slog.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// 15s: a prometheus batch can run ~12s worst case.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
 }
@@ -208,8 +277,10 @@ func loadSecret(cfg config.Config) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read secret: %w", err)
 		}
-		if len(raw) == 0 {
-			return nil, fmt.Errorf("secret file %s is empty", path)
+		// Same minimum as IDLER_SECRET — a weak key defeats the single-use
+		// capability design. The operator deletes the file to regenerate.
+		if len(raw) < 16 {
+			return nil, fmt.Errorf("secret file %s is too short (%d bytes, need ≥16) — delete it to regenerate", path, len(raw))
 		}
 		// Failure to enforce confidentiality is fatal (same rule as db.Open).
 		if err := os.Chmod(path, 0o600); err != nil {
@@ -225,11 +296,18 @@ func loadSecret(cfg config.Config) ([]byte, error) {
 		return nil, err
 	}
 	// O_EXCL so a pre-existing (or raced) file is never reused/truncated;
-	// 0600 + chmod + Stat so the umask can never leak it.
+	// 0600 + chmod + Stat so the umask can never leak it. A partial file
+	// from a failed write is removed again.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create secret: %w", err)
 	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.Remove(path)
+		}
+	}()
 	if _, err := f.Write(secret); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("write secret: %w", err)
@@ -243,8 +321,30 @@ func loadSecret(cfg config.Config) ([]byte, error) {
 	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
 		return nil, fmt.Errorf("secret file %s must be 0600", path)
 	}
+	cleanup = false
 	slog.Info("generated yabs ingest secret", "path", path)
 	return secret, nil
+}
+
+// denylistedPasswords were publicly documented in repo history as quick-
+// start examples; existing deployments keep them (seeding only runs on an
+// empty users table), so check on every boot.
+var denylistedPasswords = []string{"changeme", "changeme-not-this-one"}
+
+// warnDenylistedPassword logs a LOUD warning when the stored admin hash
+// matches a publicly documented example password (one compare each, once
+// per boot).
+func warnDenylistedPassword(db *sql.DB) {
+	var hash string
+	if err := db.QueryRow("SELECT password_hash FROM users LIMIT 1").Scan(&hash); err != nil {
+		return
+	}
+	for _, weak := range denylistedPasswords {
+		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(weak)) == nil {
+			slog.Warn("SECURITY: your admin password matches a publicly documented example — change it NOW (idlerthing passwd, or Settings → Account)")
+			return
+		}
+	}
 }
 
 // seedAdmin creates the initial admin user when the users table is empty.
@@ -267,9 +367,10 @@ func seedAdmin(db *sql.DB, password string) error {
 			return err
 		}
 		generated = true
-	} else if len(password) < 8 {
-		// Same policy as the settings UI — never silently seed a weak admin.
-		return fmt.Errorf("IDLER_ADMIN_PASSWORD must be at least 8 characters")
+	} else if len(password) < 8 || len(password) > 72 {
+		// Same policy as the settings UI — never silently seed a weak admin,
+		// and never let bcrypt silently truncate a >72-byte password.
+		return fmt.Errorf("IDLER_ADMIN_PASSWORD must be 8–72 bytes")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

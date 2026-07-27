@@ -37,11 +37,13 @@ type fsRow struct {
 
 // liveMonCache caches the section per instance (60s), keyed by the
 // prometheus baseURL — a settings change to a new server invalidates it.
+// inFlight singleflights a cold burst onto one upstream batch.
 type liveMonCache struct {
-	mu      sync.Mutex
-	baseURL string
-	at      map[string]time.Time
-	v       map[string]*liveMonView
+	mu       sync.Mutex
+	baseURL  string
+	at       map[string]time.Time
+	v        map[string]*liveMonView
+	inFlight chan struct{}
 }
 
 // liveMonEntry fetches + caches the section for one instance.
@@ -51,21 +53,33 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 		return nil
 	}
 
-	s.livemon.mu.Lock()
-	if s.livemon.at == nil || s.livemon.baseURL != baseURL {
-		s.livemon.at = map[string]time.Time{}
-		s.livemon.v = map[string]*liveMonView{}
-		s.livemon.baseURL = baseURL
-	}
-	at, ok := s.livemon.at[instance]
-	cached := s.livemon.v[instance]
-	s.livemon.mu.Unlock()
-	ttl := 60 * time.Second
-	if cached != nil && cached.Unavailable {
-		ttl = 30 * time.Second // negative-cache failures briefly
-	}
-	if ok && cached != nil && time.Since(at) < ttl {
-		return cached
+	var cached *liveMonView
+	for {
+		s.livemon.mu.Lock()
+		if s.livemon.at == nil || s.livemon.baseURL != baseURL {
+			s.livemon.at = map[string]time.Time{}
+			s.livemon.v = map[string]*liveMonView{}
+			s.livemon.baseURL = baseURL
+		}
+		at, ok := s.livemon.at[instance]
+		cached = s.livemon.v[instance]
+		ttl := 60 * time.Second
+		if cached != nil && cached.Unavailable {
+			ttl = 30 * time.Second // negative-cache failures briefly
+		}
+		if ok && cached != nil && time.Since(at) < ttl {
+			s.livemon.mu.Unlock()
+			return cached
+		}
+		if s.livemon.inFlight != nil {
+			ch := s.livemon.inFlight
+			s.livemon.mu.Unlock()
+			<-ch
+			continue
+		}
+		s.livemon.inFlight = make(chan struct{})
+		s.livemon.mu.Unlock()
+		break
 	}
 
 	// Host batch and filesystems run CONCURRENTLY — sequentially they add
@@ -86,9 +100,15 @@ func (s *Server) liveMonEntry(r *http.Request, instance string) *liveMonView {
 	wg.Wait()
 	view := buildLiveMonView(detail, filesystems)
 
+	// Store only when settings still point at the fetched endpoint.
+	stillCurrent := s.currentPromURL(r) == baseURL
 	s.livemon.mu.Lock()
-	s.livemon.at[instance] = time.Now()
-	s.livemon.v[instance] = view
+	close(s.livemon.inFlight)
+	s.livemon.inFlight = nil
+	if stillCurrent {
+		s.livemon.at[instance] = time.Now()
+		s.livemon.v[instance] = view
+	}
 	s.livemon.mu.Unlock()
 	return view
 }

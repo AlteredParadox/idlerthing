@@ -31,16 +31,16 @@ func TestMigrateFreshDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 11 || applied[0] != 1 || applied[1] != 2 || applied[2] != 3 || applied[3] != 4 || applied[4] != 5 || applied[5] != 6 || applied[6] != 7 || applied[7] != 8 || applied[8] != 9 || applied[9] != 10 || applied[10] != 11 {
-		t.Fatalf("expected applied=[1 2 3 4 5 6 7 8 9 10 11], got %v", applied)
+	if len(applied) != 12 || applied[0] != 1 || applied[1] != 2 || applied[2] != 3 || applied[3] != 4 || applied[4] != 5 || applied[5] != 6 || applied[6] != 7 || applied[7] != 8 || applied[8] != 9 || applied[9] != 10 || applied[10] != 11 || applied[11] != 12 {
+		t.Fatalf("expected applied=[1 2 3 4 5 6 7 8 9 10 11 12], got %v", applied)
 	}
 
 	var version int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 11 {
-		t.Fatalf("expected user_version 11, got %d", version)
+	if version != 12 {
+		t.Fatalf("expected user_version 12, got %d", version)
 	}
 
 	for _, table := range expectedTables {
@@ -76,8 +76,8 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 11 {
-		t.Fatalf("expected user_version 11, got %d", version)
+	if version != 12 {
+		t.Fatalf("expected user_version 12, got %d", version)
 	}
 }
 
@@ -156,8 +156,8 @@ func TestMigration0003UnitConversion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 9 || applied[0] != 3 || applied[1] != 4 || applied[2] != 5 || applied[3] != 6 || applied[4] != 7 || applied[5] != 8 || applied[6] != 9 || applied[7] != 10 || applied[8] != 11 {
-		t.Fatalf("expected migrations [3 4 5 6 7 8 9 10 11] applied, got %v", applied)
+	if len(applied) != 10 || applied[0] != 3 || applied[1] != 4 || applied[2] != 5 || applied[3] != 6 || applied[4] != 7 || applied[5] != 8 || applied[6] != 9 || applied[7] != 10 || applied[8] != 11 || applied[9] != 12 {
+		t.Fatalf("expected migrations [3 4 5 6 7 8 9 10 11 12] applied, got %v", applied)
 	}
 
 	// 0006: legacy network_type values merge into 'IPv4 NAT'.
@@ -207,8 +207,8 @@ func TestMigration0003UnitConversion(t *testing.T) {
 
 	var version int
 	db.QueryRow("PRAGMA user_version").Scan(&version)
-	if version != 11 {
-		t.Fatalf("expected user_version 11, got %d", version)
+	if version != 12 {
+		t.Fatalf("expected user_version 12, got %d", version)
 	}
 }
 
@@ -258,8 +258,8 @@ func TestMigration0007OrphanCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 5 || applied[0] != 7 || applied[1] != 8 || applied[2] != 9 || applied[3] != 10 || applied[4] != 11 {
-		t.Fatalf("expected migrations [7 8 9 10 11], got %v", applied)
+	if len(applied) != 6 || applied[0] != 7 || applied[1] != 8 || applied[2] != 9 || applied[3] != 10 || applied[4] != 11 || applied[5] != 12 {
+		t.Fatalf("expected migrations [7 8 9 10 11 12], got %v", applied)
 	}
 
 	count := func(q string) int {
@@ -365,13 +365,63 @@ func TestMigration0011NotesOrphanClause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 1 || applied[0] != 11 {
-		t.Fatalf("expected [11], got %v", applied)
+	if len(applied) != 2 || applied[0] != 11 || applied[1] != 12 {
+		t.Fatalf("expected [11 12], got %v", applied)
 	}
 	var orphan, legit int
 	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body = 'orphan'").Scan(&orphan)
 	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body = 'legit'").Scan(&legit)
 	if orphan != 0 || legit != 1 {
 		t.Fatalf("orphan=%d (want 0), legit=%d (want 1)", orphan, legit)
+	}
+}
+
+// Batch P #7b — 0012 deletes notes violating the exactly-one-target rule
+// (both-set or neither-set); legit service and ip notes survive.
+func TestMigration0012NotesTargetCheck(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO servers (hostname, server_type, active) VALUES ('m12', 1, 1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO ips (service_id, service_type, address, is_ipv4) VALUES (1, 1, '203.0.113.1', 1)"); err != nil {
+		t.Fatal(err)
+	}
+	// Violators: both targets set; neither set.
+	if _, err := db.Exec("INSERT INTO notes (service_id, service_type, ip_id, body) VALUES (1, 1, 1, 'both')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO notes (body) VALUES ('neither')"); err != nil {
+		t.Fatal(err)
+	}
+	// Legit: service note, ip note.
+	if _, err := db.Exec("INSERT INTO notes (service_id, service_type, body) VALUES (1, 1, 'svc')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO notes (ip_id, body) VALUES (1, 'ipn')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version = 11"); err != nil {
+		t.Fatal(err)
+	}
+
+	applied, err := Migrate(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 1 || applied[0] != 12 {
+		t.Fatalf("expected [12], got %v", applied)
+	}
+	var violators, legit int
+	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body IN ('both', 'neither')").Scan(&violators)
+	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body IN ('svc', 'ipn')").Scan(&legit)
+	if violators != 0 || legit != 2 {
+		t.Fatalf("violators=%d (want 0), legit=%d (want 2)", violators, legit)
 	}
 }

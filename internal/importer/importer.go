@@ -40,13 +40,55 @@ type Summary struct {
 	Notes     int
 }
 
+// exportSections are the array-valued document keys (validated on import).
+var exportSections = []string{
+	"providers", "locations", "os", "labels",
+	"servers", "shared", "reseller", "seedboxes", "domains", "misc",
+	"pricings", "ips", "dns", "labels_assigned", "notes", "yabs",
+}
+
 // Import decodes an export document from r and inserts it into db.
 // When force is false and any content table is non-empty, it refuses.
 func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary, error) {
+	dec := json.NewDecoder(r)
 	var doc map[string]any
-	if err := json.NewDecoder(r).Decode(&doc); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("decode export JSON: %w", err)
 	}
+	// Strict envelope: one document, nothing after it, format marker present.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("trailing garbage after the JSON document")
+	}
+	if v, _ := doc["format"].(float64); v != 1 {
+		return nil, fmt.Errorf("missing or wrong \"format\" marker — expected an idlerthing JSON export")
+	}
+	for _, key := range exportSections {
+		if raw, present := doc[key]; present {
+			if _, isArr := raw.([]any); !isArr {
+				return nil, fmt.Errorf("section %q must be an array", key)
+			}
+		}
+	}
+
+	// BEGIN IMMEDIATE takes SQLite's write lock up front: the emptiness
+	// check and the restore are ONE atomic unit (a deferred begin would let
+	// a running server write in between). A server writing during the
+	// restore busy-times-out (5s) and fails that request.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return nil, fmt.Errorf("begin restore: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
 
 	if !force {
 		var blocking []string
@@ -56,7 +98,7 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 			"dns", "notes", "ips",
 		} {
 			var n int
-			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n); err != nil {
+			if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&n); err != nil {
 				return nil, err
 			}
 			if n > 0 {
@@ -69,24 +111,26 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 		}
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	imp := &importer{tx: tx, seenIPs: map[string]bool{}}
+	imp := &importer{tx: conn, seenIPs: map[string]bool{}}
 	if err := imp.run(ctx, doc); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return nil, err
 	}
+	committed = true
 	return &imp.sum, nil
 }
 
+// dbtx is satisfied by *sql.Conn (manual BEGIN IMMEDIATE) and *sql.Tx.
+type dbtx interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 type importer struct {
-	tx        *sql.Tx
+	tx        dbtx
 	sum       Summary
 	catMisses int             // catalog refs the document couldn't resolve (partial export)
 	ipMaps    map[int64]int64 // old ip id → new ip id
@@ -180,8 +224,11 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 		if !ok {
 			continue // server not in this document
 		}
+		// INSERT OR IGNORE: pre-0009/0010 backups may contain duplicate
+		// payload_hash/gb_url rows — keep the first, skip the rest (the
+		// unique indexes do the deduping).
 		res, err := imp.tx.ExecContext(ctx, `
-			INSERT INTO yabs (server_id, run_at, cpu, cpu_cores, ram, swap, distro,
+			INSERT OR IGNORE INTO yabs (server_id, run_at, cpu, cpu_cores, ram, swap, distro,
 				kernel, uptime, geekbench_version, gb_single, gb_multi, gb_url, payload_hash)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			newServer, sgetN(y, "run_at"), sgetN(y, "cpu"), nget(y, "cpu_cores"),
@@ -190,6 +237,9 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 			nget(y, "gb_multi"), sgetN(y, "gb_url"), sgetN(y, "payload_hash"))
 		if err != nil {
 			return fmt.Errorf("import yabs for server %d: %w", oldServer, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue // duplicate payload_hash/gb_url — already restored
 		}
 		yabsID, _ := res.LastInsertId()
 		for _, d := range arr(y, "disk_speed") {
@@ -429,6 +479,14 @@ func (imp *importer) catalog(ctx context.Context, doc map[string]any, key, table
 		if name == "" {
 			continue
 		}
+		// Case-distinct names merge into the existing row (NOCASE lookup) —
+		// say so, since the document's casing is lost.
+		var existing string
+		if err := imp.tx.QueryRowContext(ctx,
+			"SELECT "+nameCol+" FROM "+table+" WHERE "+nameCol+" = ? COLLATE NOCASE", name).Scan(&existing); err == nil && existing != name {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"catalog %s: %q merged into existing %q", table, name, existing))
+		}
 		newID, created, err := getOrCreateCatalogTx(ctx, imp.tx, table, nameCol, name)
 		if err != nil {
 			return err
@@ -654,29 +712,28 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 }
 
 // insertIP inserts an IP map for a service, deduping within the import.
+// The address is stored in CANONICAL form and is_ipv4 derived from it (the
+// file's flag is ignored when it contradicts).
 func (imp *importer) insertIP(ctx context.Context, im map[string]any, serviceID int64, serviceType int) error {
-	addr := sget(im, "address")
-	if addr == "" {
+	raw := sget(im, "address")
+	if raw == "" {
 		return nil
 	}
-	if _, err := netip.ParseAddr(addr); err != nil {
+	parsed, err := netip.ParseAddr(raw)
+	if err != nil {
 		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
-			"ip %q: invalid address, skipped", addr))
+			"ip %q: invalid address, skipped", raw))
 		return nil
 	}
+	addr := parsed.String()
 	key := fmt.Sprintf("%d:%d:%s", serviceType, serviceID, addr)
 	if imp.seenIPs[key] {
 		return nil
 	}
 	imp.seenIPs[key] = true
-	v4 := 1
-	// "is_i_pv4" is the legacy export's key (camelToSnake quirk from an
-	// older exporter); "is_ipv4" is the current one. Accept both.
-	if b, ok := im["is_i_pv4"].(bool); ok && !b {
-		v4 = 0
-	}
-	if b, ok := im["is_ipv4"].(bool); ok && !b {
-		v4 = 0
+	v4 := 0
+	if parsed.Is4() {
+		v4 = 1
 	}
 	res, err := imp.tx.ExecContext(ctx, `
 		INSERT INTO ips (service_id, service_type, address, is_ipv4, country, region, city, org, isp, asn, fetched_at)

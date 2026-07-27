@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -50,5 +51,36 @@ func TestFindOrCreateCaseAndRace(t *testing.T) {
 	database.QueryRow("SELECT COUNT(*) FROM labels WHERE label LIKE 'race-%'").Scan(&n)
 	if n != 20 {
 		t.Fatalf("expected 20 race labels (one per name), got %d", n)
+	}
+}
+
+// Batch P #7b — a note targets exactly one thing; the service-note write
+// path rejects ip_id-set or target-less notes.
+func TestNoteCreateXORValidation(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	st := &ServerStore{DB: database}
+	srvID, err := st.Create(ctx, &Server{Hostname: "xor-01", ServerType: TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := func(i int64) sql.NullInt64 { return sql.NullInt64{Int64: i, Valid: true} }
+	notes := &NoteStore{DB: database}
+
+	// Both-set → rejected.
+	if _, err := notes.Create(ctx, &Note{
+		ServiceID: ref(srvID), ServiceType: ref(int64(ServiceServer)), IPID: ref(1), Body: "both",
+	}); err != sql.ErrNoRows {
+		t.Fatalf("both-set note must be rejected, got %v", err)
+	}
+	// Neither-set → rejected (service fields missing).
+	if _, err := notes.Create(ctx, &Note{Body: "none"}); err != sql.ErrNoRows {
+		t.Fatalf("target-less note must be rejected, got %v", err)
+	}
+	// Service note → accepted.
+	if _, err := notes.Create(ctx, &Note{
+		ServiceID: ref(srvID), ServiceType: ref(int64(ServiceServer)), Body: "ok",
+	}); err != nil {
+		t.Fatalf("service note: %v", err)
 	}
 }

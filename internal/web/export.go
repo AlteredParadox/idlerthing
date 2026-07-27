@@ -54,6 +54,8 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := map[string]any{
+		// Envelope version marker — the importer requires it.
+		"format": 1,
 		// Per-type exports omit the related tables (pricings/ips/dns/notes/
 		// labels_assigned/yabs) — the importer warns on these.
 		"partial": typeName != "",
@@ -113,6 +115,10 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Err(); err != nil {
 				return nil, err
 			}
+			// A typed nil slice would marshal as null, not [].
+			if items == nil {
+				items = []any{}
+			}
 			return items, nil
 		})
 		addKey("ips", func() (any, error) {
@@ -150,6 +156,9 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := rows.Err(); err != nil {
 				return nil, err
+			}
+			if items == nil {
+				items = []any{}
 			}
 			return items, nil
 		})
@@ -626,12 +635,17 @@ func (s *Server) csvMisc(r *http.Request) ([][]string, error) {
 }
 
 // exportYABS returns all yabs runs with nested speed rows. Speed tables are
-// fetched ONCE each and grouped by run (constant query count).
+// fetched ONCE each and grouped by run (constant query count). Runs go out
+// OLDEST-first (ListAll is newest-first for the views) so a restore lands
+// them in id order and "latest run" displays correctly.
 func (s *Server) exportYABS(r *http.Request) (any, error) {
 	st := &model.YABSStore{DB: s.db}
 	items, err := st.ListAll(r.Context())
 	if err != nil {
 		return nil, err
+	}
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
 	}
 	ids := make([]int64, len(items))
 	for i, it := range items {

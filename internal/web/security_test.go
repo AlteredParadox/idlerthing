@@ -259,28 +259,22 @@ func TestYABSCommandBaseURL(t *testing.T) {
 		t.Fatalf("base url not applied: %s", cmd)
 	}
 
-	// Without it, scheme+Host is used (private host — see the https rule).
+	// Without it, scheme+Host is used (loopback http is always allowed).
 	_, _, srv2 := newTestServerFull(t)
-	reqLAN, _ := http.NewRequest("GET", "http://192.168.1.5:8080/servers/1", nil)
+	reqLAN, _ := http.NewRequest("GET", "http://127.0.0.1:8080/servers/1", nil)
 	cmd = srv2.yabsCommand(reqLAN, 1)
-	if !strings.Contains(cmd, "-s 'http://192.168.1.5:8080/api/yabs/1?sig=") {
+	if !strings.Contains(cmd, "-s 'http://127.0.0.1:8080/api/yabs/1?sig=") {
 		t.Fatalf("fallback host not applied: %s", cmd)
 	}
 }
 
-// Batch J #4 — the ingest command is withheld over plain http on routable
-// hosts; https always wins; http on loopback/RFC1918/link-local/ULA is fine.
+// Batch P #5 — http ingest is loopback-only unless IDLER_ALLOW_HTTP_INGEST
+// opts in; https always wins.
 func TestYABSCommandHTTPSRule(t *testing.T) {
 	_, _, srv := newTestServerFull(t)
 	cmd := func(rawurl string) string {
 		req, _ := http.NewRequest("GET", rawurl, nil)
 		return srv.yabsCommand(req, 1)
-	}
-	if c := cmd("http://192.168.1.5:8080/servers/1"); c == "" {
-		t.Fatal("http + RFC1918 host should emit the command")
-	}
-	if c := cmd("http://10.0.0.2/servers/1"); c == "" {
-		t.Fatal("http + 10/8 host should emit the command")
 	}
 	if c := cmd("http://127.0.0.1:8080/servers/1"); c == "" {
 		t.Fatal("http + loopback should emit the command")
@@ -288,14 +282,33 @@ func TestYABSCommandHTTPSRule(t *testing.T) {
 	if c := cmd("http://localhost:8080/servers/1"); c == "" {
 		t.Fatal("http + localhost should emit the command")
 	}
-	if c := cmd("http://[fd00::1]/servers/1"); c == "" {
-		t.Fatal("http + ULA host should emit the command")
+	if c := cmd("http://[::1]:8080/servers/1"); c == "" {
+		t.Fatal("http + ::1 should emit the command")
 	}
-	if c := cmd("http://idlers.example.com/servers/1"); c != "" {
-		t.Fatalf("http + public host must withhold the command, got %q", c)
+	// LAN/public http: withheld without the opt-in flag.
+	for _, u := range []string{
+		"http://192.168.1.5:8080/servers/1", "http://10.0.0.2/servers/1",
+		"http://[fd00::1]/servers/1", "http://idlers.example.com/servers/1",
+		"http://203.0.113.10/servers/1",
+	} {
+		if c := cmd(u); c != "" {
+			t.Fatalf("%s must withhold the command without the flag, got %q", u, c)
+		}
+	}
+
+	// Opt-in: LAN http emits; public still withheld.
+	srv.SetAllowHTTPIngest(true)
+	if c := cmd("http://192.168.1.5:8080/servers/1"); c == "" {
+		t.Fatal("http + RFC1918 with the flag should emit the command")
+	}
+	if c := cmd("http://10.0.0.2/servers/1"); c == "" {
+		t.Fatal("http + 10/8 with the flag should emit the command")
+	}
+	if c := cmd("http://[fd00::1]/servers/1"); c == "" {
+		t.Fatal("http + ULA with the flag should emit the command")
 	}
 	if c := cmd("http://203.0.113.10/servers/1"); c != "" {
-		t.Fatalf("http + public IP must withhold the command, got %q", c)
+		t.Fatalf("http + public IP still withheld with the flag, got %q", c)
 	}
 
 	// IDLER_BASE_URL: https wins, http public withholds.
@@ -304,7 +317,7 @@ func TestYABSCommandHTTPSRule(t *testing.T) {
 		t.Fatal("https base URL should emit the command")
 	}
 	srv.SetBaseURL("http://idlers.example.com")
-	if c := cmd("http://192.168.1.5/servers/1"); c != "" {
+	if c := cmd("http://127.0.0.1/servers/1"); c != "" {
 		t.Fatalf("http public IDLER_BASE_URL must withhold the command, got %q", c)
 	}
 

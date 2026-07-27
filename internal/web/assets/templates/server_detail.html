@@ -70,7 +70,7 @@
   <section class="panel info-card live-card">
     <h2 class="section-title">Live</h2>
     <dl class="kv">
-      <dt>Status</dt><dd>{{if $v.Live.Online}}<span class="badge badge-ok">up</span>{{else}}<span class="badge badge-off">down</span>{{end}}</dd>
+      <dt>Status</dt><dd>{{if $v.Live.OnlineKnown}}{{if $v.Live.Online}}<span class="badge badge-ok">up</span>{{else}}<span class="badge badge-off">down</span>{{end}}{{else}}<span class="badge">unknown</span>{{end}}</dd>
       <dt>CPU</dt><dd>{{template "meter" $v.Live.CPU}}</dd>
       <dt>RAM</dt><dd>{{template "meter" $v.Live.RAM}}</dd>
       <dt>Disk</dt><dd>{{template "meter" $v.Live.Disk}}</dd>
@@ -108,7 +108,7 @@
       <button class="icon-btn copy-btn" type="button" data-copy="{{$v.YABSCommand}}" title="Copy">⧉</button>
     </div>
     {{else}}
-    <div class="empty-sub">Set <code class="mono">IDLER_BASE_URL=https://…</code> to enable the ingest command.</div>
+    <div class="empty-sub">Set <code class="mono">IDLER_BASE_URL=https://…</code> (or <code class="mono">IDLER_ALLOW_HTTP_INGEST=1</code> on a LAN) to enable the ingest command.</div>
     {{end}}
   </section>
 </div>

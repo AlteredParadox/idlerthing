@@ -160,8 +160,9 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
-	if len(newPass) < 8 {
-		s.setFlash(w, r, "err", "New password must be at least 8 characters.")
+	if len(newPass) < 8 || len(newPass) > 72 {
+		// bcrypt reads at most 72 bytes — reject longer instead of 500ing.
+		s.setFlash(w, r, "err", "New password must be 8–72 characters.")
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}

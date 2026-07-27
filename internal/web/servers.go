@@ -293,6 +293,11 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	names := s.lookupNames(r, srv)
+	extras, err := s.buildExtras(r, srv.ID, model.ServiceServer)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	// One live-metrics fetch for both the Live card and the LiveMon section.
 	metrics := s.liveMetrics(r)
 	view := serverDetailView{
@@ -303,14 +308,18 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 		Provider:    names[1],
 		Location:    names[2],
 		TypeLabel:   model.ServerTypeLabel(srv.ServerType),
-		Extras:      s.buildExtras(r, srv.ID, model.ServiceServer),
+		Extras:      extras,
 		Live:        s.buildLive(r, metrics, srv.Hostname),
 		YABSCommand: s.yabsCommand(r, srv.ID),
 	}
 	if h := matchLive(metrics, srv.Hostname); h != nil {
 		view.LiveMon = s.liveMonEntry(r, h.Instance)
 	}
-	runs, _ := (&model.YABSStore{DB: s.db}).ListFor(r.Context(), srv.ID)
+	runs, err := (&model.YABSStore{DB: s.db}).ListFor(r.Context(), srv.ID)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	view.YABSRuns = yabsRows(runs)
 	if len(view.YABSRuns) > 0 {
 		view.LatestSingle = view.YABSRuns[0].GbSingle

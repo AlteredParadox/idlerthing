@@ -152,3 +152,28 @@ func TestParseHugeButFinite(t *testing.T) {
 		t.Fatalf("gb caps: single=%d multi=%d", r.GbSingle, r.GbMulti)
 	}
 }
+
+// Batch P #7g — negative speeds, scores, and latency are treated as absent.
+func TestParseNegativeValues(t *testing.T) {
+	r, err := Parse([]byte(`{
+	  "cpu": {"model": "X", "cores": -4},
+	  "disk": {"fio": [{"bs": "4k", "read": "-88 MB/s", "write": "1 MB/s"}]},
+	  "network": {"iperf": [{"location": "L", "send": "-1 Gbits/sec", "latency": "-5 ms"}]},
+	  "geekbench": {"version": 6, "single": -100, "multi": 5}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if r.CPUCores != 0 {
+		t.Fatalf("negative cores: %d", r.CPUCores)
+	}
+	if r.Disks[0].ReadMbps != 0 || r.Disks[0].WriteMbps != 1 {
+		t.Fatalf("disk: %+v", r.Disks[0])
+	}
+	if r.Network[0].SendMbps != 0 || r.Network[0].LatencyMs != 0 {
+		t.Fatalf("network: %+v", r.Network[0])
+	}
+	if r.GbSingle != 0 || r.GbMulti != 5 {
+		t.Fatalf("gb: single=%d multi=%d", r.GbSingle, r.GbMulti)
+	}
+}

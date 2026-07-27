@@ -237,6 +237,8 @@ func flattenSlice[T any](items []T) []any {
 
 // writeTypedList pages typed rows (sliced BEFORE flattening, so the
 // reflection only processes the returned page) and writes the envelope.
+// Accepted scale: the whole table is materialized before paging — fine for
+// a personal inventory; revisit with LIMIT/OFFSET at low-thousands of rows.
 func writeTypedList[T any](w http.ResponseWriter, r *http.Request, items []T) {
 	p := parsePagination(r)
 	_, _, start, end := pageWindow(p.Page, p.Per, len(items))

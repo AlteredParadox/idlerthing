@@ -50,14 +50,24 @@ func scanDNS(row interface{ Scan(...any) error }) (*DNSRecord, error) {
 	return &d, nil
 }
 
-// Create inserts a DNS record.
+// Create inserts a DNS record — atomically, only when every set parent
+// still exists (a parent deleted between the handler's validation and this
+// insert yields sql.ErrNoRows, not an FK violation 500).
 func (s *DNSStore) Create(ctx context.Context, d *DNSRecord) (int64, error) {
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT INTO dns (hostname, dns_type, address, server_id, domain_id, shared_id, reseller_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		d.Hostname, d.DNSType, d.Address, d.ServerID, d.DomainID, d.SharedID, d.ResellerID)
+		SELECT ?, ?, ?, ?, ?, ?, ?
+		WHERE (? IS NULL OR EXISTS (SELECT 1 FROM servers WHERE id = ?))
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM domains WHERE id = ?))
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM shared_hosting WHERE id = ?))
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM reseller_hosting WHERE id = ?))`,
+		d.Hostname, d.DNSType, d.Address, d.ServerID, d.DomainID, d.SharedID, d.ResellerID,
+		d.ServerID, d.ServerID, d.DomainID, d.DomainID, d.SharedID, d.SharedID, d.ResellerID, d.ResellerID)
 	if err != nil {
 		return 0, fmt.Errorf("insert dns: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, sql.ErrNoRows
 	}
 	return res.LastInsertId()
 }
@@ -68,15 +78,23 @@ func (s *DNSStore) Get(ctx context.Context, id int64) (*DNSRecord, error) {
 		"SELECT "+dnsColumns+" FROM dns WHERE id = ?", id))
 }
 
-// Update replaces a DNS record.
+// Update replaces a DNS record. The same parent-existence guards ride in
+// the WHERE clause; RowsAffected==0 maps to sql.ErrNoRows whether the
+// RECORD id or a parent vanished (the handler 404s either way — the FK
+// protects integrity, and the residual is a clean 404, not a 500).
 func (s *DNSStore) Update(ctx context.Context, d *DNSRecord) error {
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE dns SET hostname = ?, dns_type = ?, address = ?,
 			server_id = ?, domain_id = ?, shared_id = ?, reseller_id = ?,
 			updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`,
+		WHERE id = ?
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM servers WHERE id = ?))
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM domains WHERE id = ?))
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM shared_hosting WHERE id = ?))
+		  AND (? IS NULL OR EXISTS (SELECT 1 FROM reseller_hosting WHERE id = ?))`,
 		d.Hostname, d.DNSType, d.Address, d.ServerID, d.DomainID,
-		d.SharedID, d.ResellerID, d.ID)
+		d.SharedID, d.ResellerID, d.ID,
+		d.ServerID, d.ServerID, d.DomainID, d.DomainID, d.SharedID, d.SharedID, d.ResellerID, d.ResellerID)
 	if err != nil {
 		return err
 	}

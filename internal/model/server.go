@@ -248,12 +248,13 @@ type ListOptions struct {
 	Dir    string // "asc" (default) or "desc"
 }
 
-// likePattern wraps a user search term for a LIKE ... ESCAPE '\' clause:
-// %, _, and the escape char itself are escaped so a literal "%" or "_" in
-// the search box can't act as a wildcard.
+// likeEscaper escapes %, _, and the escape char itself so a literal "%" or
+// "_" in the search box can't act as a wildcard.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// likePattern wraps a user search term for a LIKE ... ESCAPE '\' clause.
 func likePattern(q string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return "%" + r.Replace(q) + "%"
+	return "%" + likeEscaper.Replace(q) + "%"
 }
 
 // ServerListItem is one row of the server list view.

@@ -390,6 +390,9 @@ func (s *Server) exportService(r *http.Request, serviceType int) ([]any, error) 
 // ---------- CSV export ----------
 
 // handleExportCSV handles GET /export/csv — a zip with one CSV per type.
+// Accepted scale: every table is materialized (and zipped) in memory before
+// paging — fine for a personal inventory; revisit with LIMIT/OFFSET at
+// low-thousands of rows.
 func (s *Server) handleExportCSV(w http.ResponseWriter, r *http.Request) {
 	ctx, tx, ok := s.snapshot(w, r)
 	if !ok {

@@ -80,8 +80,15 @@ func scanYABS(row interface{ Scan(...any) error }) (*YABS, error) {
 var ErrDuplicatePayload = errors.New("duplicate payload")
 
 // capTTL matches the 2h signature window: older cap rows can never affect
-// an ingest decision again, so they are pruned opportunistically.
+// an ingest decision again.
 const capTTL = 2 * time.Hour
+
+// PruneCaps deletes consumed capabilities past the signature window. Called
+// periodically (the login sweep), NOT on the ingest hot path — the DELETE
+// is an unindexed scan and the table stays tiny between logins.
+func (st *YABSStore) PruneCaps(ctx context.Context) {
+	st.DB.ExecContext(ctx, "DELETE FROM yabs_caps WHERE ts < ?", time.Now().Add(-capTTL).Unix())
+}
 
 // ConsumeCap atomically consumes the (server_id, ts) ingest capability in
 // its OWN transaction (never rolled back by a later failure). Returns false
@@ -94,9 +101,6 @@ func (st *YABSStore) ConsumeCap(ctx context.Context, serverID, ts int64) (bool, 
 	if err != nil {
 		return false, err
 	}
-	// Prune rows past the signature window (best-effort — a prune failure
-	// must not break ingest).
-	st.DB.ExecContext(ctx, "DELETE FROM yabs_caps WHERE ts < ?", time.Now().Add(-capTTL).Unix())
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }

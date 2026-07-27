@@ -222,10 +222,9 @@ func TestRatesSingleflightAndBackoff(t *testing.T) {
 	}
 }
 
-// Batch L D1 — the single pricing row per service is always returned by
-// PricingStore.Get (active is import-fidelity state); cost queries still
-// exclude inactive rows.
-func TestPricingStoreInactiveVisible(t *testing.T) {
+// Batch M R2 — inactive (import-preserved) pricing rows are invisible to
+// PricingStore.Get everywhere; cost queries exclude them too.
+func TestPricingStoreInactiveInvisible(t *testing.T) {
 	database := testDB(t)
 	ctx := context.Background()
 	st := &model.PricingStore{DB: database}
@@ -240,8 +239,8 @@ func TestPricingStoreInactiveVisible(t *testing.T) {
 		t.Fatalf("active pricing should be visible: %v %v", p, err)
 	}
 
-	// Imported inactive row: Get returns it (the app treats the single row
-	// as current), Active flag intact.
+	// Imported inactive row: Get returns nil (uniformly invisible), and the
+	// dashboard cost union (p.active = 1) excludes it too.
 	if _, err := database.Exec("UPDATE pricings SET active = 0 WHERE service_id = 1"); err != nil {
 		t.Fatal(err)
 	}
@@ -249,8 +248,18 @@ func TestPricingStoreInactiveVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if p == nil || p.Price != 10 || p.Active {
-		t.Fatalf("inactive row should be returned with Active=false: %+v", p)
+	if p != nil {
+		t.Fatalf("inactive pricing must be invisible, got %+v", p)
+	}
+	var cost int
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM pricings p
+		JOIN servers svc ON svc.id = p.service_id AND svc.active = 1
+		WHERE p.service_type = 1 AND p.active = 1 AND p.term != 7`).Scan(&cost); err != nil {
+		t.Fatal(err)
+	}
+	if cost != 0 {
+		t.Fatal("cost queries must exclude inactive rows")
 	}
 }
 

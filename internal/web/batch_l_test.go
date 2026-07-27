@@ -133,11 +133,11 @@ func TestImportDNSParentWarning(t *testing.T) {
 	}
 }
 
-// Batch L D3 — cap rows older than the 2h window are pruned on ingest.
+// Batch L D3 / Batch M F2 — cap rows older than the 2h window are pruned
+// by PruneCaps (called from the login sweep, not the ingest hot path).
 func TestYABSCapPruning(t *testing.T) {
-	ts, database, srv := newTestServerFull(t)
-	client := authedClient(t, ts)
-	createServer(t, client, ts, "yabs-host")
+	_, database, _ := newTestServerFull(t)
+	ctx := context.Background()
 
 	old := time.Now().Add(-3 * time.Hour).Unix()
 	recent := time.Now().Add(-30 * time.Minute).Unix()
@@ -147,11 +147,8 @@ func TestYABSCapPruning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := postYABS(t, ts, srv, 1, nil, "")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("ingest: %d", resp.StatusCode)
-	}
+	(&model.YABSStore{DB: database}).PruneCaps(ctx)
+
 	var oldN, recentN int
 	database.QueryRow("SELECT COUNT(*) FROM yabs_caps WHERE ts = ?", old).Scan(&oldN)
 	database.QueryRow("SELECT COUNT(*) FROM yabs_caps WHERE ts = ?", recent).Scan(&recentN)
@@ -197,15 +194,20 @@ func TestImportEnumValidation(t *testing.T) {
 	}
 }
 
-// Batch L D5 — the --force guard also covers dns/notes/ips.
+// Batch L D5 / Batch M F5 — the --force guard also covers dns/notes/ips,
+// and the refusal names the blocking tables.
 func TestImportGuardCoversContentTables(t *testing.T) {
 	dbB := freshDB(t)
 	if _, err := dbB.Exec(
 		"INSERT INTO dns (hostname, dns_type, address) VALUES ('g.example.com', 'A', '203.0.113.1')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := importer.Import(context.Background(), dbB, strings.NewReader(`{}`), false); err == nil {
+	_, err := importer.Import(context.Background(), dbB, strings.NewReader(`{}`), false)
+	if err == nil {
 		t.Fatal("import into a DB with only a dns row must be refused without --force")
+	}
+	if !strings.Contains(err.Error(), "dns: 1 rows") || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("refusal should name the blocking table and the remedy: %v", err)
 	}
 	if _, err := importer.Import(context.Background(), dbB, strings.NewReader(`{}`), true); err != nil {
 		t.Fatalf("with --force it proceeds: %v", err)

@@ -217,10 +217,17 @@ func (s *Server) handleDNSCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	st := &model.DNSStore{DB: s.db}
 	if _, err := st.Create(r.Context(), rec); err != nil {
+		if err == sql.ErrNoRows {
+			// Parent vanished between validation and insert.
+			s.setFlash(w, r, "err", "Linked service does not exist.")
+			redirectBack(w, r, "/dns")
+			return
+		}
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	s.setFlash(w, r, "ok", "DNS record added.")
+	s.touchDashboard()
 	http.Redirect(w, r, "/dns", http.StatusSeeOther)
 }
 
@@ -274,6 +281,7 @@ func (s *Server) handleDNSUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setFlash(w, r, "ok", "DNS record saved.")
+	s.touchDashboard()
 	http.Redirect(w, r, "/dns", http.StatusSeeOther)
 }
 
@@ -287,6 +295,8 @@ func (s *Server) handleDNSDelete(w http.ResponseWriter, r *http.Request) {
 	st := &model.DNSStore{DB: s.db}
 	if err := st.Delete(r.Context(), id); err != nil {
 		s.setFlash(w, r, "err", "Could not delete record.")
+	} else {
+		s.touchDashboard()
 	}
 	redirectBack(w, r, "/dns")
 }

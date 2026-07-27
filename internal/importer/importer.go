@@ -49,6 +49,7 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	}
 
 	if !force {
+		var blocking []string
 		for _, table := range []string{
 			"servers", "shared_hosting", "reseller_hosting", "seedboxes", "domains", "misc_services",
 			// Content tables too — importing duplicates them with NULL parents.
@@ -59,8 +60,12 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 				return nil, err
 			}
 			if n > 0 {
-				return nil, fmt.Errorf("%s is not empty (%d rows) — importing duplicates records; re-run with --force", table, n)
+				blocking = append(blocking, fmt.Sprintf("%s: %d rows", table, n))
 			}
+		}
+		if len(blocking) > 0 {
+			return nil, fmt.Errorf("refusing import: database not empty (%s) — re-run with --force to import anyway, duplicating records",
+				strings.Join(blocking, ", "))
 		}
 	}
 

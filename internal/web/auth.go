@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"idlerthing/internal/model"
 )
 
 const (
@@ -134,9 +136,10 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	// Lazy cleanup of expired sessions.
+	// Lazy cleanup of expired sessions and past-window yabs capabilities.
 	s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE expires_at < ?",
 		time.Now().UTC().Format(time.RFC3339))
+	(&model.YABSStore{DB: s.db}).PruneCaps(r.Context())
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

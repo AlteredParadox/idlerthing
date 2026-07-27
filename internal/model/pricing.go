@@ -146,16 +146,16 @@ type PricingStore struct {
 	DB *sql.DB
 }
 
-// Get returns the pricing for a service, or nil when none exists.
-// active is import-fidelity state: imports may preserve inactive rows; the
-// app treats the single row per service (UNIQUE(service_id, service_type))
-// as current pricing, and cost queries exclude inactive.
+// Get returns the CURRENT pricing for a service, or nil when none exists.
+// Inactive rows are import-preserved history: invisible everywhere (detail
+// page included), preserved across unrelated edits (upsertPricingTx deletes
+// only the active row), and reactivated when pricing is attached by a save.
 func (s *PricingStore) Get(ctx context.Context, serviceType int, serviceID int64) (*Pricing, error) {
 	p := &Pricing{}
 	var active int
 	err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx, `
 		SELECT id, service_id, service_type, currency, price, term, next_due_date, active
-		FROM pricings WHERE service_type = ? AND service_id = ?`, serviceType, serviceID).
+		FROM pricings WHERE service_type = ? AND service_id = ? AND active = 1`, serviceType, serviceID).
 		Scan(&p.ID, &p.ServiceID, &p.ServiceType, &p.Currency, &p.Price, &p.Term, &p.NextDueDate, &active)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -168,9 +168,9 @@ func (s *PricingStore) Get(ctx context.Context, serviceType int, serviceID int64
 }
 
 // upsertPricingTx inserts or updates the pricing for a service within a
-// transaction. active is import-fidelity state (see PricingStore.Get).
-// Semantics:
-//   - non-nil pricing: upsert the single row (an imported inactive row is
+// transaction. Inactive rows are import-preserved history (see
+// PricingStore.Get). Semantics:
+//   - non-nil pricing: upsert the single row (an inactive row is
 //     reactivated in place — "saving attaches current pricing").
 //   - nil (or empty-currency) pricing: remove only the ACTIVE row, if any;
 //     an imported inactive row survives unrelated edits.

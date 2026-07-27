@@ -20,8 +20,11 @@ type dashboardCache struct {
 	viewGen uint64
 	at      time.Time
 	view    *dashboardView
-	// Sidebar counts cached by the same generation counter — every write
-	// already bumps gen via touchDashboard, so staleness is impossible.
+	// Sidebar counts cached by the same generation counter — every write to
+	// a COUNTED table bumps gen via touchDashboard (audited: all six service
+	// types, catalogs, label assign/unassign, dns, ips, notes, yabs ingest +
+	// delete), so staleness is impossible. Writes to users/sessions/settings/
+	// user_prefs don't change any count and intentionally don't bump.
 	countsGen uint64
 	counts    Counts
 	countsOK  bool

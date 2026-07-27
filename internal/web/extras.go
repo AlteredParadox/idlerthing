@@ -150,6 +150,8 @@ func (s *Server) handleLabelUnassign(w http.ResponseWriter, r *http.Request) {
 	labels := &model.LabelStore{DB: s.db}
 	if err := labels.Unassign(r.Context(), labelID, serviceID, int(serviceType)); err != nil {
 		s.setFlash(w, r, "err", "Could not remove label.")
+	} else {
+		s.touchDashboard()
 	}
 	redirectBack(w, r, "/")
 }
@@ -179,6 +181,7 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		s.setFlash(w, r, "err", "Could not save note.")
 	} else {
 		s.setFlash(w, r, "ok", "Note added.")
+		s.touchDashboard()
 	}
 	redirectBack(w, r, "/notes")
 }
@@ -193,6 +196,8 @@ func (s *Server) handleNoteDelete(w http.ResponseWriter, r *http.Request) {
 	notes := &model.NoteStore{DB: s.db}
 	if err := notes.Delete(r.Context(), id); err != nil {
 		s.setFlash(w, r, "err", "Could not delete note.")
+	} else {
+		s.touchDashboard()
 	}
 	redirectBack(w, r, "/notes")
 }
@@ -276,6 +281,7 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setFlash(w, r, "ok", "IP added.")
+	s.touchDashboard()
 	redirectBack(w, r, "/ips")
 }
 
@@ -289,6 +295,8 @@ func (s *Server) handleIPDelete(w http.ResponseWriter, r *http.Request) {
 	ips := &model.IPStore{DB: s.db}
 	if err := ips.Delete(r.Context(), id); err != nil {
 		s.setFlash(w, r, "err", "Could not delete IP.")
+	} else {
+		s.touchDashboard()
 	}
 	redirectBack(w, r, "/ips")
 }

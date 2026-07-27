@@ -22,6 +22,13 @@ type txCtxKey struct{}
 // WithTx caller must go through QuerierFrom — a direct db.Query* would wait
 // on the very connection tx holds, deadlocking forever. All model reads are
 // routed accordingly; keep it that way when adding new ones.
+//
+// The same holds for WRITES, doubly so: Exec on st.DB under WithTx would
+// deadlock, and Exec on the tx itself would write into a READ-ONLY snapshot
+// (failing or, worse, being rolled back). Write methods therefore never
+// take a WithTx context. Half-and-half methods like LabelStore.Assign —
+// reads via QuerierFrom (safe under a snapshot), writes via s.DB (never
+// under one) — are the mandatory shape, not an oversight.
 func WithTx(ctx context.Context, tx *sql.Tx) context.Context {
 	return context.WithValue(ctx, txCtxKey{}, tx)
 }

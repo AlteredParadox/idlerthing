@@ -470,7 +470,7 @@ func TestAPIServerPutValidationAnd404(t *testing.T) {
 	client := authedClient(t, ts)
 	createServer(t, client, ts, "api-put-01")
 
-	put := func(id string, body string) (*http.Response, map[string]any) {
+	put := func(id, body string) (*http.Response, map[string]any) {
 		req, _ := http.NewRequest("PUT", ts.URL+"/api/servers/"+id, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("Content-Type", "application/json")

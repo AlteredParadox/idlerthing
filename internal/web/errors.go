@@ -6,6 +6,8 @@ const (
 	errMsgInternal = "internal error"
 	// errMsgNotFound is the generic API 404 message.
 	errMsgNotFound = "not found"
+	// errMsgBadRequest is the generic 400 body.
+	errMsgBadRequest = "bad request"
 	// errMsgServerErr is the generic 500 body for page handlers.
 	errMsgServerErr = "internal server error"
 )

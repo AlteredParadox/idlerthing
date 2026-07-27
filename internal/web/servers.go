@@ -123,7 +123,7 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 		monthlyCost, yearlyCost = s.costPairUSDFor(r, model.ServiceServer)
 	}
 	view := serversListView{
-		listNav:        listNav{Base: "/servers", Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir},
+		listNav:        listNav{Base: routeServers, Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir},
 		ActiveCount:    active,
 		InactiveCount:  inactive,
 		Total:          active + inactive,
@@ -390,7 +390,7 @@ type serverFormView struct {
 // handleServerNew renders GET /servers/new.
 func (s *Server) handleServerNew(w http.ResponseWriter, r *http.Request) {
 	s.renderServerForm(w, r, serverFormView{
-		Action: "/servers",
+		Action: routeServers,
 		Server: &model.Server{Active: true, ServerType: model.TypeKVM, SSHPort: sql.NullInt64{Int64: 22, Valid: true}},
 	})
 }
@@ -412,7 +412,7 @@ func (s *Server) handleServerEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderServerForm(w, r, serverFormView{
-		Action:  "/servers/" + strconv.FormatInt(id, 10) + "/update",
+		Action:  routeServers + "/" + strconv.FormatInt(id, 10) + "/update",
 		IsEdit:  true,
 		Server:  srv,
 		Disks:   disks,
@@ -445,7 +445,7 @@ func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
 	srv, disks, pricing, errs := parseServerForm(r)
 	if len(errs) > 0 {
 		s.renderServerForm(w, r, serverFormView{
-			Action: "/servers", Server: srv, Disks: disks, Pricing: pricing, Errors: errs,
+			Action: routeServers, Server: srv, Disks: disks, Pricing: pricing, Errors: errs,
 		})
 		return
 	}
@@ -456,7 +456,7 @@ func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", "Server "+srv.Hostname+" added.")
-	http.Redirect(w, r, "/servers/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeServers+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // handleServerUpdate handles POST /servers/{id}/update.
@@ -470,7 +470,7 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 	srv.ID = id
 	if len(errs) > 0 {
 		s.renderServerForm(w, r, serverFormView{
-			Action: "/servers/" + strconv.FormatInt(id, 10) + "/update",
+			Action: routeServers + "/" + strconv.FormatInt(id, 10) + "/update",
 			IsEdit: true, Server: srv, Disks: disks, Pricing: pricing, Errors: errs,
 		})
 		return
@@ -485,7 +485,7 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", "Server "+srv.Hostname+" saved.")
-	http.Redirect(w, r, "/servers/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeServers+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // handleServerDelete handles POST /servers/{id}/delete.
@@ -502,11 +502,11 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", "Server deleted.")
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/servers")
+		w.Header().Set("HX-Redirect", routeServers)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	http.Redirect(w, r, "/servers", http.StatusSeeOther)
+	http.Redirect(w, r, routeServers, http.StatusSeeOther)
 }
 
 // parseServerForm parses + validates the server form. Returned errors are

@@ -13,7 +13,7 @@ import (
 func (s *Server) seedboxSection() *section {
 	st := &model.SeedboxStore{DB: s.db}
 	return &section{
-		Base:        "/seedboxes",
+		Base:        routeSeedboxes,
 		Kind:        "seedboxes",
 		Title:       "SeedBoxes",
 		ServiceType: model.ServiceSeedbox,
@@ -52,12 +52,12 @@ func (s *Server) seedboxSection() *section {
 					title = "—"
 				}
 				rows = append(rows, listRow{
-					Link:          "/seedboxes/" + id,
-					EditURL:       "/seedboxes/" + id + "/edit",
-					DeleteURL:     "/seedboxes/" + id + "/delete",
+					Link:          routeSeedboxes + "/" + id,
+					EditURL:       routeSeedboxes + "/" + id + "/edit",
+					DeleteURL:     routeSeedboxes + "/" + id + "/delete",
 					DeleteConfirm: "Delete " + it.Hostname + "?",
 					Cells: []listCell{
-						{Main: title, Dot: dot, Link: "/seedboxes/" + id},
+						{Main: title, Dot: dot, Link: routeSeedboxes + "/" + id},
 						{Main: it.Hostname, Class: "mono"},
 						{Main: dash(it.SeedBoxType.String), Badge: it.SeedBoxType.Valid},
 						{Main: nullMbps(it.PortSpeed), Class: "mono"},
@@ -121,8 +121,8 @@ func (s *Server) seedboxSection() *section {
 				Title:         title,
 				Mono:          true,
 				Badges:        badges,
-				EditURL:       "/seedboxes/" + sid + "/edit",
-				DeleteURL:     "/seedboxes/" + sid + "/delete",
+				EditURL:       routeSeedboxes + "/" + sid + "/edit",
+				DeleteURL:     routeSeedboxes + "/" + sid + "/delete",
 				DeleteConfirm: "Delete " + b.Hostname + "?",
 				Cards: []infoCard{
 					{Title: "Service", Pairs: []kvPair{
@@ -169,7 +169,7 @@ type seedboxFormView struct {
 
 func (s *Server) handleSeedboxNew(w http.ResponseWriter, r *http.Request) {
 	s.renderSeedboxForm(w, r, seedboxFormView{
-		Action:  "/seedboxes",
+		Action:  routeSeedboxes,
 		Seedbox: &model.Seedbox{Active: true},
 	})
 }
@@ -191,7 +191,7 @@ func (s *Server) handleSeedboxEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderSeedboxForm(w, r, seedboxFormView{
-		Action:  "/seedboxes/" + strconv.FormatInt(id, 10) + "/update",
+		Action:  routeSeedboxes + "/" + strconv.FormatInt(id, 10) + "/update",
 		IsEdit:  true,
 		Seedbox: b,
 		Pricing: pricing,
@@ -205,10 +205,10 @@ func (s *Server) renderSeedboxForm(w http.ResponseWriter, r *http.Request, view 
 	}
 	view.Currencies = currencies
 	title := "Add seedbox"
-	view.CancelURL = "/seedboxes"
+	view.CancelURL = routeSeedboxes
 	if view.IsEdit {
 		title = "Edit " + view.Seedbox.Hostname
-		view.CancelURL = "/seedboxes/" + strconv.FormatInt(view.Seedbox.ID, 10)
+		view.CancelURL = routeSeedboxes + "/" + strconv.FormatInt(view.Seedbox.ID, 10)
 	}
 	data := s.newPageData(w, r, title, "seedboxes")
 	data.Data = view
@@ -219,7 +219,7 @@ func (s *Server) handleSeedboxCreate(w http.ResponseWriter, r *http.Request) {
 	b, pricing, errs := parseSeedboxForm(r)
 	if len(errs) > 0 {
 		s.renderSeedboxForm(w, r, seedboxFormView{
-			Action: "/seedboxes", Seedbox: b, Pricing: pricing, Errors: errs,
+			Action: routeSeedboxes, Seedbox: b, Pricing: pricing, Errors: errs,
 		})
 		return
 	}
@@ -231,7 +231,7 @@ func (s *Server) handleSeedboxCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", b.Hostname+" added.")
-	http.Redirect(w, r, "/seedboxes/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeSeedboxes+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleSeedboxUpdate(w http.ResponseWriter, r *http.Request) {
@@ -244,7 +244,7 @@ func (s *Server) handleSeedboxUpdate(w http.ResponseWriter, r *http.Request) {
 	b.ID = id
 	if len(errs) > 0 {
 		s.renderSeedboxForm(w, r, seedboxFormView{
-			Action: "/seedboxes/" + strconv.FormatInt(id, 10) + "/update",
+			Action: routeSeedboxes + "/" + strconv.FormatInt(id, 10) + "/update",
 			IsEdit: true, Seedbox: b, Pricing: pricing, Errors: errs,
 		})
 		return
@@ -260,7 +260,7 @@ func (s *Server) handleSeedboxUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", b.Hostname+" saved.")
-	http.Redirect(w, r, "/seedboxes/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeSeedboxes+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // parseSeedboxForm parses + validates the seedbox form.

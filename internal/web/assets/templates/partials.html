@@ -77,10 +77,10 @@
       <input type="hidden" name="service_id" value="{{$e.ServiceID}}">
       <input type="hidden" name="service_type" value="{{$e.ServiceType}}">
       <input type="hidden" name="back" value="{{$e.BackURL}}">
-      <select name="label_id" aria-label="Pick label…">
+      <label><span class="sr-only">Pick label…</span><select name="label_id">
         <option value="">Pick label…</option>
         {{range $e.AllLabels}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-      </select>
+      </select></label>
       <input type="text" name="new_label" placeholder="or new label" aria-label="New label">
       <button class="btn" type="submit">Add</button>
     </form>
@@ -195,12 +195,12 @@
 <div class="input-group">
   <input type="number" name="{{.name}}" min="0" step="any" value="{{unitVal .val}}"
          aria-label="{{$lbl}} amount">
-  <select name="{{.name}}_unit" aria-label="{{$lbl}} unit (MB/GB/TB)">
+  <label><span class="sr-only">{{$lbl}} unit (MB/GB/TB)</span><select name="{{.name}}_unit">
     {{$u := unitName .val}}
     <option value="MB" {{if eq $u "MB"}}selected{{end}}>MB</option>
     <option value="GB" {{if eq $u "GB"}}selected{{end}}>GB</option>
     <option value="TB" {{if eq $u "TB"}}selected{{end}}>TB</option>
-  </select>
+  </select></label>
 </div>
 {{if .unlimited}}
 <div class="check-row">

@@ -13,7 +13,7 @@ import (
 func (s *Server) miscSection() *section {
 	st := &model.MiscStore{DB: s.db}
 	return &section{
-		Base:        "/misc",
+		Base:        routeMisc,
 		Kind:        "misc",
 		Title:       "Misc Services",
 		ServiceType: model.ServiceMisc,
@@ -42,12 +42,12 @@ func (s *Server) miscSection() *section {
 					dot = "off"
 				}
 				rows = append(rows, listRow{
-					Link:          "/misc/" + id,
-					EditURL:       "/misc/" + id + "/edit",
-					DeleteURL:     "/misc/" + id + "/delete",
+					Link:          routeMisc + "/" + id,
+					EditURL:       routeMisc + "/" + id + "/edit",
+					DeleteURL:     routeMisc + "/" + id + "/delete",
 					DeleteConfirm: "Delete " + it.Name + "?",
 					Cells: []listCell{
-						{Main: it.Name, Dot: dot, Link: "/misc/" + id},
+						{Main: it.Name, Dot: dot, Link: routeMisc + "/" + id},
 						{Main: dash(it.OwnedSince.String), Class: "mono"},
 						pricingCell(it.Pricing),
 						dueCell(it.Pricing, dueSoon),
@@ -86,8 +86,8 @@ func (s *Server) miscSection() *section {
 			return &detailView{
 				Title:         m.Name,
 				Badges:        badges,
-				EditURL:       "/misc/" + sid + "/edit",
-				DeleteURL:     "/misc/" + sid + "/delete",
+				EditURL:       routeMisc + "/" + sid + "/edit",
+				DeleteURL:     routeMisc + "/" + sid + "/delete",
 				DeleteConfirm: "Delete " + m.Name + "?",
 				Cards: []infoCard{
 					{Title: "Service", Pairs: []kvPair{
@@ -114,7 +114,7 @@ type miscFormView struct {
 
 func (s *Server) handleMiscNew(w http.ResponseWriter, r *http.Request) {
 	s.renderMiscForm(w, r, miscFormView{
-		Action: "/misc",
+		Action: routeMisc,
 		Misc:   &model.MiscService{Active: true},
 	})
 }
@@ -136,7 +136,7 @@ func (s *Server) handleMiscEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderMiscForm(w, r, miscFormView{
-		Action:  "/misc/" + strconv.FormatInt(id, 10) + "/update",
+		Action:  routeMisc + "/" + strconv.FormatInt(id, 10) + "/update",
 		IsEdit:  true,
 		Misc:    m,
 		Pricing: pricing,
@@ -146,10 +146,10 @@ func (s *Server) handleMiscEdit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderMiscForm(w http.ResponseWriter, r *http.Request, view miscFormView) {
 	view.Currencies = currencies
 	title := "Add service"
-	view.CancelURL = "/misc"
+	view.CancelURL = routeMisc
 	if view.IsEdit {
 		title = "Edit " + view.Misc.Name
-		view.CancelURL = "/misc/" + strconv.FormatInt(view.Misc.ID, 10)
+		view.CancelURL = routeMisc + "/" + strconv.FormatInt(view.Misc.ID, 10)
 	}
 	data := s.newPageData(w, r, title, "misc")
 	data.Data = view
@@ -160,7 +160,7 @@ func (s *Server) handleMiscCreate(w http.ResponseWriter, r *http.Request) {
 	m, pricing, errs := parseMiscForm(r)
 	if len(errs) > 0 {
 		s.renderMiscForm(w, r, miscFormView{
-			Action: "/misc", Misc: m, Pricing: pricing, Errors: errs,
+			Action: routeMisc, Misc: m, Pricing: pricing, Errors: errs,
 		})
 		return
 	}
@@ -172,7 +172,7 @@ func (s *Server) handleMiscCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", m.Name+" added.")
-	http.Redirect(w, r, "/misc/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeMisc+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleMiscUpdate(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +185,7 @@ func (s *Server) handleMiscUpdate(w http.ResponseWriter, r *http.Request) {
 	m.ID = id
 	if len(errs) > 0 {
 		s.renderMiscForm(w, r, miscFormView{
-			Action: "/misc/" + strconv.FormatInt(id, 10) + "/update",
+			Action: routeMisc + "/" + strconv.FormatInt(id, 10) + "/update",
 			IsEdit: true, Misc: m, Pricing: pricing, Errors: errs,
 		})
 		return
@@ -201,7 +201,7 @@ func (s *Server) handleMiscUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.touchDashboard()
 	s.setFlash(w, r, "ok", m.Name+" saved.")
-	http.Redirect(w, r, "/misc/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	http.Redirect(w, r, routeMisc+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // parseMiscForm parses + validates the misc form.

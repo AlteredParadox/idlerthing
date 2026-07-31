@@ -140,6 +140,8 @@ func (s *Server) Handler() http.Handler {
 
 	// Public routes.
 	mux.HandleFunc("GET /static/accent.css", s.handleAccentCSS)
+	mux.HandleFunc("GET /static/favicon.svg", s.handleFaviconSVG)
+	mux.HandleFunc("GET /favicon.ico", s.handleFaviconICO)
 	mux.Handle("GET /static/", s.withCacheHeaders(http.StripPrefix("/static/", http.FileServerFS(staticFS))))
 	// AGPL §13: the license, the third-party notices, and the Corresponding
 	// Source offer must reach every network user, so these sit OUTSIDE

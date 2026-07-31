@@ -51,6 +51,40 @@ func (s *Server) handleAccentCSS(w http.ResponseWriter, r *http.Request) {
 		accent, accentForeground(red, green, blue), red, green, blue)
 }
 
+// faviconSVG is the sidebar logo mark (.logo-mark in app.css) as an icon:
+// the accent-colored rounded square with a mono "i". The glyph is drawn as
+// geometry rather than <text> because favicon rasterizers have no font stack
+// to fall back on, and a 16px "i" set in a missing font renders as nothing.
+// Verb 1 is the accent, verb 2 the contrasting foreground.
+const faviconSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+	`<rect width="32" height="32" rx="8" fill="%[1]s"/>` +
+	`<circle cx="16" cy="8.6" r="2.6" fill="%[2]s"/>` +
+	`<rect x="13.4" y="13" width="5.2" height="11.4" rx="2.6" fill="%[2]s"/>` +
+	`</svg>` + "\n"
+
+// handleFaviconSVG serves GET /static/favicon.svg. The response is immutable,
+// so the URL carries ?v=<assetVersion>-<rrggbb>: the content varies on BOTH
+// the accent setting and the glyph above, and keying on the accent alone would
+// pin browsers to a stale icon after any edit to faviconSVG. uiPrefs only ever
+// returns a value matching accentColorRe, so nothing user-controlled reaches
+// the markup.
+func (s *Server) handleFaviconSVG(w http.ResponseWriter, r *http.Request) {
+	accent, _ := s.uiPrefs(r)
+	red, green, blue := hexRGB(accent)
+
+	w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	fmt.Fprintf(w, faviconSVG, accent, accentForeground(red, green, blue))
+}
+
+// handleFaviconICO answers the bare /favicon.ico that browsers, bots, and
+// feed readers request regardless of <link rel="icon">. 204 rather than a
+// real .ico: the point is to stop every page load logging a 404, and clients
+// that honour the link tag already have the SVG.
+func (s *Server) handleFaviconICO(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // hexRGB parses "#rrggbb" into components (defaults to the standard accent).
 func hexRGB(color string) (int, int, int) {
 	if !accentColorRe.MatchString(color) {

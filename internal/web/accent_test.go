@@ -149,3 +149,90 @@ func TestLayoutAccentAndCompact(t *testing.T) {
 		t.Fatal("fingerprint should follow the configured color")
 	}
 }
+
+func TestFaviconSVG(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := authedClient(t, ts)
+
+	// Unauthenticated: the icon is public, like accent.css.
+	resp, err := http.Get(ts.URL + "/static/favicon.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "image/svg+xml") {
+		t.Fatalf("wrong content-type: %q", ct)
+	}
+	if !strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("icon should be immutably cacheable, got %q", resp.Header.Get("Cache-Control"))
+	}
+	if !strings.Contains(body, defaultAccent) {
+		t.Fatalf("default accent missing from icon: %s", body)
+	}
+
+	// The icon follows the accent setting, so the ?c= fingerprint is honest.
+	settingsPost(t, client, ts, url.Values{"accent_color": {"#A78BFA"}}).Body.Close()
+	resp, err = client.Get(ts.URL + "/static/favicon.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, "#a78bfa") {
+		t.Fatalf("icon did not follow accent change: %s", body)
+	}
+}
+
+// The whole point of the favicon work: a bare /favicon.ico must not 404 on
+// every page load. Browsers request it whether or not <link rel="icon"> is
+// present, and each miss was a log line.
+func TestFaviconICONotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/favicon.ico")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+// Every page that renders its own <head> must link the icon — layout covers
+// the app, but login and public are standalone documents.
+func TestFaviconLinkedOnAllHeads(t *testing.T) {
+	ts, database := newTestServer(t)
+	client := authedClient(t, ts)
+	if _, err := database.Exec("UPDATE settings SET servers_public = 1 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, path string
+		authed     bool
+	}{
+		{"layout", "/", true},
+		{"login", "/login", false},
+		{"public", "/public", false},
+	} {
+		c := ts.Client()
+		if tc.authed {
+			c = client
+		}
+		resp, err := c.Get(ts.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := readBody(t, resp)
+		if !strings.Contains(body, `rel="icon"`) {
+			t.Errorf("%s head has no favicon link", tc.name)
+		}
+		// public.html builds its data as a map, so a missing AccentC would
+		// render as "<no value>" instead of failing — assert the real value.
+		if !strings.Contains(body, "favicon.svg?v="+assetVersion+"-"+defaultAccent[1:]) {
+			t.Errorf("%s head has no version+accent fingerprint on the icon", tc.name)
+		}
+	}
+}

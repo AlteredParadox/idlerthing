@@ -162,11 +162,14 @@ func (s *Server) renderPublic(w http.ResponseWriter, r *http.Request, rows []pub
 		http.Error(w, "unknown page", http.StatusInternalServerError)
 		return
 	}
+	accent, _ := s.uiPrefs(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := tm.ExecuteTemplate(w, "public", map[string]any{
 		"Theme":   s.currentTheme(r),
 		"Rows":    rows,
 		"AssetV":  assetVersion,
+		"AccentC": accent[1:], // '#' stripped, matches render.go
+
 		"Updated": time.Now().Format("2006-01-02 15:04"),
 	}); err != nil {
 		slog.Error("render public", "err", err)

@@ -17,6 +17,8 @@
 package yabs
 
 import (
+	"math"
+	"os"
 	"testing"
 )
 
@@ -191,5 +193,102 @@ func TestParseNegativeValues(t *testing.T) {
 	}
 	if r.GbSingle != 0 || r.GbMulti != 5 {
 		t.Fatalf("gb: single=%d multi=%d", r.GbSingle, r.GbMulti)
+	}
+}
+
+// TestParseRealPayload runs the parser against genuine yabs.sh output
+// (v2026-07-24, captured from a live box) rather than a hand-written shape.
+// The invented fixture above is what let four separate key-name mismatches
+// ship green: geekbench-as-array, fio speed_r/speed_w, iperf loc, and mode.
+// Any future schema drift should be caught HERE first.
+func TestParseRealPayload(t *testing.T) {
+	body, err := os.ReadFile("testdata/real_v2026-07-24.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// System info: mem is a bare KiB number + a units key, uptime raw
+	// seconds, and the stamp is yabs.sh's own "Ymd-His".
+	if r.RunAt != "2026-07-30 16:31:30" {
+		t.Errorf("RunAt = %q", r.RunAt)
+	}
+	if r.CPU != "AMD Ryzen 9 9950X 16-Core Processor" || r.CPUCores != 2 {
+		t.Errorf("CPU = %q cores=%d", r.CPU, r.CPUCores)
+	}
+	if r.RAM != "2.1 GiB" || r.Swap != "1.0 GiB" {
+		t.Errorf("RAM = %q Swap = %q (want formatted, not raw KiB)", r.RAM, r.Swap)
+	}
+	if r.Uptime != "8 days, 22 hours, 33 minutes" {
+		t.Errorf("Uptime = %q (want humanized, not raw seconds)", r.Uptime)
+	}
+
+	// fio: speed_r/speed_w in KBps per the row's own speed_units. 40034 KBps
+	// is 40.034 MB/s — reading it as MB/s would overstate the disk by 1000x.
+	if len(r.Disks) != 4 {
+		t.Fatalf("disks = %d, want 4", len(r.Disks))
+	}
+	if r.Disks[0].BlockSize != "4k" ||
+		math.Abs(r.Disks[0].ReadMbps-40.034) > 1e-6 ||
+		math.Abs(r.Disks[0].WriteMbps-40.130) > 1e-6 {
+		t.Errorf("disk[0] = %+v", r.Disks[0])
+	}
+	if math.Abs(r.Disks[1].ReadMbps-196.122) > 1e-6 {
+		t.Errorf("disk[1] read = %v, want 196.122", r.Disks[1].ReadMbps)
+	}
+
+	// geekbench is an ARRAY carrying both v5 and v6; the highest wins.
+	if r.GeekbenchVersion != 6 {
+		t.Errorf("GeekbenchVersion = %d, want 6", r.GeekbenchVersion)
+	}
+	if r.GbURL != "https://browser.geekbench.com/v6/cpu/18872474" {
+		t.Errorf("GbURL = %q", r.GbURL)
+	}
+	// This capture has "single": null / "multi": null at source — the run
+	// uploaded but its scores never came back. Absent stays 0; it must not
+	// pick up the v5 entry's values or invent one.
+	if r.GbSingle != 0 || r.GbMulti != 0 {
+		t.Errorf("null scores should stay 0, got single=%d multi=%d", r.GbSingle, r.GbMulti)
+	}
+
+	// iperf: 7 locations tested over BOTH families = 14 rows, each tagged.
+	if len(r.Network) != 14 {
+		t.Fatalf("network rows = %d, want 14", len(r.Network))
+	}
+	var v4, v6 int
+	for _, n := range r.Network {
+		switch n.Mode {
+		case "IPv4":
+			v4++
+		case "IPv6":
+			v6++
+		default:
+			t.Errorf("row %q has no mode", n.Location)
+		}
+		if n.Location == "" {
+			t.Errorf("blank location on %+v", n)
+		}
+	}
+	if v4 != 7 || v6 != 7 {
+		t.Errorf("mode split = %d v4 / %d v6, want 7/7", v4, v6)
+	}
+
+	first := r.Network[0]
+	if first.Location != "London, UK (10G)" || first.Provider != "Clouvider" {
+		t.Errorf("network[0] = %+v", first)
+	}
+	// "1.40 Gbits/sec" is a BIT rate: 1400 Mbit/s, not 175.
+	if first.SendMbps != 1400 || first.RecvMbps != 719 || first.LatencyMs != 113 {
+		t.Errorf("network[0] speeds = %+v", first)
+	}
+
+	// A "busy " endpoint parses to 0 but keeps its row: the test was
+	// attempted, and dropping it would look identical to never running.
+	busy := r.Network[3]
+	if busy.Location != "Singapore, SG (10G)" || busy.SendMbps != 0 || busy.RecvMbps != 854 {
+		t.Errorf("busy row = %+v", busy)
 	}
 }

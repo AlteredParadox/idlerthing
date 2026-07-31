@@ -17,6 +17,8 @@
 package db
 
 import (
+	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -48,16 +50,16 @@ func TestMigrateFreshDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 12 || applied[0] != 1 || applied[1] != 2 || applied[2] != 3 || applied[3] != 4 || applied[4] != 5 || applied[5] != 6 || applied[6] != 7 || applied[7] != 8 || applied[8] != 9 || applied[9] != 10 || applied[10] != 11 || applied[11] != 12 {
-		t.Fatalf("expected applied=[1 2 3 4 5 6 7 8 9 10 11 12], got %v", applied)
+	if diff := appliedDiff(t, applied, 0); diff != "" {
+		t.Fatal(diff)
 	}
 
 	var version int
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 12 {
-		t.Fatalf("expected user_version 12, got %d", version)
+	if want := latestMigration(t); version != want {
+		t.Fatalf("expected user_version %d, got %d", want, version)
 	}
 
 	for _, table := range expectedTables {
@@ -93,8 +95,8 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 12 {
-		t.Fatalf("expected user_version 12, got %d", version)
+	if want := latestMigration(t); version != want {
+		t.Fatalf("expected user_version %d, got %d", want, version)
 	}
 }
 
@@ -173,8 +175,8 @@ func TestMigration0003UnitConversion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 10 || applied[0] != 3 || applied[1] != 4 || applied[2] != 5 || applied[3] != 6 || applied[4] != 7 || applied[5] != 8 || applied[6] != 9 || applied[7] != 10 || applied[8] != 11 || applied[9] != 12 {
-		t.Fatalf("expected migrations [3 4 5 6 7 8 9 10 11 12] applied, got %v", applied)
+	if diff := appliedDiff(t, applied, 2); diff != "" {
+		t.Fatal(diff)
 	}
 
 	// 0006: legacy network_type values merge into 'IPv4 NAT'.
@@ -224,8 +226,8 @@ func TestMigration0003UnitConversion(t *testing.T) {
 
 	var version int
 	db.QueryRow("PRAGMA user_version").Scan(&version)
-	if version != 12 {
-		t.Fatalf("expected user_version 12, got %d", version)
+	if want := latestMigration(t); version != want {
+		t.Fatalf("expected user_version %d, got %d", want, version)
 	}
 }
 
@@ -275,8 +277,8 @@ func TestMigration0007OrphanCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
-	if len(applied) != 6 || applied[0] != 7 || applied[1] != 8 || applied[2] != 9 || applied[3] != 10 || applied[4] != 11 || applied[5] != 12 {
-		t.Fatalf("expected migrations [7 8 9 10 11 12], got %v", applied)
+	if diff := appliedDiff(t, applied, 6); diff != "" {
+		t.Fatal(diff)
 	}
 
 	count := func(q string) int {
@@ -359,9 +361,7 @@ func TestMigration0011NotesOrphanClause(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTo(t, db, 10)
 
 	if _, err := db.Exec("INSERT INTO servers (hostname, server_type, active) VALUES ('m11', 1, 1)"); err != nil {
 		t.Fatal(err)
@@ -374,16 +374,12 @@ func TestMigration0011NotesOrphanClause(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO notes (service_id, service_type, body) VALUES (1, 1, 'legit')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA user_version = 10"); err != nil {
-		t.Fatal(err)
-	}
-
 	applied, err := Migrate(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 2 || applied[0] != 11 || applied[1] != 12 {
-		t.Fatalf("expected [11 12], got %v", applied)
+	if diff := appliedDiff(t, applied, 10); diff != "" {
+		t.Fatal(diff)
 	}
 	var orphan, legit int
 	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body = 'orphan'").Scan(&orphan)
@@ -401,9 +397,7 @@ func TestMigration0012NotesTargetCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTo(t, db, 11)
 	if _, err := db.Exec("INSERT INTO servers (hostname, server_type, active) VALUES ('m12', 1, 1)"); err != nil {
 		t.Fatal(err)
 	}
@@ -424,16 +418,12 @@ func TestMigration0012NotesTargetCheck(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO notes (ip_id, body) VALUES (1, 'ipn')"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA user_version = 11"); err != nil {
-		t.Fatal(err)
-	}
-
 	applied, err := Migrate(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 1 || applied[0] != 12 {
-		t.Fatalf("expected [12], got %v", applied)
+	if diff := appliedDiff(t, applied, 11); diff != "" {
+		t.Fatal(diff)
 	}
 	var violators, legit int
 	db.QueryRow("SELECT COUNT(*) FROM notes WHERE body IN ('both', 'neither')").Scan(&violators)
@@ -450,13 +440,8 @@ func TestMigrationDeleteLogging(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := Migrate(db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTo(t, db, 11)
 	if _, err := db.Exec("INSERT INTO notes (body) VALUES ('neither')"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("PRAGMA user_version = 11"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -471,4 +456,67 @@ func TestMigrationDeleteLogging(t *testing.T) {
 		!strings.Contains(out, "table=notes") || !strings.Contains(out, "rows=1") {
 		t.Fatalf("expected the delete log line, got %q", out)
 	}
+}
+
+// migrateTo applies migrations up to and including version v, leaving the DB
+// at exactly that schema. Tests that exercise one migration's data cleanup
+// need a DB genuinely AT the prior version; the older approach — migrate
+// fully, then rewind PRAGMA user_version — re-ran every later migration too,
+// so adding any migration broke them (an ALTER TABLE ADD COLUMN is not
+// idempotent). Build up instead of tearing down.
+func migrateTo(t *testing.T, db *sql.DB, v int) {
+	t.Helper()
+	pending, err := pendingMigrations(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range pending {
+		if m.version > v {
+			return
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply %d: %v", m.version, err)
+		}
+	}
+}
+
+// appliedDiff compares an applied-migration set against every embedded
+// migration above `from`, returning "" when they match. Tests used to spell
+// the expected list out by hand, which meant adding any migration failed
+// several unrelated tests for no real reason — the property worth asserting
+// is "everything pending got applied, in order", not a literal version list.
+func appliedDiff(t *testing.T, applied []int, from int) string {
+	t.Helper()
+	pending, err := pendingMigrations(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]int, 0, len(pending))
+	for _, m := range pending {
+		want = append(want, m.version)
+	}
+	if len(applied) != len(want) {
+		return fmt.Sprintf("expected migrations %v applied, got %v", want, applied)
+	}
+	for i := range want {
+		if applied[i] != want[i] {
+			return fmt.Sprintf("expected migrations %v applied, got %v", want, applied)
+		}
+	}
+	return ""
+}
+
+// latestMigration is the highest embedded migration version — the
+// user_version a fully migrated database should land on. Derived rather than
+// spelled out so adding a migration does not fail unrelated tests.
+func latestMigration(t *testing.T) int {
+	t.Helper()
+	pending, err := pendingMigrations(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) == 0 {
+		t.Fatal("no embedded migrations")
+	}
+	return pending[len(pending)-1].version
 }

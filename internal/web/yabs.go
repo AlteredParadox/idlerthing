@@ -233,7 +233,7 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		network = append(network, model.YABSNetworkSpeed{
-			Location: n.Location, Provider: n.Provider,
+			Location: n.Location, Provider: n.Provider, Mode: n.Mode,
 			SendMbps: n.SendMbps, RecvMbps: n.RecvMbps, LatencyMs: n.LatencyMs,
 		})
 	}

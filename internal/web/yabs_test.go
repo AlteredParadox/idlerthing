@@ -17,6 +17,7 @@
 package web
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,6 +28,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -476,5 +478,63 @@ func TestCSVCellWhitespaceBypass(t *testing.T) {
 	}
 	if got := csvCell("plain"); got != "plain" {
 		t.Fatalf("plain cell untouched: %q", got)
+	}
+}
+
+// End-to-end with a genuine yabs.sh payload: ingest → persist → render.
+// The parser having the right values means nothing if the mode column is
+// dropped between the struct and the page, which is exactly the kind of
+// gap a parser-only test cannot see.
+func TestYABSRealPayloadEndToEnd(t *testing.T) {
+	ts, database, srv := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "real-yabs-host")
+
+	body, err := os.ReadFile("../yabs/testdata/real_v2026-07-24.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	resp, err := http.Post(
+		fmt.Sprintf("%s/api/yabs/1?sig=%s&ts=%d", ts.URL, signYABSTest(srv.secret, 1, now), now),
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ingest: expected 200, got %d", resp.StatusCode)
+	}
+
+	// The address family must survive the round trip to SQLite.
+	var v4, v6, blank int
+	database.QueryRow("SELECT COUNT(*) FROM yabs_network_speed WHERE mode = 'IPv4'").Scan(&v4)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_network_speed WHERE mode = 'IPv6'").Scan(&v6)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_network_speed WHERE COALESCE(mode, '') = ''").Scan(&blank)
+	if v4 != 7 || v6 != 7 || blank != 0 {
+		t.Fatalf("persisted modes: v4=%d v6=%d blank=%d, want 7/7/0", v4, v6, blank)
+	}
+
+	// fio landed as MB/s, not raw KBps.
+	var read4k float64
+	database.QueryRow("SELECT read_mbps FROM yabs_disk_speed WHERE block_size = '4k'").Scan(&read4k)
+	if read4k < 40.03 || read4k > 40.04 {
+		t.Fatalf("4k read = %v MB/s, want ~40.034", read4k)
+	}
+
+	// And the detail page shows the family, the location, and the units.
+	resp, err = client.Get(ts.URL + "/servers/1/yabs/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := readBody(t, resp)
+	resp.Body.Close()
+	for _, want := range []string{
+		"London, UK (10G)", "Clouvider", "IPv6", "Mbit/s", "MB/s",
+		"8 days, 22 hours, 33 minutes", "2.1 GiB",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("yabs detail page missing %q", want)
+		}
 	}
 }

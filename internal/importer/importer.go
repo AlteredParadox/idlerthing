@@ -289,8 +289,8 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 		for _, n := range arr(y, "network_speed") {
 			nm, _ := n.(map[string]any)
 			if _, err := imp.tx.ExecContext(ctx,
-				"INSERT INTO yabs_network_speed (yabs_id, location, provider, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?)",
-				yabsID, sget(nm, "location"), sget(nm, "provider"),
+				"INSERT INTO yabs_network_speed (yabs_id, location, provider, mode, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				yabsID, sget(nm, "location"), sget(nm, "provider"), sget(nm, "mode"),
 				fget(nm, "send_mbps"), fget(nm, "recv_mbps"), fget(nm, "latency_ms")); err != nil {
 				return err
 			}

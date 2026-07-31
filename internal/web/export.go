@@ -738,14 +738,14 @@ func (s *Server) yabsNetworkByRun(r *http.Request, ids []int64) (map[int64][]mod
 	out := map[int64][]model.YABSNetworkSpeed{}
 	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
 		rows, err := q.QueryContext(r.Context(),
-			"SELECT id, yabs_id, location, provider, send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+			"SELECT id, yabs_id, location, provider, COALESCE(mode, ''), send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var n model.YABSNetworkSpeed
-			if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
+			if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.Mode, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
 				return err
 			}
 			out[n.YabsID] = append(out[n.YabsID], n)

@@ -70,7 +70,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <h2 class="section-title">Disk speed (fio)</h2>
     {{if $v.Disks}}
     <table class="tbl mini">
-      <thead><tr><th>Block size</th><th>Read</th><th>Write</th></tr></thead>
+      <thead><tr><th>Block size</th><th>Read <span class="unit">MB/s</span></th><th>Write <span class="unit">MB/s</span></th></tr></thead>
       <tbody>
         {{range $v.Disks}}
         <tr>
@@ -90,15 +90,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <h2 class="section-title">Network speed (iperf)</h2>
     {{if $v.Network}}
     <table class="tbl mini">
-      <thead><tr><th>Location</th><th>Provider</th><th>Send</th><th>Recv</th><th>Latency</th></tr></thead>
+      <thead><tr><th>Location</th><th>Provider</th><th>Mode</th><th>Send <span class="unit">Mbit/s</span></th><th>Recv <span class="unit">Mbit/s</span></th><th>Latency <span class="unit">ms</span></th></tr></thead>
       <tbody>
         {{range $v.Network}}
         <tr>
           <td>{{.Location}}</td>
           <td>{{.Provider}}</td>
+          <td class="mono">{{if .Mode}}{{.Mode}}{{else}}—{{end}}</td>
           <td class="mono">{{mbpsFmt .SendMbps}}</td>
           <td class="mono">{{mbpsFmt .RecvMbps}}</td>
-          <td class="mono">{{if .LatencyMs}}{{mbpsFmt .LatencyMs}} ms{{else}}—{{end}}</td>
+          <td class="mono">{{mbpsFmt .LatencyMs}}</td>
         </tr>
         {{end}}
       </tbody>

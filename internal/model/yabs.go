@@ -57,10 +57,13 @@ type YABSDiskSpeed struct {
 
 // YABSNetworkSpeed mirrors yabs_network_speed.
 type YABSNetworkSpeed struct {
-	ID        int64
-	YabsID    int64
-	Location  string
-	Provider  string
+	ID       int64
+	YabsID   int64
+	Location string
+	Provider string
+	// Mode is the iperf address family ("IPv4"/"IPv6"), empty for rows
+	// ingested before the split existed.
+	Mode      string
 	SendMbps  float64
 	RecvMbps  float64
 	LatencyMs float64
@@ -159,8 +162,8 @@ func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed,
 	}
 	for _, n := range network {
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO yabs_network_speed (yabs_id, location, provider, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?)",
-			id, n.Location, n.Provider, n.SendMbps, n.RecvMbps, n.LatencyMs); err != nil {
+			"INSERT INTO yabs_network_speed (yabs_id, location, provider, mode, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			id, n.Location, n.Provider, n.Mode, n.SendMbps, n.RecvMbps, n.LatencyMs); err != nil {
 			return 0, fmt.Errorf("insert network speed: %w", err)
 		}
 	}
@@ -235,7 +238,7 @@ func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSp
 
 func (st *YABSStore) networkSpeeds(ctx context.Context, yabsID int64) ([]YABSNetworkSpeed, error) {
 	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
-		"SELECT id, yabs_id, location, provider, send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id = ? ORDER BY id", yabsID)
+		"SELECT id, yabs_id, location, provider, COALESCE(mode, ''), send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +246,7 @@ func (st *YABSStore) networkSpeeds(ctx context.Context, yabsID int64) ([]YABSNet
 	var out []YABSNetworkSpeed
 	for rows.Next() {
 		var n YABSNetworkSpeed
-		if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
+		if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.Mode, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

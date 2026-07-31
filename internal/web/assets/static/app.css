@@ -490,6 +490,15 @@ button.pill { font-family: inherit; cursor: pointer; }
   border-radius: var(--radius);
   font-size: 13px;
 }
+/* Unit suffix in a table header ("Send Mbit/s"): present but subordinate
+   to the column name, so the header still scans as a label. */
+.tbl th .unit {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  opacity: 0.65;
+}
+
 .tbl th {
   text-align: left;
   font-size: 10px;

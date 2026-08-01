@@ -440,6 +440,15 @@ input:focus {
 }
 .dot-ok { background: var(--ok); }
 .dot-off { background: var(--track); }
+/* Live 0 — no liveness data. A hollow ring, deliberately NOT green: green
+   has to mean "verified up", and reusing it for "unknown" made an offline
+   host look healthy purely because its Active box was ticked. Hollow also
+   stays distinct from the solid grey of a genuinely inactive server.
+   box-shadow rather than border so the 7px footprint is unchanged. */
+.dot-unknown {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--mut);
+}
 
 /* ---------- List controls: tabs + search ---------- */
 .list-controls {

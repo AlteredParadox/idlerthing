@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -381,5 +382,89 @@ func TestServersRequiresAuth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("expected redirect, got %d", resp.StatusCode)
+	}
+}
+
+// The status dot must never render green for a server whose liveness is
+// unknown. It used to fall back to the Active checkbox, so a machine that
+// was offline — or simply had no Prometheus data — looked identical to one
+// verified up, which is the opposite of what the indicator is for.
+func TestStatusDotDoesNotFakeGreen(t *testing.T) {
+	ts, database := newTestServer(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "dot-host")
+
+	// No Prometheus configured, so Live is 0 while Active defaults to 1.
+	resp, err := client.Get(ts.URL + "/servers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, "dot-unknown") {
+		t.Error("an Active server with no liveness data should render dot-unknown")
+	}
+	if strings.Contains(body, `class="dot dot-ok"`) {
+		t.Error("green dot rendered without verified liveness")
+	}
+	if !strings.Contains(body, "no liveness data") {
+		t.Error("unknown dot should carry an explanatory title")
+	}
+
+	// An inactive server stays solid grey and says so — distinct from unknown.
+	if _, err := database.Exec("UPDATE servers SET active = 0 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	// The list defaults to the Active tab, so ask for the inactive one.
+	resp, err = client.Get(ts.URL + "/servers?status=inactive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, `class="dot dot-off" title="inactive"`) {
+		t.Error("inactive server should render a labelled dot-off")
+	}
+	if strings.Contains(body, "dot-unknown") {
+		t.Error("inactive server should not read as unknown")
+	}
+}
+
+// All four dot states in one render, against the fake Prometheus: live-low
+// and live-mid report up=1, live-high reports up=0, and not-monitored has no
+// metrics at all. Guards the whole conditional, not just the branch that
+// changed — the point of the fix is that "unknown" and "up" stop looking
+// alike, which is only meaningful if "up" and "down" still work.
+func TestStatusDotAllStates(t *testing.T) {
+	ts, _ := promTestServer(t)
+	client := seedLiveServers(t, ts)
+
+	resp, err := client.Get(ts.URL + "/servers?status=all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+
+	// Pair each dot with the hostname link that follows it.
+	re := regexp.MustCompile(`<span class="dot (dot-[a-z]+)"[^>]*></span>\s*<a[^>]*>([^<]+)</a>`)
+	got := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(body, -1) {
+		got[m[2]] = m[1]
+	}
+
+	for host, want := range map[string]string{
+		"live-low":      "dot-ok",
+		"live-mid":      "dot-ok",
+		"live-high":     "dot-err",
+		"not-monitored": "dot-unknown",
+	} {
+		if got[host] != want {
+			t.Errorf("%s: dot = %q, want %q", host, got[host], want)
+		}
+	}
+	// The regression itself: an unmonitored host must not look like an up one.
+	if got["not-monitored"] == got["live-low"] {
+		t.Error("unmonitored host renders identically to a verified-up host")
 	}
 }

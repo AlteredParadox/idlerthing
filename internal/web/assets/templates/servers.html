@@ -122,7 +122,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "hostname"}}
       <td>
         <div class="cell-main">
-          {{if eq .Live 1}}<span class="dot dot-ok" title="up"></span>{{else if eq .Live 2}}<span class="dot dot-err" title="down"></span>{{else}}<span class="dot {{if .Active}}dot-ok{{else}}dot-off{{end}}"></span>{{end}}
+          {{if eq .Live 1}}<span class="dot dot-ok" title="up"></span>{{else if eq .Live 2}}<span class="dot dot-err" title="down"></span>{{else if .Active}}<span class="dot dot-unknown" title="no liveness data — enable Prometheus, or check that this hostname matches a scrape target"></span>{{else}}<span class="dot dot-off" title="inactive"></span>{{end}}
           <a class="mono cell-title" href="/servers/{{.ID}}"{{if .HostnameTitle}} title="{{.HostnameTitle}}"{{end}}>{{.Hostname}}</a>
         </div>
         {{if .PortNote}}<div class="cell-sub mono">{{.PortNote}}</div>{{end}}

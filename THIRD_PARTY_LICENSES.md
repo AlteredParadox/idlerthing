@@ -176,7 +176,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## golang.org/x/crypto@v0.54.0
+## golang.org/x/crypto@v0.55.0
 
 ### LICENSE
 
@@ -302,7 +302,7 @@ shall terminate as of the date such litigation is filed.
 
 ---
 
-## modernc.org/libc@v1.74.3
+## modernc.org/libc@v1.74.4
 
 ### AUTHORS
 
@@ -855,7 +855,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## modernc.org/sqlite@v1.54.0
+## modernc.org/sqlite@v1.56.0
 
 ### AUTHORS
 

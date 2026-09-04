@@ -91,6 +91,9 @@ func (s *IPStore) Create(ctx context.Context, ip *IP) (int64, error) {
 		 SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM `+table+` WHERE id = ?)`,
 		ip.ServiceID, ip.ServiceType, ip.Address, boolToInt(ip.IsIPv4), ip.ServiceID)
 	if err != nil {
+		if IsUniqueViolation(err) {
+			return 0, ErrConflict
+		}
 		return 0, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {

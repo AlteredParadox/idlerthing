@@ -17,6 +17,8 @@
 package web
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // pingRunner is injectable for tests. It returns latency in ms, or an error.
@@ -56,16 +59,30 @@ func resolvePingFrom(candidates []string) string {
 	return "" // absent — execPing reports "ping not available"
 }
 
+// errPingUnavailable means no ping binary could be run at all (as opposed
+// to a host that did not answer).
+var errPingUnavailable = errors.New("ping not available")
+
+// pingTimeout bounds the whole exec. `-W 2` only bounds the wait for a
+// reply — name resolution of the target happens before that and can hang
+// for the resolver's full retry budget.
+var pingTimeout = 5 * time.Second // var: tests shorten it
+
 // execPing runs one ICMP ping via the system ping binary.
 func execPing(host string) (float64, error) {
 	if pingBinary == "" {
-		return 0, fmt.Errorf("ping not available")
+		return 0, errPingUnavailable
 	}
-	cmd := exec.Command(pingBinary, "-c", "1", "-W", "2", host)
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pingBinary, "-c", "1", "-W", "2", host)
+	// After the deadline kills ping, do not keep waiting for its output pipe
+	// (a helper it spawned could hold it open) — Wait gives up after this.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if execErr, ok := err.(*exec.Error); ok && execErr.Err == exec.ErrNotFound {
-			return 0, fmt.Errorf("ping not available")
+			return 0, errPingUnavailable
 		}
 		return 0, fmt.Errorf("unreachable")
 	}
@@ -120,7 +137,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	ms, err := pingRunner(host)
 	if err != nil {
-		if err.Error() == "ping not available" {
+		if errors.Is(err, errPingUnavailable) {
 			writePingStatus(w, "off", "ping n/a")
 			return
 		}

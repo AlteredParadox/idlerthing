@@ -82,7 +82,11 @@ func (s *Server) handleCatalogCreate(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		errMsg = "Name is required."
 	} else if _, err := s.catalogs.Create(r.Context(), kind, name); err != nil {
-		errMsg = "That name already exists."
+		if errors.Is(err, model.ErrConflict) {
+			errMsg = "That name already exists."
+		} else {
+			errMsg = "Save failed."
+		}
 	}
 	s.respondCatalogMutation(w, r, kindStr, kind, errMsg)
 }
@@ -108,7 +112,7 @@ func (s *Server) handleCatalogUpdate(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == sql.ErrNoRows:
 			errMsg = "That entry no longer exists — it may have been deleted."
-		case strings.Contains(err.Error(), "UNIQUE constraint failed"):
+		case errors.Is(err, model.ErrConflict):
 			errMsg = "That name already exists."
 		default:
 			errMsg = "Save failed."

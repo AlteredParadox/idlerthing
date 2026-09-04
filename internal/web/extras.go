@@ -48,9 +48,9 @@ type extrasView struct {
 	ShowDNS     bool
 }
 
-// buildExtras loads the labels/notes/IPs cards for one service. DNS records
-// are only attached for servers and domains. Relation errors propagate —
-// a detail page with silently-empty cards looks like data loss.
+// buildExtras loads the labels/notes/IPs/DNS cards for one service (DNS for
+// every type a record can link to). Relation errors propagate — a detail
+// page with silently-empty cards looks like data loss.
 func (s *Server) buildExtras(r *http.Request, serviceID int64, serviceType int) (*extrasView, error) {
 	ctx := r.Context()
 	v := &extrasView{
@@ -78,15 +78,12 @@ func (s *Server) buildExtras(r *http.Request, serviceID int64, serviceType int) 
 		return nil, err
 	}
 
-	dns := &model.DNSStore{DB: s.db}
-	switch serviceType {
-	case model.ServiceServer:
-		if v.DNS, err = dns.ListForServer(ctx, serviceID); err != nil {
-			return nil, err
-		}
-		v.ShowDNS = true
-	case model.ServiceDomain:
-		if v.DNS, err = dns.ListForDomain(ctx, serviceID); err != nil {
+	// The DNS card shows for every type a record can link to (servers,
+	// domains, shared and reseller hosting) — the same registry the form,
+	// validator and index links use.
+	if model.DNSLinkable(serviceType) {
+		dns := &model.DNSStore{DB: s.db}
+		if v.DNS, err = dns.ListForService(ctx, serviceType, serviceID); err != nil {
 			return nil, err
 		}
 		v.ShowDNS = true
@@ -304,7 +301,9 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := strings.TrimSpace(r.FormValue("address"))
 	addr, err := netip.ParseAddr(raw)
-	if err != nil {
+	// A zone ("fe80::1%eth0") is link-local scoping, not part of the
+	// address, and the '%' breaks the whois request URL for good.
+	if err != nil || addr.Zone() != "" {
 		s.setFlash(w, r, "err", "Invalid IP address.")
 		redirectBack(w, r, "/ips")
 		return
@@ -316,7 +315,11 @@ func (s *Server) handleIPCreate(w http.ResponseWriter, r *http.Request) {
 		Address:     addr.String(),
 		IsIPv4:      addr.Is4(),
 	}); err != nil {
-		s.setFlash(w, r, "err", "That IP is already attached.")
+		if errors.Is(err, model.ErrConflict) {
+			s.setFlash(w, r, "err", "That IP is already attached.")
+		} else {
+			s.setFlash(w, r, "err", "Could not add IP.")
+		}
 		redirectBack(w, r, "/ips")
 		return
 	}

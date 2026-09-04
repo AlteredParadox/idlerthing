@@ -282,3 +282,46 @@ func TestServerListBandwidthSortUnlimitedFirstDesc(t *testing.T) {
 		t.Fatalf("bw asc: %v", got)
 	}
 }
+
+// Batch X5 — constraint failures are classified by the driver's result
+// code, not by matching message text; write paths surface ErrConflict.
+func TestTypedConstraintErrors(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	cat := &CatalogStore{DB: database}
+	if _, err := cat.Create(ctx, Catalogs["providers"], "Dup"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cat.Create(ctx, Catalogs["providers"], "Dup")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate catalog name: want ErrConflict, got %v", err)
+	}
+	if err := cat.Update(ctx, Catalogs["providers"], 1, "Dup"); err != nil {
+		t.Fatalf("renaming to own name is fine: %v", err)
+	}
+	if _, err := cat.Create(ctx, Catalogs["providers"], "Other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.Update(ctx, Catalogs["providers"], 2, "Dup"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("rename onto existing name: want ErrConflict, got %v", err)
+	}
+
+	_, err = database.Exec("INSERT INTO server_disks (server_id, size_as_mb, media) VALUES (999, 1, 'SSD')")
+	if !IsForeignKeyViolation(err) || IsUniqueViolation(err) {
+		t.Fatalf("dangling FK should classify as FK violation only: %v", err)
+	}
+
+	st := &ServerStore{DB: database}
+	id, err := st.Create(ctx, &Server{Hostname: "ip-host", ServerType: TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips := &IPStore{DB: database}
+	if _, err := ips.Create(ctx, &IP{ServiceID: id, ServiceType: ServiceServer, Address: "203.0.113.4", IsIPv4: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ips.Create(ctx, &IP{ServiceID: id, ServiceType: ServiceServer, Address: "203.0.113.4", IsIPv4: true})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate IP: want ErrConflict, got %v", err)
+	}
+}

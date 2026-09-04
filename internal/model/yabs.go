@@ -21,7 +21,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -143,7 +142,7 @@ func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed,
 		y.ServerID, y.RunAt, y.CPU, y.CPUCores, y.RAM, y.Swap, y.Distro,
 		y.Kernel, y.Uptime, y.GeekbenchVersion, y.GbSingle, y.GbMulti, y.GbURL, y.PayloadHash)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if IsUniqueViolation(err) {
 			return 0, ErrDuplicatePayload
 		}
 		return 0, fmt.Errorf("insert yabs: %w", err)

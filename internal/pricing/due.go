@@ -81,9 +81,7 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 		if months == 0 {
 			continue
 		}
-		for due.Before(todayStart) {
-			due = AddMonthsClamped(due, months)
-		}
+		due = catchUp(due, months, todayStart)
 		res, err := tx.ExecContext(ctx,
 			"UPDATE pricings SET next_due_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND next_due_date = ?",
 			due.Format(time.DateOnly), dr.id, dr.due)
@@ -96,6 +94,18 @@ func AdvanceDueDates(ctx context.Context, db *sql.DB) (int, error) {
 		updated++
 	}
 	return updated, tx.Commit()
+}
+
+// catchUp advances due by whole terms until it is on or after today. Each
+// step is k*months from the ORIGINAL date, never from the previously
+// clamped one: stepping Jan 31 → Feb 28 → Mar 28 would otherwise lose the
+// month-end anchor for good after one short month.
+func catchUp(due time.Time, months int, today time.Time) time.Time {
+	next := due
+	for k := 1; next.Before(today); k++ {
+		next = AddMonthsClamped(due, k*months)
+	}
+	return next
 }
 
 // AddMonthsClamped adds months to t, clamping the day of month when the

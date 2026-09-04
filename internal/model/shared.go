@@ -206,9 +206,7 @@ func (st *hostingStore) list(ctx context.Context, opts ListOptions) ([]HostingLi
 	if col, ok := hostingSortColumns[opts.Sort]; ok {
 		orderBy = col
 	}
-	if opts.Dir == "desc" {
-		orderBy += " DESC"
-	}
+	orderBy = orderClause(orderBy, opts.Dir)
 
 	query := `
 		SELECT ` + hostingListColumns(st.typeCol) + `,

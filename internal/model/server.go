@@ -299,6 +299,22 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	"due":      "pr.next_due_date",
 }
 
+// orderClause applies dir to EVERY component of a whitelisted sort
+// expression. A single trailing DESC on "x IS NULL, x" reverses only the
+// last column, so unlimited (NULL) bandwidth stayed pinned LAST in both
+// directions; per-component it sorts first when the user asks for
+// largest-first, which is what "unlimited" means.
+func orderClause(expr, dir string) string {
+	if dir != "desc" {
+		return expr
+	}
+	parts := strings.Split(expr, ", ")
+	for i, p := range parts {
+		parts[i] = p + " DESC"
+	}
+	return strings.Join(parts, ", ")
+}
+
 // List returns filtered/sorted servers with joined catalog names, disk
 // totals, and pricing.
 func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerListItem, error) {
@@ -323,9 +339,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 	if col, ok := sortColumns[opts.Sort]; ok {
 		orderBy = col
 	}
-	if opts.Dir == "desc" {
-		orderBy += " DESC"
-	}
+	orderBy = orderClause(orderBy, opts.Dir)
 
 	query := `
 		SELECT ` + listColumns + `,

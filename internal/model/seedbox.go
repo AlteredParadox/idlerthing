@@ -182,9 +182,7 @@ func (st *SeedboxStore) List(ctx context.Context, opts ListOptions) ([]SeedboxLi
 	if col, ok := seedboxSortColumns[opts.Sort]; ok {
 		orderBy = col
 	}
-	if opts.Dir == "desc" {
-		orderBy += " DESC"
-	}
+	orderBy = orderClause(orderBy, opts.Dir)
 
 	query := `
 		SELECT ` + prefixedColumns("s", seedboxColumns) + `,

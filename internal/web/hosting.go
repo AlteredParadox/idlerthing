@@ -69,6 +69,7 @@ func (s *Server) hostingSection(cfg *hostingConfig) *section {
 		Base:        cfg.base,
 		Kind:        cfg.kind,
 		Title:       cfg.title,
+		Singular:    cfg.title, // "Shared Hosting" is already singular
 		ServiceType: serviceTypeOf(cfg.base),
 		AddLabel:    cfg.addLabel,
 		SearchHint:  "Search domain, type, provider…",

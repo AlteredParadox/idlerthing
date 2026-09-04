@@ -32,6 +32,7 @@ func (s *Server) miscSection() *section {
 		Base:        routeMisc,
 		Kind:        "misc",
 		Title:       "Misc Services",
+		Singular:    "Misc service",
 		ServiceType: model.ServiceMisc,
 		AddLabel:    "＋ Add service",
 		SearchHint:  "Search name…",

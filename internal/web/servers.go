@@ -512,6 +512,10 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.servers.Delete(r.Context(), id); err != nil {
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}

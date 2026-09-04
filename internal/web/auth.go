@@ -127,7 +127,15 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// Per-account limiter alongside the per-IP one, so a distributed
 	// credential-stuffing run against one account still trips.
 	// Limiter keys are hashed so raw input can't bloat the map.
-	if !s.emailLimit.allow(limiterKey(email)) {
+	//
+	// A tripped account limiter does NOT apply to a source that has
+	// authenticated successfully before: otherwise ten bad guesses a minute
+	// from any single stranger keep the real owner locked out for as long
+	// as the attack runs. The stranger cannot borrow the owner's address
+	// (RemoteAddr, or the proxy-appended X-Forwarded-For), and the per-IP
+	// limiter above still caps the bcrypt work the owner's address can
+	// cause.
+	if !s.emailLimit.allow(limiterKey(email)) && !s.knownIPs.has(ip) {
 		s.logBlocked(ip)
 		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
@@ -160,6 +168,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
+	s.knownIPs.add(ip)
 	// Audited alongside the failures so an operator can tell "the owner
 	// signed in" from an attack in the same stream; the fail2ban filter
 	// ignoreregex excludes it.
@@ -377,6 +386,54 @@ func (rl *rateLimiter) allow(key string) bool {
 	}
 	rl.hits[key] = append(kept, now)
 	return true
+}
+
+// knownIPs remembers (hashed) source addresses that have completed a login,
+// so the per-account limiter cannot be turned into a lockout of the owner
+// from a familiar address. Bounded: past max entries the oldest is evicted.
+// In-memory only — after a restart the first login from a familiar address
+// during an active attack is throttled like a stranger's, which is the
+// pre-existing behaviour, not a regression.
+type knownIPs struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+	max  int
+}
+
+func newKnownIPs(max int) *knownIPs {
+	return &knownIPs{seen: make(map[string]time.Time), max: max}
+}
+
+// add records a successful login from ip. Nil-safe for bare test Servers.
+func (k *knownIPs) add(ip string) {
+	if k == nil {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	key := limiterKey(ip)
+	if _, ok := k.seen[key]; !ok && len(k.seen) >= k.max {
+		var oldestKey string
+		var oldest time.Time
+		for kk, t := range k.seen {
+			if oldestKey == "" || t.Before(oldest) {
+				oldestKey, oldest = kk, t
+			}
+		}
+		delete(k.seen, oldestKey)
+	}
+	k.seen[key] = time.Now()
+}
+
+// has reports whether ip has completed a login before.
+func (k *knownIPs) has(ip string) bool {
+	if k == nil {
+		return false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_, ok := k.seen[limiterKey(ip)]
+	return ok
 }
 
 // constantTimeEqual compares two strings without early exit.

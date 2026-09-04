@@ -32,8 +32,12 @@ func TestYABSIngestRejectsBlankPayload(t *testing.T) {
 	client := authedClient(t, ts)
 	createServer(t, client, ts, "blank-yabs")
 
+	// One pinned base: re-reading the clock per attempt can straddle a
+	// second boundary and hand two attempts the SAME (server, ts)
+	// capability, which the second then finds consumed (403, not 400).
+	base := time.Now().Unix()
 	for i, body := range []string{`null`, `[]`, `{}`} {
-		now := time.Now().Unix() - int64(i) // distinct (server, ts) capability per attempt
+		now := base - int64(i) // distinct capability per attempt
 		url := fmt.Sprintf("%s/api/yabs/1?sig=%s&ts=%d", ts.URL, signYABSTest(srv.secret, 1, now), now)
 		resp, err := http.Post(url, "application/json", strings.NewReader(body))
 		if err != nil {

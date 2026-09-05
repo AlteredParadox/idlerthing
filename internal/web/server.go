@@ -55,6 +55,7 @@ type Server struct {
 	emailLimit *rateLimiter
 	blockLog   *rateLimiter // throttles the 'rate-limited' journal line
 	pingLimit  *rateLimiter
+	knownIPs   *knownIPs // sources that have authenticated before (see handleLoginPost)
 	servers    *model.ServerStore
 	catalogs   *model.CatalogStore
 	pricings   *model.PricingStore
@@ -97,6 +98,7 @@ func New(db *sql.DB) (*Server, error) {
 		// One line per source per window (see Server.logBlocked).
 		blockLog:  newRateLimiter(1, time.Minute),
 		pingLimit: newRateLimiter(10, time.Minute),
+		knownIPs:  newKnownIPs(64),
 		servers:   &model.ServerStore{DB: db},
 		catalogs:  &model.CatalogStore{DB: db},
 		pricings:  &model.PricingStore{DB: db},
@@ -342,6 +344,12 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		if !strings.HasPrefix(r.URL.Path, "/static/") {
 			h.Set("Cache-Control", "no-store")
+		}
+		// HSTS only where the app knows it is served over TLS (directly or
+		// via IDLER_BEHIND_TLS_PROXY) — on plain http the header is ignored
+		// by browsers anyway, and a proxy that also sets it is harmless.
+		if s.cookieSecure(r) {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; script-src 'self'; "+

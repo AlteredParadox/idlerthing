@@ -168,6 +168,18 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 	newPass := r.FormValue("new_password")
 	confirm := r.FormValue("confirm_password")
 
+	// Same per-source budget as /login: a stolen session cookie must not
+	// buy unthrottled online guessing of the real password (which is what
+	// survives a session wipe and may be reused elsewhere). Checked before
+	// the bcrypt verify, so refused attempts are cheap.
+	ip := s.clientIP(r)
+	if !s.limit.allow(limiterKey(ip)) {
+		s.logBlocked(ip)
+		s.setFlash(w, r, "err", "Too many attempts. Try again later.")
+		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
+		return
+	}
+
 	var hash string
 	if err := s.db.QueryRowContext(r.Context(),
 		"SELECT password_hash FROM users WHERE id = ?", u.ID).Scan(&hash); err != nil {
@@ -177,7 +189,7 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user)
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
 		// Same proxy-aware source as the login failures, so one fail2ban
 		// filter catches an attacker who got as far as a session too.
-		slog.Warn("login: failed password-change verification", "from", s.clientIP(r))
+		slog.Warn("login: failed password-change verification", "from", ip)
 		s.setFlash(w, r, "err", "Current password is wrong.")
 		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return

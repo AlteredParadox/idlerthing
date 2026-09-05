@@ -81,6 +81,13 @@ excluded by the filter's `ignoreregex`. Blocked attempts log at most once per
 minute per source, so a flood of already-refused requests cannot amplify into
 unbounded journald writes.
 
+Built-in limits, independent of fail2ban: 10 attempts per minute per source
+(shared by the login form and the Settings → Account password change, so a
+stolen session cannot guess the real password unthrottled) and 10 per minute
+per account. The per-account limit spares addresses that have signed in
+before, so a stranger hammering the admin account cannot lock the owner out
+from a familiar address — it still applies in full to everyone else.
+
 A ready-made filter and jail ship in [`deploy/fail2ban/`](deploy/fail2ban):
 
 ```sh

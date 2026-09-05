@@ -84,7 +84,8 @@ type section struct {
 	Base        string // "/shared"
 	Kind        string // nav key
 	Title       string
-	ServiceType int // pricings/extras service_type
+	Singular    string // one item, for flashes ("Seedbox deleted.")
+	ServiceType int    // pricings/extras service_type
 	AddLabel    string
 	SearchHint  string
 	EmptyTitle  string
@@ -135,13 +136,28 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request, sec *
 		return
 	}
 
-	// htmx swaps re-render only the table partial — rows, sort state, and the
-	// CSRF token. Skip the counts/cards queries the layout would need.
+	// Everything the list_table partial renders is static section config
+	// plus the rows — so it is filled for BOTH the full page and the htmx
+	// swap. The partial ranges Columns for the header, and reads RowCount,
+	// EmptyTitle/EmptySub/AddLabel for the empty state; an htmx swap that
+	// omitted them rendered a header-less table and a blank empty state.
+	view := listView{
+		listNav:    listNav{Base: sec.Base, Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir},
+		Title:      sec.Title,
+		AddLabel:   sec.AddLabel,
+		SearchHint: sec.SearchHint,
+		Columns:    sec.Columns,
+		Rows:       rows,
+		RowCount:   len(rows),
+		EmptyTitle: sec.EmptyTitle,
+		EmptySub:   sec.EmptySub,
+	}
+
+	// htmx swaps re-render only the table partial. Skip the counts/cards
+	// queries only the layout needs.
 	if r.Header.Get("HX-Request") == "true" {
 		data := s.newPageData(w, r, sec.Title, sec.Kind)
-		data.Data = listView{listNav: listNav{
-			Base: sec.Base, Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir,
-		}, Rows: rows}
+		data.Data = view
 		s.renderNamed(w, "service_list", "list_table", data)
 		return
 	}
@@ -151,22 +167,10 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request, sec *
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
-
-	view := listView{
-		listNav:       listNav{Base: sec.Base, Status: opts.Status, Q: opts.Q, Sort: opts.Sort, Dir: opts.Dir},
-		Title:         sec.Title,
-		Sub:           fmt.Sprintf("%d active · %d inactive", active, inactive),
-		AddLabel:      sec.AddLabel,
-		SearchHint:    sec.SearchHint,
-		Cards:         sec.Cards(r, active, inactive),
-		Columns:       sec.Columns,
-		Rows:          rows,
-		ActiveCount:   active,
-		InactiveCount: inactive,
-		RowCount:      len(rows),
-		EmptyTitle:    sec.EmptyTitle,
-		EmptySub:      sec.EmptySub,
-	}
+	view.Sub = fmt.Sprintf("%d active · %d inactive", active, inactive)
+	view.Cards = sec.Cards(r, active, inactive)
+	view.ActiveCount = active
+	view.InactiveCount = inactive
 
 	data := s.newPageData(w, r, sec.Title, sec.Kind)
 	data.Data = view
@@ -181,11 +185,17 @@ func (s *Server) handleSectionDelete(w http.ResponseWriter, r *http.Request, sec
 		return
 	}
 	if err := sec.Delete(r.Context(), id); err != nil {
+		// Already gone (second tab, double-click, htmx retry) is a 404 like
+		// every other missing-row path, not a 500.
+		if err == sql.ErrNoRows {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
 		return
 	}
 	s.touchDashboard()
-	s.setFlash(w, r, "ok", strings.TrimSuffix(sec.Title, "s")+" deleted.")
+	s.setFlash(w, r, "ok", sec.Singular+" deleted.")
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", sec.Base)
 		w.WriteHeader(http.StatusNoContent)

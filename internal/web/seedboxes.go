@@ -32,6 +32,7 @@ func (s *Server) seedboxSection() *section {
 		Base:        routeSeedboxes,
 		Kind:        "seedboxes",
 		Title:       "SeedBoxes",
+		Singular:    "Seedbox",
 		ServiceType: model.ServiceSeedbox,
 		AddLabel:    "＋ Add seedbox",
 		SearchHint:  "Search hostname, title, provider…",

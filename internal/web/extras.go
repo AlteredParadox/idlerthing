@@ -97,11 +97,21 @@ func (s *Server) buildExtras(r *http.Request, serviceID int64, serviceType int) 
 // redirectBack redirects to the validated "back" form field. Only
 // same-origin absolute paths pass: no scheme, no host, no backslashes
 // (browsers normalize /\evil.com to //evil.com).
+//
+// htmx callers (the note/IP/DNS delete forms are hx-post with no target)
+// get HX-Redirect + 204 instead of a 303: htmx follows a 303 itself with
+// HX-Request still set, receives only the content block, and swaps a whole
+// page fragment into the tiny delete form.
 func redirectBack(w http.ResponseWriter, r *http.Request, fallback string) {
 	back := r.FormValue("back")
 	if u, err := url.Parse(back); err != nil || u.Scheme != "" || u.Host != "" ||
 		strings.Contains(back, "\\") || !strings.HasPrefix(back, "/") {
 		back = fallback
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", back)
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }

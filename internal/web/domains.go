@@ -32,6 +32,7 @@ func (s *Server) domainSection() *section {
 		Base:        routeDomains,
 		Kind:        "domains",
 		Title:       "Domains",
+		Singular:    "Domain",
 		ServiceType: model.ServiceDomain,
 		AddLabel:    "＋ Add domain",
 		SearchHint:  "Search domain, extension, provider…",

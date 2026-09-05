@@ -17,6 +17,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -135,5 +136,47 @@ func TestPingExecTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("ping deadline not enforced: took %v", elapsed)
+	}
+}
+
+// A bare test Server has no knownIPs set; the methods must tolerate nil.
+func TestKnownIPsNilSafe(t *testing.T) {
+	var k *knownIPs
+	k.add("1.2.3.4")
+	if k.has("1.2.3.4") {
+		t.Fatal("nil set must report nothing known")
+	}
+}
+
+// Creating a catalog entry whose name already exists is reported as a
+// conflict (via model.ErrConflict), not a generic save failure.
+func TestCatalogCreateDuplicateFlash(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := authedClient(t, ts)
+	postForm(t, client, ts, "/catalogs/providers", url.Values{"name": {"Hetzner"}}).Body.Close()
+	postForm(t, client, ts, "/catalogs/providers", url.Values{"name": {"Hetzner"}}).Body.Close()
+	resp, err := client.Get(ts.URL + "/catalogs/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, "That name already exists.") {
+		t.Fatalf("expected the conflict flash, got:\n%s", body)
+	}
+	if strings.Contains(body, "Save failed.") {
+		t.Fatal("a conflict must not be reported as a generic failure")
+	}
+}
+
+// A ping binary path that does not exist reports "not available", the
+// state the systemd hardening notes describe, rather than "unreachable".
+func TestPingBinaryMissing(t *testing.T) {
+	orig := pingBinary
+	pingBinary = filepath.Join(t.TempDir(), "no-such-ping")
+	defer func() { pingBinary = orig }()
+	_, err := execPing("127.0.0.1")
+	if !errors.Is(err, errPingUnavailable) {
+		t.Fatalf("want errPingUnavailable, got %v", err)
 	}
 }

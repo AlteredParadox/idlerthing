@@ -145,3 +145,25 @@ func TestMyIdlersIPsCanonical(t *testing.T) {
 		t.Fatalf("stored %q, want canonical 2001:db8::1", addr)
 	}
 }
+
+func TestNormTimestamp(t *testing.T) {
+	cases := map[string]struct {
+		want string
+		ok   bool
+	}{
+		"":                          {"", true},
+		"   ":                       {"", true},
+		"2025-01-02 03:04:05":       {"2025-01-02 03:04:05", true},
+		"2025-01-02T03:04:05Z":      {"2025-01-02 03:04:05", true},
+		"2025-01-02T05:04:05+02:00": {"2025-01-02 03:04:05", true},
+		"2025-01-02":                {"2025-01-02 00:00:00", true},
+		"garbage":                   {"", false},
+		"2025-13-45":                {"", false},
+	}
+	for in, c := range cases {
+		got, ok := normTimestamp(in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("normTimestamp(%q) = %q,%v; want %q,%v", in, got, ok, c.want, c.ok)
+		}
+	}
+}

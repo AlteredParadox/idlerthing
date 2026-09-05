@@ -369,3 +369,78 @@ func TestDNSListForService(t *testing.T) {
 		t.Fatalf("unknown server should have no records, got %v", items)
 	}
 }
+
+func TestCatalogExists(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	cat := &CatalogStore{DB: database}
+	id, err := cat.Create(ctx, Catalogs["os"], "Debian 13")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := cat.Exists(ctx, Catalogs["os"], id); err != nil || !ok {
+		t.Fatalf("existing id: ok=%v err=%v", ok, err)
+	}
+	if ok, err := cat.Exists(ctx, Catalogs["os"], id+1); err != nil || ok {
+		t.Fatalf("missing id: ok=%v err=%v", ok, err)
+	}
+	if ok, _ := cat.Exists(ctx, Catalogs["providers"], id); ok {
+		t.Fatal("an os id must not exist as a provider")
+	}
+}
+
+// A second run with the same payload hash is refused as ErrDuplicatePayload
+// by the unique index, not surfaced as a generic error.
+func TestYABSCreateDuplicatePayload(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	st := &ServerStore{DB: database}
+	id, err := st.Create(ctx, &Server{Hostname: "yabs-dup", ServerType: TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ys := &YABSStore{DB: database}
+	run := func() error {
+		_, err := ys.Create(ctx, &YABS{ServerID: id, CPU: sql.NullString{String: "X", Valid: true},
+			PayloadHash: sql.NullString{String: "abc123", Valid: true}}, nil, nil)
+		return err
+	}
+	if err := run(); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if err := run(); !errors.Is(err, ErrDuplicatePayload) {
+		t.Fatalf("second run: want ErrDuplicatePayload, got %v", err)
+	}
+	var n int
+	database.QueryRow("SELECT COUNT(*) FROM yabs").Scan(&n)
+	if n != 1 {
+		t.Fatalf("expected one run, got %d", n)
+	}
+}
+
+// Domain and seedbox lists honour a descending sort (orderClause is applied
+// in every store, not only servers).
+func TestDomainAndSeedboxListSortDesc(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	ds := &DomainStore{DB: database}
+	for _, name := range []string{"alpha.com", "beta.com"} {
+		if _, err := ds.Create(ctx, &Domain{Domain: name, Active: true}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	domains, err := ds.List(ctx, ListOptions{Sort: "domain", Dir: "desc"})
+	if err != nil || len(domains) != 2 || domains[0].Domain.Domain != "beta.com" {
+		t.Fatalf("domain desc: %v err=%v", domains, err)
+	}
+	ss := &SeedboxStore{DB: database}
+	for _, host := range []string{"box-a", "box-b"} {
+		if _, err := ss.Create(ctx, &Seedbox{Hostname: host, Active: true}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	boxes, err := ss.List(ctx, ListOptions{Sort: "hostname", Dir: "desc"})
+	if err != nil || len(boxes) != 2 || boxes[0].Hostname != "box-b" {
+		t.Fatalf("seedbox desc: %v err=%v", boxes, err)
+	}
+}

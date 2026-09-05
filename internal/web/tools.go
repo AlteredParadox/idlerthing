@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"io/fs"
 	"net/http"
 	"net/netip"
 	"os"
@@ -81,7 +82,10 @@ func execPing(host string) (float64, error) {
 	cmd.WaitDelay = time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		if execErr, ok := err.(*exec.Error); ok && execErr.Err == exec.ErrNotFound {
+		// pingBinary is always an absolute path, so a missing binary
+		// surfaces as fs.ErrNotExist from Start, not exec.ErrNotFound
+		// (which only a bare-name lookup produces). Accept both.
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) {
 			return 0, errPingUnavailable
 		}
 		return 0, fmt.Errorf("unreachable")

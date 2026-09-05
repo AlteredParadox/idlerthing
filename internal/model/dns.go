@@ -206,25 +206,3 @@ func (s *DNSStore) ListForService(ctx context.Context, serviceType int, id int64
 	defer rows.Close()
 	return scanDNSList(rows)
 }
-
-// ListForServer returns DNS records linked to a server.
-func (s *DNSStore) ListForServer(ctx context.Context, serverID int64) ([]DNSListItem, error) {
-	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
-		dnsListSelect+" WHERE a.server_id = ? ORDER BY a.hostname COLLATE NOCASE", serverID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanDNSList(rows)
-}
-
-// ListForDomain returns DNS records linked to a domain.
-func (s *DNSStore) ListForDomain(ctx context.Context, domainID int64) ([]DNSListItem, error) {
-	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
-		dnsListSelect+" WHERE a.domain_id = ? ORDER BY a.hostname COLLATE NOCASE", domainID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanDNSList(rows)
-}

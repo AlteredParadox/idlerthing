@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -251,7 +252,8 @@ func decodeServerJSON(w http.ResponseWriter, r *http.Request) (*serverJSON, bool
 	var j serverJSON
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&j)
 	if err != nil {
-		if strings.Contains(err.Error(), "too large") {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "body too large")
 		} else {
 			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")

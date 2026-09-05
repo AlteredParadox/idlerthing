@@ -20,7 +20,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 )
 
 // CatalogKind identifies one of the name-only catalog tables.
@@ -112,6 +111,9 @@ func (s *CatalogStore) Create(ctx context.Context, kind CatalogKind, name string
 	res, err := s.DB.ExecContext(ctx,
 		"INSERT INTO "+kind.Table+" ("+kind.NameCol+") VALUES (?)", name)
 	if err != nil {
+		if IsUniqueViolation(err) {
+			return 0, ErrConflict
+		}
 		return 0, err
 	}
 	return res.LastInsertId()
@@ -122,6 +124,9 @@ func (s *CatalogStore) Update(ctx context.Context, kind CatalogKind, id int64, n
 	res, err := s.DB.ExecContext(ctx,
 		"UPDATE "+kind.Table+" SET "+kind.NameCol+" = ? WHERE id = ?", name, id)
 	if err != nil {
+		if IsUniqueViolation(err) {
+			return ErrConflict
+		}
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -173,7 +178,7 @@ func (s *CatalogStore) Delete(ctx context.Context, kind CatalogKind, id int64) e
 
 	res, err := tx.ExecContext(ctx, "DELETE FROM "+kind.Table+" WHERE id = ?", id)
 	if err != nil {
-		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		if IsForeignKeyViolation(err) {
 			return fmt.Errorf("%w (concurrent assignment)", ErrInUse)
 		}
 		return err

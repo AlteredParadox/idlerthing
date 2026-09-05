@@ -21,7 +21,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // MaxLabelsPerService caps label assignments per service.
@@ -150,7 +149,7 @@ func (s *LabelStore) FindOrCreate(ctx context.Context, name string) (int64, erro
 	}
 	res, err := s.DB.ExecContext(ctx, "INSERT INTO labels (label) VALUES (?)", name)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") &&
+		if IsUniqueViolation(err) &&
 			QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
 				"SELECT id FROM labels WHERE label = ? COLLATE NOCASE", name).Scan(&id) == nil {
 			return id, nil

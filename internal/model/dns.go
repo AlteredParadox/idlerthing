@@ -169,21 +169,37 @@ func (s *DNSStore) List(ctx context.Context) ([]DNSListItem, error) {
 	return scanDNSList(rows)
 }
 
-// ListForServer returns DNS records linked to a server.
-func (s *DNSStore) ListForServer(ctx context.Context, serverID int64) ([]DNSListItem, error) {
-	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
-		dnsListSelect+" WHERE a.server_id = ? ORDER BY a.hostname COLLATE NOCASE", serverID)
-	if err != nil {
-		return nil, err
+// dnsParentColumn maps a service type to the dns column that links to it
+// ("" for types DNS cannot link to). One registry for every parent-aware
+// site — the detail card used to hard-code servers and domains only, so
+// records linked to shared/reseller hosting never appeared on those pages.
+func dnsParentColumn(serviceType int) string {
+	switch serviceType {
+	case ServiceServer:
+		return "server_id"
+	case ServiceDomain:
+		return "domain_id"
+	case ServiceShared:
+		return "shared_id"
+	case ServiceReseller:
+		return "reseller_id"
 	}
-	defer rows.Close()
-	return scanDNSList(rows)
+	return ""
 }
 
-// ListForDomain returns DNS records linked to a domain.
-func (s *DNSStore) ListForDomain(ctx context.Context, domainID int64) ([]DNSListItem, error) {
+// DNSLinkable reports whether DNS records can be linked to this service type.
+func DNSLinkable(serviceType int) bool { return dnsParentColumn(serviceType) != "" }
+
+// ListForService returns DNS records linked to one service of any linkable
+// type (nil, nil for types that cannot carry DNS records).
+func (s *DNSStore) ListForService(ctx context.Context, serviceType int, id int64) ([]DNSListItem, error) {
+	col := dnsParentColumn(serviceType)
+	if col == "" {
+		return nil, nil
+	}
+	// Column name comes from the fixed switch above.
 	rows, err := QuerierFrom(ctx, s.DB).QueryContext(ctx,
-		dnsListSelect+" WHERE a.domain_id = ? ORDER BY a.hostname COLLATE NOCASE", domainID)
+		dnsListSelect+" WHERE a."+col+" = ? ORDER BY a.hostname COLLATE NOCASE", id)
 	if err != nil {
 		return nil, err
 	}

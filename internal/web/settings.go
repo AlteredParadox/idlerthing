@@ -307,8 +307,10 @@ func boolToIntWeb(b bool) int {
 // handlePrometheusTest handles POST /settings/prometheus/test — runs an `up`
 // instant query against the configured URL and flashes the outcome.
 func (s *Server) handlePrometheusTest(w http.ResponseWriter, r *http.Request) {
-	_, baseURL := s.promSettings(r)
-	if baseURL == "" {
+	// The SAVED url, whether or not the feature is enabled: the point of
+	// the button is to validate the endpoint before switching it on.
+	baseURL := strings.TrimRight(strings.TrimSpace(s.memoSettings(r).PrometheusURL), "/")
+	if baseURL == "" || !validPromURL(baseURL) {
 		s.setFlash(w, r, "err", "No Prometheus URL configured — save settings first.")
 		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
 		return

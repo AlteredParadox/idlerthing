@@ -282,3 +282,90 @@ func TestServerListBandwidthSortUnlimitedFirstDesc(t *testing.T) {
 		t.Fatalf("bw asc: %v", got)
 	}
 }
+
+// Batch X5 — constraint failures are classified by the driver's result
+// code, not by matching message text; write paths surface ErrConflict.
+func TestTypedConstraintErrors(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	cat := &CatalogStore{DB: database}
+	if _, err := cat.Create(ctx, Catalogs["providers"], "Dup"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cat.Create(ctx, Catalogs["providers"], "Dup")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate catalog name: want ErrConflict, got %v", err)
+	}
+	if err := cat.Update(ctx, Catalogs["providers"], 1, "Dup"); err != nil {
+		t.Fatalf("renaming to own name is fine: %v", err)
+	}
+	if _, err := cat.Create(ctx, Catalogs["providers"], "Other"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cat.Update(ctx, Catalogs["providers"], 2, "Dup"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("rename onto existing name: want ErrConflict, got %v", err)
+	}
+
+	_, err = database.Exec("INSERT INTO server_disks (server_id, size_as_mb, media) VALUES (999, 1, 'SSD')")
+	if !IsForeignKeyViolation(err) || IsUniqueViolation(err) {
+		t.Fatalf("dangling FK should classify as FK violation only: %v", err)
+	}
+
+	st := &ServerStore{DB: database}
+	id, err := st.Create(ctx, &Server{Hostname: "ip-host", ServerType: TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ips := &IPStore{DB: database}
+	if _, err := ips.Create(ctx, &IP{ServiceID: id, ServiceType: ServiceServer, Address: "203.0.113.4", IsIPv4: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ips.Create(ctx, &IP{ServiceID: id, ServiceType: ServiceServer, Address: "203.0.113.4", IsIPv4: true})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate IP: want ErrConflict, got %v", err)
+	}
+}
+
+// Batch X6 — the DNS parent registry: every linkable type lists its own
+// records, non-linkable types get nil without a query.
+func TestDNSListForService(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	for _, q := range []string{
+		"INSERT INTO servers (hostname) VALUES ('srv')",
+		"INSERT INTO domains (domain) VALUES ('example.com')",
+		"INSERT INTO shared_hosting (main_domain) VALUES ('shared.example.com')",
+		"INSERT INTO reseller_hosting (main_domain) VALUES ('reseller.example.com')",
+		"INSERT INTO dns (hostname, dns_type, address, server_id) VALUES ('a.srv', 'A', '1.1.1.1', 1)",
+		"INSERT INTO dns (hostname, dns_type, address, domain_id) VALUES ('a.dom', 'A', '1.1.1.2', 1)",
+		"INSERT INTO dns (hostname, dns_type, address, shared_id) VALUES ('a.shared', 'A', '1.1.1.3', 1)",
+		"INSERT INTO dns (hostname, dns_type, address, reseller_id) VALUES ('a.reseller', 'A', '1.1.1.4', 1)",
+	} {
+		if _, err := database.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	st := &DNSStore{DB: database}
+	for serviceType, want := range map[int]string{
+		ServiceServer: "a.srv", ServiceDomain: "a.dom", ServiceShared: "a.shared", ServiceReseller: "a.reseller",
+	} {
+		if !DNSLinkable(serviceType) {
+			t.Errorf("type %d should be DNS-linkable", serviceType)
+		}
+		items, err := st.ListForService(ctx, serviceType, 1)
+		if err != nil || len(items) != 1 || items[0].Hostname != want {
+			t.Errorf("type %d: got %v (err %v), want one record %q", serviceType, items, err, want)
+		}
+	}
+	for _, serviceType := range []int{ServiceMisc, ServiceSeedbox, 0, 99} {
+		if DNSLinkable(serviceType) {
+			t.Errorf("type %d must not be DNS-linkable", serviceType)
+		}
+		if items, err := st.ListForService(ctx, serviceType, 1); err != nil || items != nil {
+			t.Errorf("type %d: want nil, nil; got %v, %v", serviceType, items, err)
+		}
+	}
+	if items, _ := st.ListForService(ctx, ServiceServer, 999); len(items) != 0 {
+		t.Fatalf("unknown server should have no records, got %v", items)
+	}
+}

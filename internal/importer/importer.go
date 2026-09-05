@@ -31,6 +31,7 @@ import (
 	"math"
 	"net/netip"
 	"strings"
+	"time"
 
 	"idlerthing/internal/model"
 )
@@ -316,6 +317,21 @@ func (imp *importer) fixTimestamps(ctx context.Context, table string, id int64, 
 	if created == "" && updated == "" {
 		return nil
 	}
+	// Only well-formed timestamps are stored; garbage would mis-sort
+	// "recently added" and every date display truncates the first 10 bytes.
+	norm := func(field, v string) string {
+		t, ok := normTimestamp(v)
+		if !ok {
+			imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+				"%s %d: invalid %s %q — keeping the default", table, id, field, v))
+			return ""
+		}
+		return t
+	}
+	created, updated = norm("created_at", created), norm("updated_at", updated)
+	if created == "" && updated == "" {
+		return nil
+	}
 	// Table names are compile-time constants from the importer.
 	if _, err := imp.tx.ExecContext(ctx,
 		"UPDATE "+table+" SET created_at = COALESCE(?, created_at), updated_at = COALESCE(?, updated_at) WHERE id = ?",
@@ -323,6 +339,33 @@ func (imp *importer) fixTimestamps(ctx context.Context, table string, id int64, 
 		return fmt.Errorf("preserve timestamps on %s %d: %w", table, id, err)
 	}
 	return nil
+}
+
+// normTimestamp normalizes an exported created_at/updated_at to SQLite's
+// CURRENT_TIMESTAMP shape ("2006-01-02 15:04:05", UTC) — the shape our own
+// exports carry. RFC 3339 and a bare date are accepted too. ok=false means
+// the value was present but unparseable.
+func normTimestamp(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", true
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339, time.DateOnly} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format("2006-01-02 15:04:05"), true
+		}
+	}
+	return "", false
+}
+
+// bgetDefault reads a bool, falling back to def when the key is absent or
+// not a bool (an absent "active" must not silently mean inactive — the
+// schema default is 1).
+func bgetDefault(m map[string]any, key string, def bool) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return def
 }
 
 // topLevelPricings imports the standalone pricings table (all rows,
@@ -374,7 +417,7 @@ func (imp *importer) topLevelPricings(ctx context.Context, doc map[string]any) e
 			INSERT OR IGNORE INTO pricings (service_id, service_type, currency, price, term, next_due_date, active)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			newService, serviceType, cur, fget(pm, "price"),
-			int64(fget(pm, "term")), due, bint(bget(pm, "active")))
+			int64(fget(pm, "term")), due, bint(bgetDefault(pm, "active", true)))
 		if err != nil {
 			return err
 		}
@@ -437,6 +480,21 @@ func (imp *importer) labelsAssigned(ctx context.Context, doc map[string]any) err
 		}
 	}
 	return nil
+}
+
+// requireName reports whether the entity's key field is non-blank, warning
+// and skipping otherwise: the forms require these, the schema only says
+// NOT NULL, and an empty hostname/domain/name row is unreachable garbage.
+// The field is trimmed in place so the insert stores the trimmed value.
+func (imp *importer) requireName(m map[string]any, key, what string) bool {
+	v := strings.TrimSpace(sget(m, key))
+	if v == "" {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"%s: missing %s, skipped", what, key))
+		return false
+	}
+	m[key] = v
+	return true
 }
 
 // ---------- decode helpers ----------
@@ -619,7 +677,7 @@ func (imp *importer) insertPricing(ctx context.Context, pm map[string]any, servi
 		INSERT INTO pricings (service_id, service_type, currency, price, term, next_due_date, active)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		serviceID, serviceType, cur, fget(pm, "price"),
-		int64(fget(pm, "term")), due, bint(bget(pm, "active")))
+		int64(fget(pm, "term")), due, bint(bgetDefault(pm, "active", true)))
 	if err == nil {
 		imp.sum.Pricings++
 	}
@@ -647,6 +705,9 @@ func (imp *importer) servers(ctx context.Context, doc map[string]any) error {
 		it, _ := item.(map[string]any)
 		s := mget(it, "server")
 		if s == nil {
+			continue
+		}
+		if !imp.requireName(s, "hostname", "server") {
 			continue
 		}
 		if err := imp.importServer(ctx, it, s); err != nil {
@@ -840,6 +901,9 @@ func (imp *importer) hosting(ctx context.Context, doc map[string]any, spec hosti
 				"%s: item without a %q object, skipped", spec.docKey, spec.entityKey))
 			continue
 		}
+		if !imp.requireName(h, "main_domain", spec.docKey) {
+			continue
+		}
 		res, err := imp.tx.ExecContext(ctx, `
 			INSERT INTO `+spec.table+` (main_domain, `+spec.typeCol+`, provider_id, location_id,
 				domains_limit, subdomains_limit, ftp_limit, email_limit, db_limit,
@@ -886,6 +950,9 @@ func (imp *importer) seedboxes(ctx context.Context, doc map[string]any) error {
 		if b == nil {
 			continue
 		}
+		if !imp.requireName(b, "hostname", "seedbox") {
+			continue
+		}
 		res, err := imp.tx.ExecContext(ctx, `
 			INSERT INTO seedboxes (title, hostname, seed_box_type, provider_id, location_id,
 				port_speed, disk_as_mb, bandwidth_as_mb, active, show_public, was_promo, owned_since)
@@ -925,6 +992,9 @@ func (imp *importer) domains(ctx context.Context, doc map[string]any) error {
 		if d == nil {
 			continue
 		}
+		if !imp.requireName(d, "domain", "domain") {
+			continue
+		}
 		res, err := imp.tx.ExecContext(ctx, `
 			INSERT INTO domains (domain, extension, ns1, ns2, ns3, provider_id, active, owned_since)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -956,6 +1026,9 @@ func (imp *importer) misc(ctx context.Context, doc map[string]any) error {
 		it, _ := item.(map[string]any)
 		m := mget(it, "misc_service")
 		if m == nil {
+			continue
+		}
+		if !imp.requireName(m, "name", "misc service") {
 			continue
 		}
 		res, err := imp.tx.ExecContext(ctx,
@@ -1038,6 +1111,9 @@ func (imp *importer) dns(ctx context.Context, doc map[string]any) error {
 		it, _ := item.(map[string]any)
 		d := mget(it, "dns_record")
 		if d == nil {
+			continue
+		}
+		if !imp.requireName(d, "hostname", "dns") || !imp.requireName(d, "address", "dns") {
 			continue
 		}
 		remap := func(key string, serviceType int) sql.NullInt64 {

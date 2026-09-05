@@ -282,14 +282,16 @@ func myJSONIPs(ips []miJSONIP, host string, warnings *[]string) []myIP {
 			*warnings = append(*warnings, fmt.Sprintf("%s: invalid ip %q — skipped", host, ip.Address))
 			continue
 		}
-		// A duplicated address would fail the whole row on
-		// UNIQUE(service_id, service_type, address) — keep it once.
-		if seen[ip.Address] {
-			*warnings = append(*warnings, fmt.Sprintf("%s: duplicate IP %s listed twice — kept once", host, ip.Address))
+		// Store the CANONICAL form (the app does), so "2001:DB8::1" and
+		// "2001:db8::1" are one address. A duplicate would fail the whole
+		// row on UNIQUE(service_id, service_type, address) — keep it once.
+		canon := addr.String()
+		if seen[canon] {
+			*warnings = append(*warnings, fmt.Sprintf("%s: duplicate IP %s listed twice — kept once", host, canon))
 			continue
 		}
-		seen[ip.Address] = true
-		out = append(out, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
+		seen[canon] = true
+		out = append(out, myIP{Address: canon, IsIPv4: addr.Is4()})
 	}
 	return out
 }
@@ -515,12 +517,13 @@ func csvIPs(c *csvCells, row []string, line int, host string, warnings *[]string
 			*warnings = append(*warnings, fmt.Sprintf("row %d: invalid ip %q — skipped", line, ip.Address))
 			continue
 		}
-		if seen[ip.Address] {
-			*warnings = append(*warnings, fmt.Sprintf("row %d: duplicate IP %s listed twice — kept once", line, ip.Address))
+		canon := addr.String() // canonical, like the app stores it
+		if seen[canon] {
+			*warnings = append(*warnings, fmt.Sprintf("row %d: duplicate IP %s listed twice — kept once", line, canon))
 			continue
 		}
-		seen[ip.Address] = true
-		out = append(out, myIP{Address: ip.Address, IsIPv4: addr.Is4()})
+		seen[canon] = true
+		out = append(out, myIP{Address: canon, IsIPv4: addr.Is4()})
 	}
 	return out
 }

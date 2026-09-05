@@ -164,9 +164,7 @@ func (st *DomainStore) List(ctx context.Context, opts ListOptions) ([]DomainList
 	if col, ok := domainSortColumns[opts.Sort]; ok {
 		orderBy = col
 	}
-	if opts.Dir == "desc" {
-		orderBy += " DESC"
-	}
+	orderBy = orderClause(orderBy, opts.Dir)
 
 	query := `
 		SELECT ` + prefixedColumns("s", domainColumns) + `,

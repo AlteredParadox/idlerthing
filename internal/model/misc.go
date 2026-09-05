@@ -142,9 +142,7 @@ func (st *MiscStore) List(ctx context.Context, opts ListOptions) ([]MiscListItem
 	if col, ok := miscSortColumns[opts.Sort]; ok {
 		orderBy = col
 	}
-	if opts.Dir == "desc" {
-		orderBy += " DESC"
-	}
+	orderBy = orderClause(orderBy, opts.Dir)
 
 	query := `
 		SELECT ` + prefixedColumns("s", miscColumns) + `,

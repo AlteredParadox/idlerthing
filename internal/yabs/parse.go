@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -84,16 +85,27 @@ func capped(v, max float64) float64 {
 	return v
 }
 
+// ErrNotObject is returned for well-formed JSON that is not an object
+// (null, an array, a bare number or string — e.g. an upload that produced
+// an error string instead of a result).
+var ErrNotObject = errors.New("yabs payload is not a JSON object")
+
+// ErrEmpty is returned when the object carries nothing recognisable: no
+// system info, no geekbench score, no disk or network rows. Persisting it
+// would consume the single-use ingest capability for an all-NULL run.
+var ErrEmpty = errors.New("yabs payload contains no recognisable benchmark data")
+
 // Parse decodes a yabs.sh JSON body. Sections are optional; unknown shapes
-// degrade to empty values rather than errors. Only invalid JSON is an error.
+// degrade to empty values rather than errors. Invalid JSON, a non-object
+// document, and an object with nothing recognisable in it are errors.
 func Parse(body []byte) (*Result, error) {
 	var root any
 	if err := json.Unmarshal(body, &root); err != nil {
 		return nil, err
 	}
-	m, _ := root.(map[string]any)
-	if m == nil {
-		m = map[string]any{}
+	m, ok := root.(map[string]any)
+	if !ok || m == nil {
+		return nil, ErrNotObject
 	}
 
 	r := &Result{}
@@ -178,7 +190,18 @@ func Parse(body []byte) (*Result, error) {
 		}
 	}
 
+	if r.empty() {
+		return nil, ErrEmpty
+	}
 	return r, nil
+}
+
+// empty reports whether nothing recognisable was found in the payload.
+func (r *Result) empty() bool {
+	return r.CPU == "" && r.CPUCores == 0 && r.RAM == "" && r.Swap == "" &&
+		r.Distro == "" && r.Kernel == "" && r.Uptime == "" &&
+		r.GbSingle == 0 && r.GbMulti == 0 && r.GbURL == "" &&
+		len(r.Disks) == 0 && len(r.Network) == 0
 }
 
 // runAtString normalizes the run timestamp. yabs.sh stamps "20260730-163130";
@@ -288,24 +311,35 @@ func fioSpeed(v any, unitHint string) float64 {
 // bestGeekbench returns the geekbench entry to record. Real yabs.sh emits an
 // ARRAY — one run can carry both a v5 and a v6 result — while the older
 // hand-written shape was a single object, so accept either. When several
-// entries are present the highest version wins: the yabs table holds one
-// score set, and v6 is what current runs are compared against.
+// entries are present the highest version THAT CARRIES A SCORE wins: the
+// yabs table holds one score set, v6 is what current runs are compared
+// against, but a v6 entry whose upload failed (null single/multi — the
+// shipped fixture has them) must not beat a v5 entry with real numbers.
 func bestGeekbench(m map[string]any) map[string]any {
 	if obj := digMap(m, "geekbench", "gb"); len(obj) > 0 {
 		return obj
 	}
-	var best map[string]any
-	bestVer := -1
+	var best, bestScored map[string]any
+	bestVer, bestScoredVer := -1, -1
 	for _, arr := range digArrays(m, "geekbench", "gb") {
 		for _, item := range arr {
 			row, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
-			if v := firstInt(row, "version"); v > bestVer {
+			v := firstInt(row, "version")
+			if v > bestVer {
 				best, bestVer = row, v
 			}
+			scored := firstInt(row, "single", "single_core", "singlecore", "score") > 0 ||
+				firstInt(row, "multi", "multi_core", "multicore") > 0
+			if scored && v > bestScoredVer {
+				bestScored, bestScoredVer = row, v
+			}
 		}
+	}
+	if bestScored != nil {
+		return bestScored
 	}
 	if best == nil {
 		return map[string]any{}

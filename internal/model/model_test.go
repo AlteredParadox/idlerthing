@@ -253,3 +253,32 @@ func TestCatalogCRUDAndInUseRefusal(t *testing.T) {
 		t.Fatalf("Delete after detach: %v", err)
 	}
 }
+
+// Batch V4 — sorting by bandwidth descending puts unlimited (NULL) FIRST;
+// a single trailing DESC used to reverse only the value column and pin
+// unlimited last in both directions.
+func TestServerListBandwidthSortUnlimitedFirstDesc(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	st := &ServerStore{DB: database}
+	mk := func(hostname string, bw sql.NullInt64) {
+		if _, err := st.Create(ctx, &Server{Hostname: hostname, ServerType: TypeKVM, Active: true, BandwidthAsMB: bw}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("one-tb", intPtr(1<<20))
+	mk("unlimited", sql.NullInt64{})
+	mk("ten-tb", intPtr(10<<20))
+
+	items, err := st.List(ctx, ListOptions{Sort: "bw", Dir: "desc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hostnames(items); len(got) != 3 || got[0] != "unlimited" || got[1] != "ten-tb" || got[2] != "one-tb" {
+		t.Fatalf("bw desc: %v", got)
+	}
+	items, _ = st.List(ctx, ListOptions{Sort: "bw", Dir: "asc"})
+	if got := hostnames(items); got[0] != "one-tb" || got[1] != "ten-tb" || got[2] != "unlimited" {
+		t.Fatalf("bw asc: %v", got)
+	}
+}

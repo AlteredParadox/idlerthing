@@ -292,3 +292,48 @@ func TestParseRealPayload(t *testing.T) {
 		t.Errorf("busy row = %+v", busy)
 	}
 }
+
+// Batch V2 — well-formed JSON that is not an object, or an object with
+// nothing recognisable, is an error: persisting it would burn the single-use
+// ingest capability on an all-NULL run.
+func TestParseRejectsNonObjectAndEmpty(t *testing.T) {
+	for _, body := range []string{`null`, `[]`, `5`, `"x"`, `{}`, `{"unrelated": {"k": 1}}`} {
+		if _, err := Parse([]byte(body)); err == nil {
+			t.Errorf("Parse(%s) should fail", body)
+		}
+	}
+	// A single recognised field is enough.
+	if _, err := Parse([]byte(`{"os": {"distro": "Debian 13"}}`)); err != nil {
+		t.Fatalf("distro-only payload should parse: %v", err)
+	}
+}
+
+// Batch V3 — among several geekbench entries, the highest version WITH A
+// SCORE wins; a newer entry whose upload failed (null scores) must not
+// erase real numbers from an older one.
+func TestBestGeekbenchPrefersScoredEntry(t *testing.T) {
+	r, err := Parse([]byte(`{"cpu": {"model": "X"}, "geekbench": [
+		{"version": 5, "single": 900, "multi": 2100, "url": "https://browser.geekbench.com/v5/cpu/1"},
+		{"version": 6, "single": null, "multi": null, "url": null}
+	]}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if r.GeekbenchVersion != 5 || r.GbSingle != 900 || r.GbMulti != 2100 {
+		t.Fatalf("expected the scored v5 entry, got version=%d single=%d multi=%d",
+			r.GeekbenchVersion, r.GbSingle, r.GbMulti)
+	}
+	// With both scored, the newer version still wins.
+	r, _ = Parse([]byte(`{"cpu": {"model": "X"}, "geekbench": [
+		{"version": 5, "single": 900, "multi": 2100},
+		{"version": 6, "single": 1500, "multi": 3000}
+	]}`))
+	if r.GeekbenchVersion != 6 || r.GbSingle != 1500 {
+		t.Fatalf("expected v6 when both are scored, got version=%d single=%d", r.GeekbenchVersion, r.GbSingle)
+	}
+	// Nothing scored: keep the newest, scores stay 0.
+	r, _ = Parse([]byte(`{"cpu": {"model": "X"}, "geekbench": [{"version": 5}, {"version": 6}]}`))
+	if r.GeekbenchVersion != 6 || r.GbSingle != 0 {
+		t.Fatalf("unscored: version=%d single=%d", r.GeekbenchVersion, r.GbSingle)
+	}
+}

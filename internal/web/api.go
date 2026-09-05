@@ -204,7 +204,7 @@ func flattenValue(rv reflect.Value) any {
 			if !f.IsExported() {
 				continue
 			}
-			out[camelToSnake(f.Name)] = flattenValue(rv.Field(i))
+			out[jsonName(f.Name)] = flattenValue(rv.Field(i))
 		}
 		return out
 	case reflect.Slice, reflect.Array:
@@ -218,6 +218,23 @@ func flattenValue(rv reflect.Value) any {
 	default:
 		return rv.Interface()
 	}
+}
+
+// jsonNameOverrides pins the field names camelToSnake gets wrong: its
+// upper→lower split turns IsIPv4 into "is_i_pv4" and glues IPID into
+// "ipid", while the DB columns, the importer and the export format all say
+// is_ipv4 / ip_id.
+var jsonNameOverrides = map[string]string{
+	"IsIPv4": "is_ipv4",
+	"IPID":   "ip_id",
+}
+
+// jsonName is the JSON key for a model struct field.
+func jsonName(field string) string {
+	if n, ok := jsonNameOverrides[field]; ok {
+		return n
+	}
+	return camelToSnake(field)
 }
 
 // camelToSnake converts "ServiceID" → "service_id", "CPUModel" → "cpu_model"

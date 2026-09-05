@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -78,9 +79,9 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 	srv := &model.Server{
 		Hostname:      strings.TrimSpace(j.Hostname),
 		ServerType:    j.ServerType,
-		OsID:          ptrToNull(j.OsID),
-		ProviderID:    ptrToNull(j.ProviderID),
-		LocationID:    ptrToNull(j.LocationID),
+		OsID:          ptrToRef(j.OsID),
+		ProviderID:    ptrToRef(j.ProviderID),
+		LocationID:    ptrToRef(j.LocationID),
 		RamAsMB:       ptrToNull(j.RamAsMB),
 		CPU:           ptrToNull(j.CPU),
 		BandwidthAsMB: ptrToNull(j.BandwidthAsMB),
@@ -105,8 +106,10 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 	return srv
 }
 
-// nullStrIf wraps a non-empty string as a valid NullString.
+// nullStrIf wraps a non-blank string as a valid NullString (trimmed, like
+// the web form's nullStrFormValue — "  " must not become a non-NULL value).
 func nullStrIf(s string) sql.NullString {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return sql.NullString{}
 	}
@@ -142,11 +145,45 @@ func (j *serverJSON) checkBounds(errs map[string]string) {
 			errs[v.name] = "out of range"
 		}
 	}
+	// Same cap as the web form's fixed disk rows: the edit form only shows
+	// (and on save re-inserts) four, so a fifth disk stored via the API would
+	// be silently dropped by the next form edit.
+	if len(j.Disks) > maxServerDisks {
+		errs["disks"] = fmt.Sprintf("at most %d disks", maxServerDisks)
+	}
 	for i, d := range j.Disks {
 		if d.SizeAsMB < 0 || d.SizeAsMB > 1<<30 {
 			errs[fmt.Sprintf("disks[%d].size_as_mb", i)] = "out of range"
 		}
 	}
+}
+
+// maxServerDisks is the number of disk rows the server form offers.
+const maxServerDisks = 4
+
+// checkCatalogRefs turns dangling os/provider/location ids into 422 field
+// errors, instead of letting the FOREIGN KEY violation surface as a 500.
+func (s *Server) checkCatalogRefs(ctx context.Context, srv *model.Server, errs map[string]string) error {
+	for _, ref := range []struct {
+		field, kind string
+		id          sql.NullInt64
+	}{
+		{"os_id", "os", srv.OsID},
+		{"provider_id", "providers", srv.ProviderID},
+		{"location_id", "locations", srv.LocationID},
+	} {
+		if !ref.id.Valid {
+			continue
+		}
+		ok, err := s.catalogs.Exists(ctx, model.Catalogs[ref.kind], ref.id.Int64)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			errs[ref.field] = "unknown " + ref.kind + " id"
+		}
+	}
+	return nil
 }
 
 // disksToModel keeps positive sizes, normalizing media.
@@ -188,7 +225,21 @@ func (j *serverJSON) pricingToModel(errs map[string]string) *model.Pricing {
 	}
 }
 
+// ptrToNull maps an absent numeric field to NULL and keeps any present
+// value — including 0, which the web form also stores as a valid 0 (for
+// bandwidth NULL means UNLIMITED, so 0 → NULL on a GET/PUT round-trip
+// silently turned a metered plan into an unlimited one). Range checks
+// happen in checkBounds.
 func ptrToNull(p *int64) sql.NullInt64 {
+	if p == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *p, Valid: true}
+}
+
+// ptrToRef maps a catalog reference: absent or non-positive → NULL (no
+// entry), matching the form's nullIntFormValue.
+func ptrToRef(p *int64) sql.NullInt64 {
 	if p == nil || *p <= 0 {
 		return sql.NullInt64{}
 	}
@@ -270,6 +321,10 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv, disks, pricing, errs := j.toModel()
+	if err := s.checkCatalogRefs(r.Context(), srv, errs); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
+		return
+	}
 	if len(errs) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "validation failed", "fields": errs})
 		return
@@ -300,6 +355,10 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv, disks, pricing, errs := j.toModel()
+	if err := s.checkCatalogRefs(r.Context(), srv, errs); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
+		return
+	}
 	if len(errs) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "validation failed", "fields": errs})
 		return

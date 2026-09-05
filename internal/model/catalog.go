@@ -98,6 +98,15 @@ func (s *CatalogStore) List(ctx context.Context, kind CatalogKind) ([]CatalogIte
 	return out, rows.Err()
 }
 
+// Exists reports whether a catalog row with id exists (used to validate
+// references before an insert, so a dangling id is a 422, not an FK 500).
+func (s *CatalogStore) Exists(ctx context.Context, kind CatalogKind, id int64) (bool, error) {
+	var n int
+	err := QuerierFrom(ctx, s.DB).QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM "+kind.Table+" WHERE id = ?", id).Scan(&n)
+	return n > 0, err
+}
+
 // Create inserts a new catalog item and returns its ID.
 func (s *CatalogStore) Create(ctx context.Context, kind CatalogKind, name string) (int64, error) {
 	res, err := s.DB.ExecContext(ctx,

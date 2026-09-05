@@ -240,12 +240,8 @@ func (s *Server) exportNotes(r *http.Request) (any, error) {
 	out := flattenSlice(v)
 	for _, n := range ipNotes {
 		// Match the {"note": {...}} shape flatten gives embedded
-		// NoteWithTarget, and rename "ipid" → "ip_id" (flatten
-		// names IPID "ipid"; the import format is "ip_id").
-		m := flatten(n).(map[string]any)
-		m["ip_id"] = m["ipid"]
-		delete(m, "ipid")
-		out = append(out, map[string]any{"note": m})
+		// NoteWithTarget (flatten names IPID "ip_id", the import key).
+		out = append(out, map[string]any{"note": flatten(n)})
 	}
 	return out, nil
 }

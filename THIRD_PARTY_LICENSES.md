@@ -176,7 +176,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## golang.org/x/crypto@v0.55.0
+## golang.org/x/crypto@v0.56.0
 
 ### LICENSE
 

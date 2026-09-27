@@ -137,8 +137,10 @@ iptables by default, and covers TCP and UDP so a ban also applies over QUIC.
 - Early docs showed example admin passwords verbatim. If your deployment
   dates from that era, the server logs a loud warning at startup when the
   admin password matches one — reset it with `idlerthing passwd` (prints a
-  generated one) or `echo '<new>' | idlerthing passwd`, or in **Settings →
-  Account**. All sessions and the API token are revoked either way.
+  generated one), supply a new password through the command's standard input,
+  or use **Settings → Account**. Password arguments are rejected because
+  other local users may be able to see command lines. All sessions and the API
+  token are revoked either way.
 
 ## JSON API
 

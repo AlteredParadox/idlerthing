@@ -1,4 +1,4 @@
-# SonarQube Cloud analysis on every push and pull request.
+# SonarQube Cloud analysis on pushes to main.
 #
 # Cloud, not a self-hosted server: the repo is public, so SonarQube Cloud is
 # free and needs no runner. Only SONAR_TOKEN is required — do NOT set
@@ -12,12 +12,12 @@
 # scan is rejected as a conflicting analysis.
 name: sonarqube
 
-# push only on main; branch pushes are covered by their pull_request run,
-# so PRs (including Dependabot's) don't run this twice.
+# Keep the secret-bearing analysis on the trusted, reviewed branch. Pull
+# requests are checked by ci.yml, but must not run contributor-controlled
+# code on the same runner that later receives SONAR_TOKEN.
 on:
   push:
     branches: [main]
-  pull_request:
 
 # Least privilege: read-only. This job hands SONAR_TOKEN to a third-party
 # action, so every action is pinned to a full commit SHA — a retagged action
@@ -32,13 +32,6 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    # Dependabot's event token can't read SONAR_TOKEN (GitHub scopes it to a
-    # separate dependabot secret store), and neither can a fork PR's. A scan
-    # would fail on auth alone, so skip it — ci.yml is still the gate there.
-    if: >-
-      github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

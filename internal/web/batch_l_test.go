@@ -150,30 +150,32 @@ func TestImportDNSParentWarning(t *testing.T) {
 	}
 }
 
-// Batch L D3 / Batch M F2 — cap rows older than the 2h window are pruned
-// by PruneCaps (called from the login sweep, not the ingest hot path).
+// Batch L D3 / Batch M F2 — caps consumed more than 2h ago are pruned, while
+// a freshly consumed cap with an expired signed timestamp remains replay-safe.
 func TestYABSCapPruning(t *testing.T) {
 	_, database, _ := newTestServerFull(t)
 	ctx := context.Background()
 
-	old := time.Now().Add(-3 * time.Hour).Unix()
-	recent := time.Now().Add(-30 * time.Minute).Unix()
+	oldTS := time.Now().Add(-4 * time.Hour).Unix()
+	recentTS := oldTS + 1
+	oldConsumption := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
+	recentConsumption := time.Now().UTC().Format(time.RFC3339)
 	if _, err := database.Exec(
-		"INSERT INTO yabs_caps (server_id, ts, consumed_at) VALUES (1, ?, '2020-01-01'), (99, ?, '2020-01-01')",
-		old, recent); err != nil {
+		"INSERT INTO yabs_caps (server_id, ts, consumed_at) VALUES (1, ?, ?), (99, ?, ?)",
+		oldTS, oldConsumption, recentTS, recentConsumption); err != nil {
 		t.Fatal(err)
 	}
 
 	(&model.YABSStore{DB: database}).PruneCaps(ctx)
 
 	var oldN, recentN int
-	database.QueryRow("SELECT COUNT(*) FROM yabs_caps WHERE ts = ?", old).Scan(&oldN)
-	database.QueryRow("SELECT COUNT(*) FROM yabs_caps WHERE ts = ?", recent).Scan(&recentN)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_caps WHERE ts = ?", oldTS).Scan(&oldN)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_caps WHERE ts = ?", recentTS).Scan(&recentN)
 	if oldN != 0 {
-		t.Fatal("cap row past the window should be pruned")
+		t.Fatal("cap consumed before the retention window should be pruned")
 	}
 	if recentN != 1 {
-		t.Fatal("recent cap rows must be kept")
+		t.Fatal("recently consumed cap must be kept despite its expired signed timestamp")
 	}
 }
 

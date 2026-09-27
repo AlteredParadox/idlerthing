@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The log lines below are a CONTRACT with deploy/fail2ban/idlerthing.conf.
@@ -118,6 +119,25 @@ func TestLoginLogRateLimitedOncePerWindow(t *testing.T) {
 		t.Fatalf("got %d rate-limited lines, want exactly 1 per window", blocked)
 	}
 	_ = srv
+}
+
+// Account-wide throttling can be exhausted by clients other than the current
+// source, so it must never create a source-bannable fail2ban event.
+func TestLoginLogAccountLimitDoesNotBlameCurrentSource(t *testing.T) {
+	ts, _, srv := newTestServerFull(t)
+	srv.emailLimit = newRateLimiter(0, time.Minute)
+	buf := captureLog(t)
+
+	resp := login(t, newClient(t), ts, testPassword)
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if hasSessionCookie(resp) || !strings.Contains(body, "Too many attempts") {
+		t.Fatalf("account limiter did not refuse login:\n%s", body)
+	}
+
+	if reRateLimit.MatchString(strings.TrimSpace(buf.String())) {
+		t.Fatalf("account limit produced a source-bannable line:\n%s", buf.String())
+	}
 }
 
 func TestLoginLogSuccessIsAuditedNotFailed(t *testing.T) {

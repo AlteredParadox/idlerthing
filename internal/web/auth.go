@@ -136,7 +136,9 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// limiter above still caps the bcrypt work the owner's address can
 	// cause.
 	if !s.emailLimit.allow(limiterKey(email)) && !s.knownIPs.has(ip) {
-		s.logBlocked(ip)
+		// Do not emit a source-addressed fail2ban event here. This limiter is
+		// shared by every client attempting the account, so the current source
+		// may be an innocent user rather than the client that exhausted it.
 		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
 	}

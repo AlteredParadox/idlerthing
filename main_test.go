@@ -195,7 +195,18 @@ func TestRunPasswd(t *testing.T) {
 	}
 	database.Close()
 
-	if err := runPasswd([]string{"new-password-2"}); err != nil {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString("new-password-2\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	oldStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	if err := runPasswd(nil); err != nil {
 		t.Fatalf("runPasswd: %v", err)
 	}
 
@@ -219,7 +230,16 @@ func TestRunPasswd(t *testing.T) {
 	if sessions != 0 {
 		t.Fatal("passwd must revoke all sessions")
 	}
-	if err := runPasswd([]string{"short"}); err == nil {
+	r, w, err = os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString("short\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	os.Stdin = r
+	if err := runPasswd(nil); err == nil {
 		t.Fatal("short password must be refused")
 	}
 }
@@ -269,8 +289,9 @@ func TestRunPasswdStdin(t *testing.T) {
 		t.Fatal("stdin password should verify")
 	}
 
-	// Bad invocation → usage error.
-	if err := runPasswd([]string{"a", "b"}); err == nil || !strings.Contains(err.Error(), "usage: idlerthing passwd") {
+	// Any argument is rejected so plaintext credentials cannot leak through
+	// process listings or shell history.
+	if err := runPasswd([]string{"password-in-argv"}); err == nil || !strings.Contains(err.Error(), "usage: idlerthing passwd") {
 		t.Fatalf("expected usage error, got %v", err)
 	}
 }

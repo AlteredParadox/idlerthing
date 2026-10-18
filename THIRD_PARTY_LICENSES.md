@@ -176,7 +176,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## golang.org/x/crypto@v0.56.0
+## golang.org/x/crypto@v0.57.0
 
 ### LICENSE
 
@@ -239,7 +239,7 @@ shall terminate as of the date such litigation is filed.
 
 ---
 
-## golang.org/x/sys@v0.47.0
+## golang.org/x/sys@v0.48.0
 
 ### LICENSE
 
@@ -302,7 +302,7 @@ shall terminate as of the date such litigation is filed.
 
 ---
 
-## modernc.org/libc@v1.74.4
+## modernc.org/libc@v1.75.7
 
 ### AUTHORS
 
@@ -731,7 +731,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## modernc.org/memory@v1.11.0
+## modernc.org/memory@v1.12.1
 
 ### AUTHORS
 
@@ -855,7 +855,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## modernc.org/sqlite@v1.56.0
+## modernc.org/sqlite@v1.59.0
 
 ### AUTHORS
 
@@ -887,6 +887,7 @@ Logan Snow <logansnow@protonmail.com>
 Michael Hoffmann <mhoffm@posteo.de>
 Michael Rykov <mrykov@gmail.com>
 Morgan Bazalgette <morgan@howl.moe>
+Nathan Herring <nherring@google.com>
 Ross Light <ross@zombiezen.com>
 SUSE LLC <moio@suse.com>
 Saed SayedAhmed <saadmtsa@gmail.com>
@@ -927,7 +928,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### SQLITE-LICENSE
+### LICENSE-SQLITE
 
 ```
 SQLite Is Public Domain
@@ -955,6 +956,32 @@ has been taken from other projects or from the open internet. Every line of
 code can be traced back to its original author, and all of those authors have
 public domain dedications on file. So the SQLite code base is clean and is
 uncontaminated with licensed code from other projects.
+```
+
+### LICENSE-SQLITE_VEC
+
+```
+MIT License
+
+Copyright (c) 2024 Alex Garcia
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ---

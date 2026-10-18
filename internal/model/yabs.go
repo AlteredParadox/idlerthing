@@ -97,16 +97,18 @@ func scanYABS(row interface{ Scan(...any) error }) (*YABS, error) {
 // ErrDuplicatePayload means an identical payload already exists (race-safe).
 var ErrDuplicatePayload = errors.New("duplicate payload")
 
-// YABSSigWindow is how long an ingest signature stays valid — the single
-// source for the web package's signature check AND for cap pruning (older
-// cap rows can never affect an ingest decision again).
+// YABSSigWindow is how long an ingest signature stays valid and how long a
+// consumed capability is retained. Retention starts when the capability is
+// consumed, so requests already validated near expiry cannot outlive their
+// replay marker.
 const YABSSigWindow = 2 * time.Hour
 
-// PruneCaps deletes consumed capabilities past the signature window. Called
-// periodically (the login sweep), NOT on the ingest hot path — the DELETE
-// is an unindexed scan and the table stays tiny between logins.
+// PruneCaps deletes capabilities consumed more than a signature window ago.
+// Called periodically (the login sweep), NOT on the ingest hot path — the
+// DELETE is an unindexed scan and the table stays tiny between logins.
 func (st *YABSStore) PruneCaps(ctx context.Context) {
-	st.DB.ExecContext(ctx, "DELETE FROM yabs_caps WHERE ts < ?", time.Now().Add(-YABSSigWindow).Unix())
+	cutoff := time.Now().UTC().Add(-YABSSigWindow).Format(time.RFC3339)
+	st.DB.ExecContext(ctx, "DELETE FROM yabs_caps WHERE datetime(consumed_at) < datetime(?)", cutoff)
 }
 
 // ConsumeCap atomically consumes the (server_id, ts) ingest capability in

@@ -223,6 +223,22 @@ Every first-party source file carries the AGPL notice; `make license-check`
 
 ## Development
 
+Grid columns can be resized using their right edges and reordered by dragging
+their headings or grips. Widths and order are remembered in this browser for
+each user and grid. Actions stays last. Reset widths and Reset order work
+independently. The resize controls also support Left/Right (Shift for larger
+steps) and Home; the move grips support Left/Right and Home/End.
+
+The optional browser regression check uses synthetic tables and does not
+require a running instance or a database. With Node.js installed:
+
+```sh
+grid_test_deps=$(mktemp -d)
+npm install --prefix "$grid_test_deps" playwright
+"$grid_test_deps/node_modules/.bin/playwright" install chromium
+NODE_PATH="$grid_test_deps/node_modules" node scripts/test-grids.cjs
+```
+
 ```sh
 make build   # trimmed static binary
 make run     # go run .

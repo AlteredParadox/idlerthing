@@ -137,6 +137,15 @@ document.addEventListener('input', function (e) {
       reset.after(fit);
     }
     fit.disabled = false;
+    let fitPage = actions.querySelector('[data-fit-grid-page]');
+    if (!fitPage) {
+      fitPage = document.createElement('button');
+      fitPage.type = 'button';
+      fitPage.className = 'btn';
+      fitPage.textContent = 'Fit to page';
+      fitPage.setAttribute('data-fit-grid-page', '');
+      fit.after(fitPage);
+    }
     let status = tools.querySelector('[data-grid-status]');
     if (!status) {
       status = document.createElement('span');
@@ -430,30 +439,107 @@ document.addEventListener('input', function (e) {
       applyWidths();
     }
 
-    // Size every column to its widest visible cell. Auto table layout does the
-    // measuring: with the fixed widths lifted and the table at max-content
-    // width (so the scroll wrapper cannot squeeze it), the browser lays each
-    // column out at max-content (wrapping cells stop at their max-width), and
-    // the header rect is then exactly the width the column needs. The actions
-    // column keeps its default width; it holds buttons, not data.
-    function fitWidths() {
-      endDrag();
+    // The width each column needs for its widest visible cell. Auto table
+    // layout does the measuring: with the fixed widths lifted and the table at
+    // max-content width (so the scroll wrapper cannot squeeze it), the browser
+    // lays each column out at max-content (wrapping cells stop at their
+    // max-width), and the header rect is then exactly the width the column
+    // needs. Everything is restored before returning, within one task, so
+    // nothing is painted in between. The actions column keeps its default
+    // width; it holds buttons, not data.
+    function measureContentWidths() {
       table.classList.add('measuring-columns');
       for (const column of columns) {
         column.style.width = column.dataset.column === 'actions' ? widths.actions + 'px' : 'auto';
       }
       table.style.width = '';
-      const measured = Array.from(table.tHead.rows[0].cells, header => header.getBoundingClientRect().width);
-      table.classList.remove('measuring-columns');
-      Array.from(table.tHead.rows[0].cells).forEach((header, index) => {
+      const measured = Object.create(null);
+      for (const header of table.tHead.rows[0].cells) {
         const key = header.dataset.gridColumn;
-        if (key === 'actions') return;
-        widths[key] = Math.min(maxWidth, Math.max(minWidth, Math.ceil(measured[index])));
-        saved[key] = widths[key];
-      });
+        measured[key] = key === 'actions' ? widths.actions
+          : Math.min(maxWidth, Math.max(minWidth, Math.ceil(header.getBoundingClientRect().width)));
+      }
+      table.classList.remove('measuring-columns');
       applyWidths();
+      return measured;
+    }
+
+    function totalOf(measured) {
+      return columns.reduce((total, column) => total + measured[column.dataset.column], 0);
+    }
+
+    function saveAllWidths() {
+      for (const column of columns) {
+        const key = column.dataset.column;
+        if (key !== 'actions') saved[key] = widths[key];
+      }
       try { localStorage.setItem(storageKey, JSON.stringify(saved)); } catch (_) {}
+    }
+
+    // Fit to page only makes sense when the fitted content leaves room to
+    // grow into; otherwise the grid would still scroll and the button lies.
+    // Re-evaluated whenever the wrapper's size changes.
+    function updateFitPage(measured) {
+      const fits = totalOf(measured || measureContentWidths()) < wrap.clientWidth;
+      fitPage.disabled = !fits;
+      fitPage.title = fits
+        ? 'Fit columns to their contents, then widen them to fill the page'
+        : 'The columns are already wider than the page';
+    }
+
+    function fitWidths() {
+      endDrag();
+      const measured = measureContentWidths();
+      for (const column of columns) widths[column.dataset.column] = measured[column.dataset.column];
+      applyWidths();
+      saveAllWidths();
+      updateFitPage(measured);
       status.textContent = 'Fitted columns to their contents.';
+    }
+
+    // Fit columns, then share the slack up to the wrapper's width among the
+    // data columns in proportion to their content, so the grid ends flush
+    // with the page and nothing scrolls horizontally. A column that hits
+    // maxWidth drops out and its unused share goes round again, so the grid
+    // still fills the page whenever the combined limits allow.
+    function fitToPage() {
+      endDrag();
+      const measured = measureContentWidths();
+      // Collapsed borders render the table a pixel or so wider than the sum
+      // of its columns; that chrome is part of what has to fit.
+      const chrome = Math.max(0, Math.ceil(table.getBoundingClientRect().width - totalOf(widths)));
+      let slack = wrap.clientWidth - chrome - totalOf(measured);
+      if (slack <= 0) {
+        updateFitPage(measured);
+        return;
+      }
+      const dataKeys = columns.map(column => column.dataset.column).filter(key => key !== 'actions');
+      for (const key of dataKeys) widths[key] = measured[key];
+      let open = dataKeys.filter(key => widths[key] < maxWidth);
+      while (slack > 0 && open.length) {
+        const base = open.reduce((total, key) => total + widths[key], 0);
+        let given = 0;
+        open.forEach((key, index) => {
+          const share = index === open.length - 1 ? slack - given : Math.floor(slack * widths[key] / base);
+          const grown = Math.min(maxWidth, widths[key] + share);
+          given += grown - widths[key];
+          widths[key] = grown;
+        });
+        slack -= given;
+        open = open.filter(key => widths[key] < maxWidth);
+      }
+      applyWidths();
+      // Safety net for any rounding the chrome estimate missed: trim a sliver
+      // of scroll off the widest column rather than leave it.
+      const over = wrap.scrollWidth - wrap.clientWidth;
+      if (over > 0) {
+        const widest = dataKeys.reduce((best, key) => widths[key] > widths[best] ? key : best, dataKeys[0]);
+        widths[widest] = Math.max(minWidth, widths[widest] - over);
+        applyWidths();
+      }
+      saveAllWidths();
+      updateFitPage(measured);
+      status.textContent = 'Fitted columns to the page.';
     }
 
     function resetColumnOrder() {
@@ -466,8 +552,17 @@ document.addEventListener('input', function (e) {
 
     applyWidths();
     applyOrder(savedOrder);
+    updateFitPage();
+    // Coalesce size changes to one measurement per frame: a window drag fires
+    // continuously and each measurement forces a layout of the whole table.
+    let pageFrame = 0;
+    const pageWatch = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+      if (!pageFrame) pageFrame = requestAnimationFrame(() => { pageFrame = 0; updateFitPage(); });
+    }) : null;
+    pageWatch?.observe(wrap);
     reset.addEventListener('click', resetWidths);
     fit.addEventListener('click', fitWidths);
+    fitPage.addEventListener('click', fitToPage);
     resetOrder.addEventListener('click', resetColumnOrder);
     table.addEventListener('dragover', overColumn);
     table.addEventListener('drop', dropColumn);
@@ -482,8 +577,11 @@ document.addEventListener('input', function (e) {
     grids.set(table, { head: table.tHead, cleanup: () => {
       endDrag();
       endColumnDrag();
+      pageWatch?.disconnect();
+      cancelAnimationFrame(pageFrame);
       reset.removeEventListener('click', resetWidths);
       fit.removeEventListener('click', fitWidths);
+      fitPage.removeEventListener('click', fitToPage);
       resetOrder.removeEventListener('click', resetColumnOrder);
       table.removeEventListener('dragover', overColumn);
       table.removeEventListener('drop', dropColumn);
@@ -508,9 +606,11 @@ document.addEventListener('input', function (e) {
     if (serverReset) {
       const empty = !document.querySelector('#server-table-wrap table');
       serverReset.disabled = empty;
-      serverReset.closest('.server-grid-tools')
-        .querySelectorAll('[data-reset-grid-order], [data-fit-grid-columns]')
+      const tools = serverReset.closest('.server-grid-tools');
+      tools.querySelectorAll('[data-reset-grid-order], [data-fit-grid-columns]')
         .forEach(button => { button.disabled = empty; });
+      const fitPage = tools.querySelector('[data-fit-grid-page]');
+      if (fitPage && empty) fitPage.disabled = true;
     }
     document.querySelectorAll('table.tbl').forEach(table => {
       if (!grids.has(table)) initGrid(table);

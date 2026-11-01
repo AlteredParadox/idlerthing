@@ -94,6 +94,40 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     await page.locator('.server-grid-tools').getByRole('button', {name: 'Reset widths', exact: true}).click();
     assert.equal(await width(), initialWidth);
 
+    // Fit to page widens the fitted columns until the grid is flush with its
+    // wrapper and nothing scrolls; it is disabled while the content alone is
+    // wider than the page, and comes back when the page grows again.
+    const fitPage = page.locator('.server-grid-tools').getByRole('button', {name: 'Fit to page', exact: true});
+    const wrapFit = () => page.evaluate(() => {
+      const wrap = document.getElementById('server-table-wrap');
+      const grid = wrap.querySelector('table').getBoundingClientRect().width;
+      return {scrolls: wrap.scrollWidth > wrap.clientWidth, gap: wrap.clientWidth - grid};
+    });
+    await fitPage.click();
+    const pageWidth = await width();
+    assert(pageWidth > fitted, 'with room to spare the columns grow past their content');
+    let flush = await wrapFit();
+    assert(!flush.scrolls, 'fit to page must not leave a horizontal scrollbar');
+    assert(flush.gap >= 0 && flush.gap < 4, 'the grid ends flush with the page, got gap ' + flush.gap);
+    await page.setViewportSize({width: 320, height: 900});
+    await page.waitForFunction(() => document.querySelector('[data-fit-grid-page]').disabled);
+    await page.setViewportSize({width: 1280, height: 900});
+    await page.waitForFunction(() => !document.querySelector('[data-fit-grid-page]').disabled);
+    // Wide enough that the hostname column hits its 1600px cap: the share it
+    // cannot take must go to the other column, not vanish into a gap.
+    await page.setViewportSize({width: 2600, height: 900});
+    await fitPage.click();
+    assert.equal(await width(), 1600, 'the proportional share is capped at maxWidth');
+    flush = await wrapFit();
+    assert(!flush.scrolls && flush.gap >= 0 && flush.gap < 4, 'capped slack is redistributed, got gap ' + flush.gap);
+    await page.setViewportSize({width: 1280, height: 900});
+    await fitPage.click();
+    assert.equal(await width(), pageWidth, 'fit to page is deterministic for a given page width');
+    await page.reload();
+    await ready();
+    assert.equal(await width(), pageWidth, 'page-fitted widths persist');
+    await page.locator('.server-grid-tools').getByRole('button', {name: 'Reset widths', exact: true}).click();
+
     // Keyboard movement, hidden columns and htmx replacement use the same keys.
     await page.getByRole('button', {name: 'Move Type column', exact: true}).press('Home');
     assert.deepEqual(await order(), ['type', 'hostname', 'actions']);
@@ -135,7 +169,7 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     });
     assert(await mini.getAttribute('data-widths-key').then(key => key.includes('.2.')));
     assert.deepEqual(errors, []);
-    console.log('PASS: native drag/drop, resizing, fitting, persistence, resets, keyboard, hidden columns, htmx, editable grids and isolation');
+    console.log('PASS: native drag/drop, resizing, fitting, fit to page, persistence, resets, keyboard, hidden columns, htmx, editable grids and isolation');
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));

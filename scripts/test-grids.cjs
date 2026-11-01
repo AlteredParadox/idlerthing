@@ -13,7 +13,7 @@ const serverTable = `<table class="tbl server-grid-table" data-widths-key="test.
     <col data-column="type" data-label="Type" data-default-width="88">
     <col data-column="actions" data-default-width="120"></colgroup>
   <thead><tr><th><a href="?sort=hostname">Hostname</a></th><th>Type</th><th class="col-actions"></th></tr></thead>
-  <tbody><tr><td>example.invalid</td><td>VPS</td><td><button>Edit</button></td></tr></tbody></table>`;
+  <tbody><tr><td><div class="cell-main"><span class="dot dot-ok"></span><a class="mono cell-title" href="#">example.invalid</a></div></td><td>VPS</td><td><button>Edit</button></td></tr></tbody></table>`;
 const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.css">
   <script defer src="/app.js"></script></head><body data-grid-user="1"><main>
   <div class="server-grid-tools"><span class="field-hint"></span><button id="reset-server-widths">Reset widths</button></div>
@@ -85,6 +85,12 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     await page.reload();
     await ready();
     assert.equal(await width(), fitted, 'fitted widths persist');
+    // A grid wider than its scroll wrapper must measure the same: the wrapper
+    // may not squeeze ellipsizing cells before they are read.
+    await page.setViewportSize({width: 320, height: 900});
+    await page.locator('.server-grid-tools').getByRole('button', {name: 'Fit columns', exact: true}).click();
+    assert.equal(await width(), fitted, 'fitting is independent of the viewport');
+    await page.setViewportSize({width: 1280, height: 900});
     await page.locator('.server-grid-tools').getByRole('button', {name: 'Reset widths', exact: true}).click();
     assert.equal(await width(), initialWidth);
 

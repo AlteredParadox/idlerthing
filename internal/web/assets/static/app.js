@@ -431,10 +431,11 @@ document.addEventListener('input', function (e) {
     }
 
     // Size every column to its widest visible cell. Auto table layout does the
-    // measuring: with the fixed widths lifted, the browser lays each column out
-    // at max-content (wrapping cells stop at their max-width), and the header
-    // rect is then exactly the width the column needs. The actions column keeps
-    // its default width; it holds buttons, not data.
+    // measuring: with the fixed widths lifted and the table at max-content
+    // width (so the scroll wrapper cannot squeeze it), the browser lays each
+    // column out at max-content (wrapping cells stop at their max-width), and
+    // the header rect is then exactly the width the column needs. The actions
+    // column keeps its default width; it holds buttons, not data.
     function fitWidths() {
       endDrag();
       table.classList.add('measuring-columns');

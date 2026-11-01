@@ -650,7 +650,10 @@ select:focus { outline: none; border-color: var(--acc); }
 .grid-tools-mini .btn { padding: 3px 6px; font-size: 11px; }
 .grid-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .resizable-grid { table-layout: fixed; }
-.resizable-grid.measuring-columns { table-layout: auto; width: auto; }
+/* Measurement mode for "Fit columns". max-content, not auto: an auto-width
+   table shrinks to its scroll wrapper, and cells that can ellipsize (the
+   hostname title) would then be measured already truncated. */
+.resizable-grid.measuring-columns { table-layout: auto; width: max-content; max-width: none; }
 .resizable-grid th { position: relative; padding-right: 18px; padding-left: 20px; }
 .resizable-grid th, .resizable-grid td {
   overflow: hidden;

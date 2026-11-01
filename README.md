@@ -226,7 +226,10 @@ Every first-party source file carries the AGPL notice; `make license-check`
 Grid columns can be resized using their right edges and reordered by dragging
 their headings or grips. Widths and order are remembered in this browser for
 each user and grid. Actions stays last. Reset widths and Reset order work
-independently. The resize controls also support Left/Right (Shift for larger
+independently. Fit columns sizes each column to its widest visible cell; Fit
+to page does the same and then widens the columns to fill the page without a
+horizontal scrollbar (it is greyed out when the content alone is already
+wider than the page). The resize controls also support Left/Right (Shift for larger
 steps) and Home; the move grips support Left/Right and Home/End.
 
 The browser regression check for the grids uses synthetic tables and does not

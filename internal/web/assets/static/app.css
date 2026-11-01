@@ -357,6 +357,8 @@ input:focus {
   cursor: pointer;
 }
 .btn:hover { background: var(--hov); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:disabled:hover { background: var(--panel2); }
 .btn-primary {
   background: var(--acc);
   border-color: var(--acc);

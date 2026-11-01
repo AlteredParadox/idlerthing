@@ -548,7 +548,15 @@ document.addEventListener('input', function (e) {
 
     applyWidths();
     applyOrder(savedOrder);
-    updateFitPage();
+    // The actions column has no handle, so a saved width that no longer
+    // fits its controls (saved under Compact tables, restored without) would
+    // clip them for good. Floor it at the current content width.
+    const initial = measureContentWidths();
+    if (widths.actions < initial.actions) {
+      widths.actions = initial.actions;
+      applyWidths();
+    }
+    updateFitPage(initial);
     // Coalesce size changes to one measurement per frame: a window drag fires
     // continuously and each measurement forces a layout of the whole table.
     let pageFrame = 0;

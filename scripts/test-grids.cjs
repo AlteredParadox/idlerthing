@@ -12,8 +12,8 @@ const serverTable = `<table class="tbl server-grid-table" data-widths-key="test.
   <colgroup><col data-column="hostname" data-label="Hostname" data-default-width="240">
     <col data-column="type" data-label="Type" data-default-width="88">
     <col data-column="actions" data-default-width="120"></colgroup>
-  <thead><tr><th><a href="?sort=hostname">Hostname</a></th><th>Type</th><th class="col-actions"></th></tr></thead>
-  <tbody><tr><td><div class="cell-main"><span class="dot dot-ok"></span><a class="mono cell-title" href="#">example.invalid</a></div></td><td>VPS</td><td><button>Edit</button></td></tr></tbody></table>`;
+  <thead><tr><th><a href="?sort=hostname">Hostname</a></th><th>Type</th><th class="col-actions">Actions</th></tr></thead>
+  <tbody><tr><td><div class="cell-main"><span class="dot dot-ok"></span><a class="mono cell-title" href="#">example.invalid</a></div></td><td>VPS</td><td class="col-actions"><div class="row-actions"><button class="icon-btn" type="button">⇄</button><a class="icon-btn" href="#">✎</a><button class="icon-btn" type="button">🗑</button></div></td></tr></tbody></table>`;
 const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.css">
   <script defer src="/app.js"></script></head><body data-grid-user="1"><main>
   <div class="server-grid-tools"><span class="field-hint"></span><button id="reset-server-widths">Reset widths</button></div>
@@ -128,6 +128,19 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     await page.reload();
     await ready();
     assert.equal(await width(), pageWidth, 'page-fitted widths persist');
+    // A saved actions width narrower than its controls (saved while Compact
+    // tables shrank the icons, say) is lifted to the content width on load,
+    // since that column has no handle to recover it by hand.
+    await page.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem('test.servers.widths') || '{}');
+      stored.actions = 64;
+      localStorage.setItem('test.servers.widths', JSON.stringify(stored));
+    });
+    await page.reload();
+    await ready();
+    assert(await table.locator('col[data-column="actions"]').evaluate(col => parseInt(col.style.width, 10)) > 64,
+      'a too-narrow saved actions width is lifted to its content');
+    assert(await table.locator('tbody td').last().evaluate(td => td.scrollWidth <= td.clientWidth), 'action controls are not clipped');
     await page.locator('.server-grid-tools').getByRole('button', {name: 'Reset widths', exact: true}).click();
 
     // Keyboard movement, hidden columns and htmx replacement use the same keys.

@@ -632,6 +632,65 @@ select:focus { outline: none; border-color: var(--acc); }
 
 /* ---------- Table scroll wrapper for dense lists ---------- */
 #server-table-wrap { overflow-x: auto; }
+.server-grid-tools, .grid-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 6px;
+}
+.resizable-grid-wrap { overflow-x: auto; max-width: 100%; min-width: 0; }
+.panel:has(.resizable-grid-wrap) { min-width: 0; }
+.grid-tools-mini { gap: 8px; margin: 6px 0; }
+.grid-tools-mini .btn { padding: 3px 6px; font-size: 11px; }
+.grid-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.resizable-grid { table-layout: fixed; }
+.resizable-grid th { position: relative; padding-right: 18px; padding-left: 20px; }
+.resizable-grid th, .resizable-grid td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.resizable-grid th.col-actions { position: sticky; z-index: 2; }
+.resizable-grid .cell-main { min-width: 0; }
+.resizable-grid .cell-title { overflow: hidden; text-overflow: ellipsis; }
+.resizable-grid .row-edit input { min-width: 0; width: 100%; flex: 1; }
+.resizable-grid .row-edit .icon-btn { flex: none; }
+#server-table-wrap .server-grid-table td.server-labels,
+#server-table-wrap .server-grid-table td.server-notes { min-width: 0; }
+.column-resizer {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.column-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 20% 3px;
+  border-right: 2px solid var(--bd);
+}
+.column-resizer:hover::after, .column-resizer:focus-visible::after,
+.column-resizer.resizing::after { border-color: var(--acc); }
+.column-resizer:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+.resizing-columns, .resizing-columns * { cursor: col-resize !important; user-select: none !important; }
+.column-reorder-handle {
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mut);
+  cursor: grab;
+  font-size: 14px;
+}
+.column-reorder-handle:hover, .column-reorder-handle:focus-visible { color: var(--acc); }
+.column-reorder-handle:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+.resizable-grid th.column-dragging { opacity: 0.5; }
+.resizable-grid th.column-drop-before { box-shadow: inset 3px 0 var(--acc); }
+.resizable-grid th.column-drop-after { box-shadow: inset -3px 0 var(--acc); }
+.reordering-columns, .reordering-columns * { cursor: grabbing !important; user-select: none !important; }
 
 /* ---------- Phase 4: extras cards, chips, notes, dashboard ---------- */
 

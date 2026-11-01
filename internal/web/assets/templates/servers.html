@@ -85,6 +85,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   </div>
 </div>
 
+<div class="server-grid-tools">
+  <span class="field-hint">Drag headers to reorder; drag edges to resize.</span>
+  <button type="button" class="btn" id="reset-server-widths">Reset widths</button>
+</div>
 <div id="server-table-wrap">
   {{template "server_table" .}}
 </div>
@@ -93,7 +97,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 {{define "server_table"}}
 {{$v := .Data}}
 {{if $v.Rows}}
-<table class="tbl">
+<table class="tbl server-grid-table" data-widths-key="idlerthing.servers.widths.{{.User.ID}}">
+  <colgroup>
+    {{range $v.GridColumns}}<col data-column="{{.Key}}" data-label="{{.Label}}" data-default-width="{{.Width}}" width="{{.Width}}">{{end}}
+    <col data-column="actions" data-default-width="120" width="120">
+  </colgroup>
   <thead>
     <tr>
       {{if $v.Col "hostname"}}<th class="{{$v.SortClass "hostname"}}"><a href="{{$v.SortLink "hostname"}}" hx-get="{{$v.SortLink "hostname"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Hostname <span class="arrow">{{$v.SortArrow "hostname"}}</span></a></th>{{end}}

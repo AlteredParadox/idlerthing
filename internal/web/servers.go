@@ -53,6 +53,12 @@ type serverRow struct {
 	HostnameTitle string // full hostname for the title attr when shortened
 	PortNote      string // e.g. ":2222" when non-default
 	Active        bool
+	Promo         bool
+	Public        bool
+	Transferable  bool
+	Labels        []model.CatalogItem
+	Notes         []string
+	NotesPreview  string
 	Type          string
 	OS            string
 	CPU           string
@@ -150,11 +156,44 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 		ShortHostnames: s.shortHostnames(r),
 		HiddenCols:     s.hiddenCols(r),
 	}
+	ids := make([]int64, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	var labels map[int64][]model.CatalogItem
+	var notes map[int64][]string
+	if view.Col("labels") {
+		labels, err = s.labelsByService(r, ids, model.ServiceServer)
+		if err != nil {
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+			return
+		}
+	}
+	if view.Col("notes") {
+		notes, err = s.serverNotesByID(r, ids)
+		if err != nil {
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+			return
+		}
+	}
 	dueSoon := s.dueSoonDays(r)
 	metrics := s.liveMetrics(r)
 	rates, _ := s.rates.Get(r.Context())
 	for _, it := range items {
 		row := makeServerRow(it, dueSoon)
+		row.Labels = labels[it.ID]
+		row.Notes = notes[it.ID]
+		if len(row.Notes) > 0 {
+			preview := []rune(strings.Join(strings.Fields(row.Notes[0]), " "))
+			if len(preview) > 100 {
+				row.NotesPreview = string(preview[:100]) + "…"
+			} else {
+				row.NotesPreview = string(preview)
+			}
+			if len(row.Notes) > 1 {
+				row.NotesPreview += fmt.Sprintf(" (+%d more)", len(row.Notes)-1)
+			}
+		}
 		if view.ShortHostnames {
 			row.Hostname, row.HostnameTitle = shortHostname(it.Hostname), it.Hostname
 		}
@@ -172,6 +211,31 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "servers", data)
 }
 
+// serverNotesByID batches service notes for the listed servers, newest first.
+func (s *Server) serverNotesByID(r *http.Request, ids []int64) (map[int64][]string, error) {
+	out := map[int64][]string{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(), `
+			SELECT service_id, body FROM notes
+			WHERE service_type = 1 AND service_id `+clause+`
+			ORDER BY created_at DESC, id DESC`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var body string
+			if err := rows.Scan(&id, &body); err != nil {
+				return err
+			}
+			out[id] = append(out[id], body)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 // dueSoonDays reads settings.due_soon_amount.
 func (s *Server) dueSoonDays(r *http.Request) int {
 	if n := s.memoSettings(r).DueSoon; n > 0 {
@@ -183,14 +247,17 @@ func (s *Server) dueSoonDays(r *http.Request) int {
 // makeServerRow converts a list item into display-ready strings.
 func makeServerRow(it model.ServerListItem, dueSoonDays int) serverRow {
 	row := serverRow{
-		ID:       it.ID,
-		Hostname: it.Hostname,
-		Active:   it.Active,
-		Type:     model.ServerTypeLabel(it.ServerType),
-		OS:       dash(it.OSName),
-		Provider: dash(it.ProviderName),
-		Location: dash(it.LocationName),
-		Net:      it.NetworkType.String,
+		ID:           it.ID,
+		Hostname:     it.Hostname,
+		Active:       it.Active,
+		Promo:        it.WasPromo,
+		Public:       it.ShowPublic,
+		Transferable: it.Transferrable,
+		Type:         model.ServerTypeLabel(it.ServerType),
+		OS:           dash(it.OSName),
+		Provider:     dash(it.ProviderName),
+		Location:     dash(it.LocationName),
+		Net:          it.NetworkType.String,
 	}
 	if it.SSHPort.Valid && it.SSHPort.Int64 != 22 {
 		row.PortNote = ":" + strconv.FormatInt(it.SSHPort.Int64, 10)

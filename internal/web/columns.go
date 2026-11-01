@@ -31,7 +31,7 @@ type colDef struct {
 // serverColumns lists all choosable columns in display order (Actions is
 // always last and not choosable). Order per spec:
 // Hostname, Type, OS, CPU, CPU Model, RAM, Disk, BW, Link Speed, Net,
-// Location, Provider, Price, Price/YR, Due, Since, Uptime.
+// Location, Provider, Price, Price/YR, Due, Since, Uptime, flags, Labels, Notes.
 var serverColumns = []colDef{
 	{"hostname", "Hostname"},
 	{"type", "Type"},
@@ -50,6 +50,12 @@ var serverColumns = []colDef{
 	{"due", "Due"},
 	{"since", "Since"},
 	{"uptime", "Uptime"},
+	{"active", "Active"},
+	{"promo", "Promo"},
+	{"public", "Public"},
+	{"transferable", "Transferable"},
+	{"labels", "Labels"},
+	{"notes", "Notes"},
 }
 
 // defaultHiddenCols applies when the user has no servers_cols pref yet.

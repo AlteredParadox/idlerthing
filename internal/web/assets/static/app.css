@@ -744,6 +744,12 @@ select:focus { outline: none; border-color: var(--acc); }
 
 /* wrapping table cell (notes bodies) */
 .tbl td.wrap { white-space: normal; max-width: 480px; }
+.tbl td.server-labels { white-space: normal; min-width: 100px; max-width: 240px; }
+.server-labels .badge { white-space: normal; overflow-wrap: anywhere; }
+.tbl td.server-notes { min-width: 220px; overflow-wrap: anywhere; }
+.server-notes summary { cursor: pointer; }
+.server-note { white-space: pre-wrap; margin-top: 8px; }
+.server-note + .server-note { border-top: 1px solid var(--bd); padding-top: 8px; }
 
 /* extras card overflow fixes */
 .info-card .tbl.mini .col-actions { position: static; }

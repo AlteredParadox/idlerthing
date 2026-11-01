@@ -1,9 +1,10 @@
 version: 2
 
 # Every Dependabot PR is gated by the `check` job in ci.yml (gofmt, go vet,
-# build, tests, race). The `scan` job in sonarqube.yml is skipped for these
-# PRs — Dependabot events run with a restricted token that cannot read
-# SONAR_TOKEN, so the scan could only fail on auth.
+# build, tests, race) and the `grid` browser test. The `scan` job in
+# sonarqube.yml is skipped for these PRs — Dependabot events run with a
+# restricted token that cannot read SONAR_TOKEN, so the scan could only fail
+# on auth.
 updates:
   # Grouping needs an explicit applies-to per kind: a group with no
   # applies-to covers version updates ONLY, so security updates would arrive

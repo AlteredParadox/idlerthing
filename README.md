@@ -229,8 +229,9 @@ each user and grid. Actions stays last. Reset widths and Reset order work
 independently. The resize controls also support Left/Right (Shift for larger
 steps) and Home; the move grips support Left/Right and Home/End.
 
-The optional browser regression check uses synthetic tables and does not
-require a running instance or a database. With Node.js installed:
+The browser regression check for the grids uses synthetic tables and does not
+require a running instance or a database. CI runs it as the `grid` job; to run
+it locally with Node.js installed:
 
 ```sh
 grid_test_deps=$(mktemp -d)

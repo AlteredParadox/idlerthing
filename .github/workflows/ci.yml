@@ -2,6 +2,8 @@
 # `make test` are the project's own targets, so CI runs exactly what a
 # developer runs locally; the race suite runs separately because it is the
 # slow part (~4 min for internal/web) and only ever needs the one invocation.
+# The `grid` job drives app.js in a real browser; it is its own job so a
+# JavaScript regression is attributed as one and the Go gate stays fast.
 name: ci
 
 # push only on main; branch pushes are covered by their pull_request run,
@@ -71,3 +73,27 @@ jobs:
           go-version-file: go.mod
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # The grid behaviour (resize, drag-and-drop reorder, Fit columns,
+  # persistence) lives in app.js, which no Go test ever loads. This job runs
+  # scripts/test-grids.cjs in headless Chromium against synthetic tables; it
+  # needs no database or running instance. Required alongside `check`.
+  #
+  # Playwright is not a package.json dependency (the repo has no Node
+  # toolchain), so the version is pinned here by hand; bump it together with
+  # a Chromium that the script still passes on. The runner's own Node is
+  # recent enough and avoids another pinned action.
+  grid:
+    runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_VERSION: 1.62.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Playwright
+        run: |
+          npm install --prefix "$RUNNER_TEMP/grid" --no-audit --no-fund "playwright@$PLAYWRIGHT_VERSION"
+          "$RUNNER_TEMP/grid/node_modules/.bin/playwright" install --with-deps chromium
+
+      - name: Grid browser test
+        run: NODE_PATH="$RUNNER_TEMP/grid/node_modules" node scripts/test-grids.cjs

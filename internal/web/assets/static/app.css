@@ -486,7 +486,7 @@ button.pill { font-family: inherit; cursor: pointer; }
   color: var(--tx);
   font: inherit;
   font-size: 13px;
-  padding: 6px 10px;
+  padding: 4px 10px;
 }
 .search-input:focus { outline: none; border-color: var(--acc); }
 
@@ -515,7 +515,7 @@ button.pill { font-family: inherit; cursor: pointer; }
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--mut);
-  padding: 8px 10px;
+  padding: 4px 10px;
   border-bottom: 1px solid var(--bd);
   background: var(--panel2);
   white-space: nowrap;
@@ -639,12 +639,18 @@ select:focus { outline: none; border-color: var(--acc); }
   gap: 12px;
   margin: 12px 0 6px;
 }
+/* Grid tooling is secondary to the data: pill-height buttons, not form buttons. */
+.server-grid-tools .btn, .grid-tools .btn, .col-chooser summary.btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
 .resizable-grid-wrap { overflow-x: auto; max-width: 100%; min-width: 0; }
 .panel:has(.resizable-grid-wrap) { min-width: 0; }
 .grid-tools-mini { gap: 8px; margin: 6px 0; }
 .grid-tools-mini .btn { padding: 3px 6px; font-size: 11px; }
 .grid-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .resizable-grid { table-layout: fixed; }
+.resizable-grid.measuring-columns { table-layout: auto; width: auto; }
 .resizable-grid th { position: relative; padding-right: 18px; padding-left: 20px; }
 .resizable-grid th, .resizable-grid td {
   overflow: hidden;

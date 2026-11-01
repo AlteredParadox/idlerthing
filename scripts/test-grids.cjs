@@ -75,6 +75,19 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     await page.locator('.server-grid-tools').getByRole('button', {name: 'Reset widths', exact: true}).click();
     assert.equal(await width(), initialWidth);
 
+    // Fit columns sizes each column to its widest visible cell, with no
+    // clipping, and the result survives a reload like any other width.
+    await page.locator('.server-grid-tools').getByRole('button', {name: 'Fit columns', exact: true}).click();
+    const fitted = await width();
+    assert(fitted >= 64 && fitted < initialWidth, 'a short hostname needs less than the 240px default');
+    assert(await table.evaluate(table => [...table.rows].every(row =>
+      [...row.cells].every(cell => cell.scrollWidth <= cell.clientWidth))), 'fitted cells do not clip their contents');
+    await page.reload();
+    await ready();
+    assert.equal(await width(), fitted, 'fitted widths persist');
+    await page.locator('.server-grid-tools').getByRole('button', {name: 'Reset widths', exact: true}).click();
+    assert.equal(await width(), initialWidth);
+
     // Keyboard movement, hidden columns and htmx replacement use the same keys.
     await page.getByRole('button', {name: 'Move Type column', exact: true}).press('Home');
     assert.deepEqual(await order(), ['type', 'hostname', 'actions']);
@@ -116,7 +129,7 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     });
     assert(await mini.getAttribute('data-widths-key').then(key => key.includes('.2.')));
     assert.deepEqual(errors, []);
-    console.log('PASS: native drag/drop, resizing, persistence, resets, keyboard, hidden columns, htmx, editable grids and isolation');
+    console.log('PASS: native drag/drop, resizing, fitting, persistence, resets, keyboard, hidden columns, htmx, editable grids and isolation');
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));

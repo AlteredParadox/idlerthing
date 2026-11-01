@@ -126,6 +126,17 @@ document.addEventListener('input', function (e) {
       actions.appendChild(resetOrder);
     }
     resetOrder.disabled = false;
+    let fit = actions.querySelector('[data-fit-grid-columns]');
+    if (!fit) {
+      fit = document.createElement('button');
+      fit.type = 'button';
+      fit.className = 'btn';
+      fit.textContent = 'Fit columns';
+      fit.title = 'Shrink or grow each column to its widest visible cell';
+      fit.setAttribute('data-fit-grid-columns', '');
+      reset.after(fit);
+    }
+    fit.disabled = false;
     let status = tools.querySelector('[data-grid-status]');
     if (!status) {
       status = document.createElement('span');
@@ -419,6 +430,31 @@ document.addEventListener('input', function (e) {
       applyWidths();
     }
 
+    // Size every column to its widest visible cell. Auto table layout does the
+    // measuring: with the fixed widths lifted, the browser lays each column out
+    // at max-content (wrapping cells stop at their max-width), and the header
+    // rect is then exactly the width the column needs. The actions column keeps
+    // its default width; it holds buttons, not data.
+    function fitWidths() {
+      endDrag();
+      table.classList.add('measuring-columns');
+      for (const column of columns) {
+        column.style.width = column.dataset.column === 'actions' ? widths.actions + 'px' : 'auto';
+      }
+      table.style.width = '';
+      const measured = Array.from(table.tHead.rows[0].cells, header => header.getBoundingClientRect().width);
+      table.classList.remove('measuring-columns');
+      Array.from(table.tHead.rows[0].cells).forEach((header, index) => {
+        const key = header.dataset.gridColumn;
+        if (key === 'actions') return;
+        widths[key] = Math.min(maxWidth, Math.max(minWidth, Math.ceil(measured[index])));
+        saved[key] = widths[key];
+      });
+      applyWidths();
+      try { localStorage.setItem(storageKey, JSON.stringify(saved)); } catch (_) {}
+      status.textContent = 'Fitted columns to their contents.';
+    }
+
     function resetColumnOrder() {
       endColumnDrag();
       savedOrder = [];
@@ -430,6 +466,7 @@ document.addEventListener('input', function (e) {
     applyWidths();
     applyOrder(savedOrder);
     reset.addEventListener('click', resetWidths);
+    fit.addEventListener('click', fitWidths);
     resetOrder.addEventListener('click', resetColumnOrder);
     table.addEventListener('dragover', overColumn);
     table.addEventListener('drop', dropColumn);
@@ -445,6 +482,7 @@ document.addEventListener('input', function (e) {
       endDrag();
       endColumnDrag();
       reset.removeEventListener('click', resetWidths);
+      fit.removeEventListener('click', fitWidths);
       resetOrder.removeEventListener('click', resetColumnOrder);
       table.removeEventListener('dragover', overColumn);
       table.removeEventListener('drop', dropColumn);
@@ -469,8 +507,9 @@ document.addEventListener('input', function (e) {
     if (serverReset) {
       const empty = !document.querySelector('#server-table-wrap table');
       serverReset.disabled = empty;
-      const resetOrder = serverReset.closest('.server-grid-tools').querySelector('[data-reset-grid-order]');
-      if (resetOrder) resetOrder.disabled = empty;
+      serverReset.closest('.server-grid-tools')
+        .querySelectorAll('[data-reset-grid-order], [data-fit-grid-columns]')
+        .forEach(button => { button.disabled = empty; });
     }
     document.querySelectorAll('table.tbl').forEach(table => {
       if (!grids.has(table)) initGrid(table);

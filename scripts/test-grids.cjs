@@ -113,6 +113,16 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     await page.waitForFunction(() => document.querySelector('[data-fit-grid-page]').disabled);
     await page.setViewportSize({width: 1280, height: 900});
     await page.waitForFunction(() => !document.querySelector('[data-fit-grid-page]').disabled);
+    // Wide enough that the hostname column hits its 1600px cap: the share it
+    // cannot take must go to the other column, not vanish into a gap.
+    await page.setViewportSize({width: 2600, height: 900});
+    await fitPage.click();
+    assert.equal(await width(), 1600, 'the proportional share is capped at maxWidth');
+    flush = await wrapFit();
+    assert(!flush.scrolls && flush.gap >= 0 && flush.gap < 4, 'capped slack is redistributed, got gap ' + flush.gap);
+    await page.setViewportSize({width: 1280, height: 900});
+    await fitPage.click();
+    assert.equal(await width(), pageWidth, 'fit to page is deterministic for a given page width');
     await page.reload();
     await ready();
     assert.equal(await width(), pageWidth, 'page-fitted widths persist');

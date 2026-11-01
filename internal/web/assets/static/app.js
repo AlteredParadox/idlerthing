@@ -499,26 +499,38 @@ document.addEventListener('input', function (e) {
 
     // Fit columns, then share the slack up to the wrapper's width among the
     // data columns in proportion to their content, so the grid ends flush
-    // with the page and nothing scrolls horizontally.
+    // with the page and nothing scrolls horizontally. A column that hits
+    // maxWidth drops out and its unused share goes round again, so the grid
+    // still fills the page whenever the combined limits allow.
     function fitToPage() {
       endDrag();
       const measured = measureContentWidths();
-      const slack = wrap.clientWidth - totalOf(measured);
+      // Collapsed borders render the table a pixel or so wider than the sum
+      // of its columns; that chrome is part of what has to fit.
+      const chrome = Math.max(0, Math.ceil(table.getBoundingClientRect().width - totalOf(widths)));
+      let slack = wrap.clientWidth - chrome - totalOf(measured);
       if (slack <= 0) {
         updateFitPage(measured);
         return;
       }
       const dataKeys = columns.map(column => column.dataset.column).filter(key => key !== 'actions');
-      const dataTotal = dataKeys.reduce((total, key) => total + measured[key], 0);
-      let given = 0;
-      dataKeys.forEach((key, index) => {
-        const share = index === dataKeys.length - 1 ? slack - given : Math.floor(slack * measured[key] / dataTotal);
-        given += share;
-        widths[key] = Math.min(maxWidth, measured[key] + share);
-      });
+      for (const key of dataKeys) widths[key] = measured[key];
+      let open = dataKeys.filter(key => widths[key] < maxWidth);
+      while (slack > 0 && open.length) {
+        const base = open.reduce((total, key) => total + widths[key], 0);
+        let given = 0;
+        open.forEach((key, index) => {
+          const share = index === open.length - 1 ? slack - given : Math.floor(slack * widths[key] / base);
+          const grown = Math.min(maxWidth, widths[key] + share);
+          given += grown - widths[key];
+          widths[key] = grown;
+        });
+        slack -= given;
+        open = open.filter(key => widths[key] < maxWidth);
+      }
       applyWidths();
-      // Collapsed borders can leave the table a pixel over; trim that off the
-      // widest column rather than leave a sliver of scroll.
+      // Safety net for any rounding the chrome estimate missed: trim a sliver
+      // of scroll off the widest column rather than leave it.
       const over = wrap.scrollWidth - wrap.clientWidth;
       if (over > 0) {
         const widest = dataKeys.reduce((best, key) => widths[key] > widths[best] ? key : best, dataKeys[0]);

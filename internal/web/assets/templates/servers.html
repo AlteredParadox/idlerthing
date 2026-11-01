@@ -121,6 +121,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "due"}}<th class="{{$v.SortClass "due"}}"><a href="{{$v.SortLink "due"}}" hx-get="{{$v.SortLink "due"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Due <span class="arrow">{{$v.SortArrow "due"}}</span></a></th>{{end}}
       {{if $v.Col "since"}}<th>Since</th>{{end}}
       {{if $v.Col "uptime"}}<th>Uptime</th>{{end}}
+      {{if $v.Col "active"}}<th>Active</th>{{end}}
+      {{if $v.Col "promo"}}<th>Promo</th>{{end}}
+      {{if $v.Col "public"}}<th>Public</th>{{end}}
+      {{if $v.Col "transferable"}}<th>Transferable</th>{{end}}
+      {{if $v.Col "labels"}}<th>Labels</th>{{end}}
+      {{if $v.Col "notes"}}<th>Notes</th>{{end}}
       <th class="col-actions"></th>
     </tr>
   </thead>
@@ -187,6 +193,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "uptime"}}
       <td class="mono">{{.Uptime}}</td>
       {{end}}
+      {{if $v.Col "active"}}<td>{{template "server_flag" .Active}}</td>{{end}}
+      {{if $v.Col "promo"}}<td>{{template "server_flag" .Promo}}</td>{{end}}
+      {{if $v.Col "public"}}<td>{{template "server_flag" .Public}}</td>{{end}}
+      {{if $v.Col "transferable"}}<td>{{template "server_flag" .Transferable}}</td>{{end}}
+      {{if $v.Col "labels"}}
+      <td class="server-labels">{{range .Labels}}<span class="badge">{{.Name}}</span> {{else}}—{{end}}</td>
+      {{end}}
+      {{if $v.Col "notes"}}
+      <td class="wrap server-notes">
+        {{if .Notes}}
+        <details>
+          <summary>{{.NotesPreview}}</summary>
+          {{range .Notes}}<div class="server-note">{{.}}</div>{{end}}
+        </details>
+        {{else}}—{{end}}
+      </td>
+      {{end}}
       <td class="col-actions">
         <div class="row-actions">
           <span id="ping-srv-{{.ID}}"></span>
@@ -215,3 +238,5 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </div>
 {{end}}
 {{end}}
+
+{{define "server_flag"}}{{if .}}<span class="badge badge-ok">Yes</span>{{else}}<span class="badge badge-off">No</span>{{end}}{{end}}

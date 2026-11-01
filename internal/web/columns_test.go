@@ -17,6 +17,8 @@
 package web
 
 import (
+	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -92,10 +94,10 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 		return body
 	}
 
-	// Default: new columns absent, default ones present.
+	// Default: the five optional hardware/date columns are hidden.
 	body := get()
-	if !strings.Contains(body, "Columns 12/17") {
-		t.Fatal("chooser should read 12/17 by default")
+	if !strings.Contains(body, "Columns 18/23") {
+		t.Fatal("chooser should read 18/23 by default")
 	}
 	if strings.Contains(body, ">CPU Model<") || strings.Contains(body, ">Link Speed<") ||
 		strings.Contains(body, ">Price/YR (USD)<") || strings.Contains(body, ">Since<") ||
@@ -120,8 +122,8 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 	if !strings.Contains(body, ">Link Speed<") || !strings.Contains(body, "1 Gbps") {
 		t.Fatal("link_speed column should appear with 1 Gbps")
 	}
-	if !strings.Contains(body, "Columns 14/17") {
-		t.Fatal("chooser count should update to 14/17")
+	if !strings.Contains(body, "Columns 14/23") {
+		t.Fatal("chooser count should update to 14/23")
 	}
 
 	// Persisted across requests (fresh GET already proved it; also hide os now).
@@ -136,8 +138,8 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 	// Unhide everything sticks.
 	applyCols(t, client, ts, allColKeys())
 	body = get()
-	if !strings.Contains(body, "Columns 17/17") {
-		t.Fatal("unhide-all should stick (17/17)")
+	if !strings.Contains(body, "Columns 23/23") {
+		t.Fatal("unhide-all should stick (23/23)")
 	}
 	for _, h := range []string{">Since<", ">Uptime<", ">Price/YR (USD)<"} {
 		if !strings.Contains(body, h) {
@@ -270,5 +272,95 @@ func TestServerColsPrefCSRF(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 without CSRF, got %d", resp.StatusCode)
+	}
+}
+
+func TestServerFlagLabelsAndNotesColumns(t *testing.T) {
+	ts, database := newTestServer(t)
+	client := authedClient(t, ts)
+	createFullServer(t, client, ts, "annotated-server", url.Values{
+		"was_promo": {"on"}, "show_public": {"on"}, "transferrable": {"on"},
+	})
+	createFullServer(t, client, ts, "empty-server", url.Values{"active": {""}})
+	var id int64
+	if err := database.QueryRow("SELECT id FROM servers WHERE hostname = 'annotated-server'").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	longNote := strings.Repeat("備", 120) + " full note ending"
+	for _, query := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO labels (id, label) VALUES (1, ?), (2, ?), (3, ?)", []any{"zeta", "<b>alpha</b>", "seedbox-only-label"}},
+		{"INSERT INTO seedboxes (id, hostname) VALUES (?, 'seedbox-annotation')", []any{id}},
+		{"INSERT INTO labels_assigned (label_id, service_id, service_type) VALUES (1, ?, 1), (2, ?, 1), (3, ?, 6)", []any{id, id, id}},
+		{"INSERT INTO notes (service_id, service_type, body) VALUES (?, 1, ?), (?, 1, ?), (?, 6, ?)",
+			[]any{id, "<script>old note</script>", id, longNote, id, "seedbox-only-note"}},
+	} {
+		if _, err := database.Exec(query.sql, query.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	visible := []string{"hostname", "active", "promo", "public", "transferable", "labels", "notes"}
+	applyCols(t, client, ts, visible)
+	for _, hx := range []bool{false, true} {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/servers?status=all", nil)
+		if hx {
+			req.Header.Set("HX-Request", "true")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := readBody(t, resp)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("list hx=%v: HTTP %d", hx, resp.StatusCode)
+		}
+		for _, label := range []string{"Active", "Promo", "Public", "Transferable", "Labels", "Notes"} {
+			if !strings.Contains(body, "<th>"+label+"</th>") {
+				t.Fatalf("hx=%v: missing %s column", hx, label)
+			}
+		}
+		row := rowHTML(t, body, "annotated-server")
+		if strings.Count(row, `class="badge badge-ok">Yes</span>`) != 4 {
+			t.Fatal("all four enabled flags must show Yes")
+		}
+		if strings.Count(rowHTML(t, body, "empty-server"), `class="badge badge-off">No</span>`) != 4 {
+			t.Fatal("all four disabled flags must show No")
+		}
+		for _, expected := range []string{"&lt;b&gt;alpha&lt;/b&gt;", "zeta", longNote,
+			"&lt;script&gt;old note&lt;/script&gt;"} {
+			if !strings.Contains(row, expected) {
+				t.Fatalf("missing escaped/full annotation or Unicode preview: %q", expected)
+			}
+		}
+		if !strings.Contains(html.UnescapeString(row), "<summary>"+strings.Repeat("備", 100)+"… (+1 more)</summary>") {
+			t.Fatal("preview must truncate Unicode safely and show additional note count")
+		}
+		if strings.Index(row, "&lt;b&gt;alpha&lt;/b&gt;") > strings.Index(row, "zeta") {
+			t.Fatal("labels should be alphabetically ordered")
+		}
+		if strings.Contains(body, "seedbox-only") || strings.Contains(row, "<script>") ||
+			strings.Contains(rowHTML(t, body, "empty-server"), "zeta") {
+			t.Fatal("annotations must be escaped and scoped to their server and service type")
+		}
+	}
+
+	// Each new column can be hidden and the saved preference survives reload.
+	applyCols(t, client, ts, []string{"hostname"})
+	resp, err := client.Get(ts.URL + "/servers?status=all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	for _, label := range []string{"Active", "Promo", "Public", "Transferable", "Labels", "Notes"} {
+		if strings.Contains(body, fmt.Sprintf("<th>%s</th>", label)) {
+			t.Fatalf("hidden %s column still rendered", label)
+		}
+	}
+	if row := rowHTML(t, body, "annotated-server"); strings.Contains(row, "zeta") || strings.Contains(row, longNote) {
+		t.Fatal("hidden annotation columns must omit their content")
 	}
 }

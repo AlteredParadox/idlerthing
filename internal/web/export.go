@@ -340,7 +340,7 @@ func (s *Server) disksByServer(r *http.Request, ids []int64) (map[int64][]model.
 	return out, err
 }
 
-// labelsByService batches label assignments for an export id set.
+// labelsByService batches label assignments for a service id set.
 func (s *Server) labelsByService(r *http.Request, ids []int64, serviceType int) (map[int64][]model.CatalogItem, error) {
 	out := map[int64][]model.CatalogItem{}
 	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {

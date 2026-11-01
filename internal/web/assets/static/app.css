@@ -557,10 +557,7 @@ tr.row-link { cursor: pointer; }
   display: flex;
   gap: 4px;
   justify-content: flex-end;
-  opacity: 0;
-  transition: opacity 0.1s;
 }
-tr:hover .row-actions, .row-actions:focus-within { opacity: 1; }
 .col-actions form { display: inline; }
 
 .icon-btn.danger:hover { color: var(--err); border-color: var(--err); }
@@ -773,9 +770,6 @@ select:focus { outline: none; border-color: var(--acc); }
 }
 .tbl.mini tr:last-child td { border-bottom: none; }
 .tbl.mini .col-actions { background: transparent; box-shadow: none; }
-
-/* always-visible actions inside cards */
-.row-actions.always { opacity: 1; }
 
 /* extras add forms */
 .extras-form {

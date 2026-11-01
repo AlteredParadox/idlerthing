@@ -109,7 +109,9 @@ const fixture = `<!doctype html><html><head><link rel="stylesheet" href="/app.cs
     let flush = await wrapFit();
     assert(!flush.scrolls, 'fit to page must not leave a horizontal scrollbar');
     assert(flush.gap >= 0 && flush.gap < 4, 'the grid ends flush with the page, got gap ' + flush.gap);
-    await page.setViewportSize({width: 320, height: 900});
+    // The actions column now fits its one button, so the fixture's content
+    // only exceeds the page below about 290px.
+    await page.setViewportSize({width: 240, height: 900});
     await page.waitForFunction(() => document.querySelector('[data-fit-grid-page]').disabled);
     await page.setViewportSize({width: 1280, height: 900});
     await page.waitForFunction(() => !document.querySelector('[data-fit-grid-page]').disabled);

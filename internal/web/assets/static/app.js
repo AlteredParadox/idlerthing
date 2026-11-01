@@ -357,7 +357,7 @@ document.addEventListener('input', function (e) {
     columns.forEach((column, index) => {
       const key = column.dataset.column;
       const defaultWidth = Number(column.dataset.defaultWidth);
-      widths[key] = key === 'actions' ? defaultWidth : (saved[key] || defaultWidth);
+      widths[key] = saved[key] || defaultWidth;
       if (key === 'actions') return;
       const header = table.tHead.rows[0].cells[index];
       header.querySelector('.column-reorder-handle')?.remove();
@@ -445,19 +445,16 @@ document.addEventListener('input', function (e) {
     // lays each column out at max-content (wrapping cells stop at their
     // max-width), and the header rect is then exactly the width the column
     // needs. Everything is restored before returning, within one task, so
-    // nothing is painted in between. The actions column keeps its default
-    // width; it holds buttons, not data.
+    // nothing is painted in between. The actions column is measured too, so
+    // a fit leaves no spare room after its buttons.
     function measureContentWidths() {
       table.classList.add('measuring-columns');
-      for (const column of columns) {
-        column.style.width = column.dataset.column === 'actions' ? widths.actions + 'px' : 'auto';
-      }
+      for (const column of columns) column.style.width = 'auto';
       table.style.width = '';
       const measured = Object.create(null);
       for (const header of table.tHead.rows[0].cells) {
         const key = header.dataset.gridColumn;
-        measured[key] = key === 'actions' ? widths.actions
-          : Math.min(maxWidth, Math.max(minWidth, Math.ceil(header.getBoundingClientRect().width)));
+        measured[key] = Math.min(maxWidth, Math.max(minWidth, Math.ceil(header.getBoundingClientRect().width)));
       }
       table.classList.remove('measuring-columns');
       applyWidths();
@@ -469,10 +466,7 @@ document.addEventListener('input', function (e) {
     }
 
     function saveAllWidths() {
-      for (const column of columns) {
-        const key = column.dataset.column;
-        if (key !== 'actions') saved[key] = widths[key];
-      }
+      for (const column of columns) saved[column.dataset.column] = widths[column.dataset.column];
       try { localStorage.setItem(storageKey, JSON.stringify(saved)); } catch (_) {}
     }
 
@@ -501,7 +495,9 @@ document.addEventListener('input', function (e) {
     // data columns in proportion to their content, so the grid ends flush
     // with the page and nothing scrolls horizontally. A column that hits
     // maxWidth drops out and its unused share goes round again, so the grid
-    // still fills the page whenever the combined limits allow.
+    // still fills the page whenever the combined limits allow. The actions
+    // column stays at its content width so the last data column ends at
+    // the buttons, not at a strip of empty cell.
     function fitToPage() {
       endDrag();
       const measured = measureContentWidths();
@@ -513,8 +509,8 @@ document.addEventListener('input', function (e) {
         updateFitPage(measured);
         return;
       }
+      for (const column of columns) widths[column.dataset.column] = measured[column.dataset.column];
       const dataKeys = columns.map(column => column.dataset.column).filter(key => key !== 'actions');
-      for (const key of dataKeys) widths[key] = measured[key];
       let open = dataKeys.filter(key => widths[key] < maxWidth);
       while (slack > 0 && open.length) {
         const base = open.reduce((total, key) => total + widths[key], 0);

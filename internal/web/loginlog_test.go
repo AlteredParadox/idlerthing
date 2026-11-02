@@ -28,8 +28,9 @@ import (
 )
 
 // The log lines below are a CONTRACT with deploy/fail2ban/idlerthing.conf.
-// Changing their shape silently stops bans working, so the filter's patterns
-// are reproduced here and matched against real output.
+// Changing their shape silently stops bans working, so the message part of
+// each filter pattern (the filter wraps them in common.conf's journal
+// prefix) is reproduced here and matched against real output.
 var (
 	reFailedAuth = regexp.MustCompile(`^WARN login: failed authentication from=(\S+)(\s|$)`)
 	reRateLimit  = regexp.MustCompile(`^WARN login: rate-limited from=(\S+)$`)

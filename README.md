@@ -143,6 +143,21 @@ iptables by default, and covers TCP and UDP so a ban also applies over QUIC.
 
 ## Upgrading
 
+- **v0.4.4 — reinstall the fail2ban filter if you use it.** Earlier versions
+  of `deploy/fail2ban/idlerthing.conf` anchored on the bare message, but
+  fail2ban's systemd backend presents each journal entry as
+  `host idlerthing[pid]: message`, so the jail never matched anything. The
+  fixed filter is not picked up by upgrading the binary; copy it into place
+  and check it against the journal:
+
+  ```sh
+  sudo install -m 0644 deploy/fail2ban/idlerthing.conf /etc/fail2ban/filter.d/idlerthing.conf
+  sudo fail2ban-regex systemd-journal /etc/fail2ban/filter.d/idlerthing.conf
+  sudo systemctl restart fail2ban
+  ```
+
+  The same release makes **Settings → API token** ask for your current
+  password before generating a token.
 - Early docs showed example admin passwords verbatim. If your deployment
   dates from that era, the server logs a loud warning at startup when the
   admin password matches one — reset it with `idlerthing passwd` (prints a

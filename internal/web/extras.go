@@ -101,8 +101,11 @@ func (s *Server) buildExtras(r *http.Request, serviceID int64, serviceType int) 
 // page fragment into the tiny delete form.
 func redirectBack(w http.ResponseWriter, r *http.Request, fallback string) {
 	back := r.FormValue("back")
+	// "///host" parses with an empty Host but is scheme-relative to a
+	// browser, hence the explicit "//" prefix check alongside Host.
 	if u, err := url.Parse(back); err != nil || u.Scheme != "" || u.Host != "" ||
-		strings.Contains(back, "\\") || !strings.HasPrefix(back, "/") {
+		strings.Contains(back, "\\") || !strings.HasPrefix(back, "/") ||
+		strings.HasPrefix(back, "//") {
 		back = fallback
 	}
 	if r.Header.Get("HX-Request") == "true" {

@@ -149,10 +149,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <p class="empty-sub">
       {{if $v.TokenSet}}A token is currently set. Generating a new one replaces it.{{else}}No token set. The API is disabled until you generate one.{{end}}
     </p>
-    <form method="post" action="/settings/account">
+    <form method="post" action="/settings/account" class="form-grid">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <input type="hidden" name="action" value="token">
-      <button class="btn" type="submit">Generate new token</button>
+      <label class="field">
+        <span class="field-label">Current password</span>
+        <input type="password" name="current_password" required autocomplete="current-password">
+      </label>
+      <div class="field">
+        <span class="field-label">&nbsp;</span>
+        <button class="btn" type="submit">Generate new token</button>
+      </div>
     </form>
   </section>
 

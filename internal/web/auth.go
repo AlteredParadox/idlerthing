@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -109,18 +110,19 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	ip := s.clientIP(r)
-	if !s.limit.allow(limiterKey(ip)) {
-		s.logBlocked(ip)
-		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
+	email := strings.TrimSpace(r.FormValue("email"))
+	password := r.FormValue("password")
+	// Bounded inputs BEFORE they cost a limiter hit: an over-length value
+	// can never match, so refusing it here keeps a flood of junk from
+	// minting limiter keys for free.
+	if len(email) > 254 || len(password) > 256 {
+		s.renderLogin(w, r, token, "Invalid email or password.")
 		return
 	}
 
-	email := strings.TrimSpace(r.FormValue("email"))
-	password := r.FormValue("password")
-	// Bounded inputs before they become limiter keys or bcrypt work.
-	if len(email) > 254 || len(password) > 256 {
-		s.renderLogin(w, r, token, "Invalid email or password.")
+	ip := s.clientIP(r)
+	if !s.allowSource(ip) {
+		s.renderLogin(w, r, token, "Too many attempts. Try again later.")
 		return
 	}
 
@@ -186,7 +188,15 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 // handleLogout deletes the session and clears the cookie.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess := sessionFromCtx(r.Context()); sess != nil {
-		s.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE token = ?", sess.Token)
+		// Revocation is the whole point of logout: if the row cannot be
+		// deleted, say so instead of clearing the cookie and reporting
+		// success while a copied cookie stays valid.
+		if _, err := s.db.ExecContext(r.Context(),
+			"DELETE FROM sessions WHERE token = ?", sess.Token); err != nil {
+			slog.Error("logout: revoke session", "err", err)
+			http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+			return
+		}
 	}
 	// The clearing cookie carries the SAME attributes as the one it replaces.
 	// Behind a TLS proxy the session cookie is Secure, and browsers implement
@@ -205,9 +215,39 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // before the bcrypt verify, so they are cheap to send in bulk — logging every
 // one would let a flood amplify into unbounded journald writes.
 func (s *Server) logBlocked(ip string) {
-	if s.blockLog.allow(limiterKey(ip)) {
+	if s.blockLog.allow(sourceKey(ip)) {
 		slog.Warn("login: rate-limited", "from", ip)
 	}
+}
+
+// allowSource applies the per-source login budget (shared by /login and the
+// credential changes under Settings) to ip and logs refusals in the
+// fail2ban-visible form.
+//
+// The limiter's key map is capped, and a flood of distinct sources (one
+// IPv6 /64 is thousands of them) can saturate it. A capacity refusal must
+// not lock the owner out: a source that has authenticated before goes
+// through a separate small limiter instead, which knownIPs' own bound keeps
+// small. Capacity refusals of unfamiliar sources are logged ONCE per window
+// without naming the source — the refused address did nothing wrong, and a
+// per-source line would hand the shipped jail the owner's own address.
+func (s *Server) allowSource(ip string) bool {
+	key := sourceKey(ip)
+	ok, full := s.limit.check(key)
+	if !ok && full && s.knownIPs.has(ip) {
+		ok, full = s.knownLimit.allow(key), false
+	}
+	if ok {
+		return true
+	}
+	if full {
+		if s.blockLog.allow(limiterKey("saturated")) {
+			slog.Warn("login: limiter saturated, refusing unfamiliar sources")
+		}
+	} else {
+		s.logBlocked(ip)
+	}
+	return false
 }
 
 // cookieSecure reports whether cookies must carry the Secure attribute:
@@ -306,12 +346,20 @@ func userFromCtx(ctx context.Context) *user {
 // clientIP extracts the remote IP for rate limiting. Behind an
 // HTTPS-terminating proxy it trusts the LAST X-Forwarded-For entry
 // (appended by the proxy itself).
+//
+// Proxies either fold the client into one comma-separated header line
+// (nginx, Caddy) or add a separate header line (HAProxy's forwardfor), so
+// the proxy's own view of the client is the last element of the LAST line.
+// Header.Get would return the first line, which a client can supply itself.
+// Anything that does not parse as an address falls through to RemoteAddr
+// rather than becoming an attacker-chosen limiter and fail2ban key.
 func (s *Server) clientIP(r *http.Request) string {
 	if s.behindTLSProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			if ip := strings.TrimSpace(parts[len(parts)-1]); ip != "" {
-				return ip
+		if lines := r.Header.Values("X-Forwarded-For"); len(lines) > 0 {
+			parts := strings.Split(lines[len(lines)-1], ",")
+			ip := strings.TrimSpace(parts[len(parts)-1])
+			if addr, err := netip.ParseAddr(ip); err == nil {
+				return addr.Unmap().WithZone("").String()
 			}
 		}
 	}
@@ -325,7 +373,8 @@ func (s *Server) clientIP(r *http.Request) string {
 // rateLimiter is a small per-key sliding-window limiter. The map is
 // swept only when it grows past sweepThreshold, and distinct keys are
 // capped — beyond the cap NEW keys fail closed (XFF-spoofed key floods
-// can't grow memory or make each call O(n)).
+// can't grow memory or make each call O(n)); check reports that case so
+// the login path can spare familiar sources (see allowSource).
 type rateLimiter struct {
 	mu     sync.Mutex
 	hits   map[string][]time.Time
@@ -345,6 +394,14 @@ func newRateLimiter(limit int, window time.Duration) *rateLimiter {
 // allow records an attempt for key and reports whether it is within the
 // limit. Stale keys are pruned so the map can't grow unboundedly.
 func (rl *rateLimiter) allow(key string) bool {
+	ok, _ := rl.check(key)
+	return ok
+}
+
+// check is allow with the reason for a refusal: full is true when key was
+// refused only because it is new and the map is at capacity, so a caller
+// can treat that differently from a source that spent its own budget.
+func (rl *rateLimiter) check(key string) (ok, full bool) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -380,14 +437,14 @@ func (rl *rateLimiter) allow(key string) bool {
 	}
 
 	if kept == nil && len(rl.hits) >= maxLimiterKeys {
-		return false // new key beyond cap: fail closed
+		return false, true // new key beyond cap: fail closed
 	}
 	if len(kept) >= rl.limit {
 		rl.hits[key] = kept
-		return false
+		return false, false
 	}
 	rl.hits[key] = append(kept, now)
-	return true
+	return true, false
 }
 
 // knownIPs remembers (hashed) source addresses that have completed a login,
@@ -413,7 +470,7 @@ func (k *knownIPs) add(ip string) {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	key := limiterKey(ip)
+	key := sourceKey(ip)
 	if _, ok := k.seen[key]; !ok && len(k.seen) >= k.max {
 		var oldestKey string
 		var oldest time.Time
@@ -434,8 +491,25 @@ func (k *knownIPs) has(ip string) bool {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	_, ok := k.seen[limiterKey(ip)]
+	_, ok := k.seen[sourceKey(ip)]
 	return ok
+}
+
+// sourceKey is the limiter key for a client address. IPv6 sources are
+// grouped by /64: a single host usually holds a whole /64, so keying on the
+// full address would let it mint thousands of distinct keys (and privacy
+// extensions rotate a legitimate client within its /64 anyway). IPv4-mapped
+// and zoned addresses are normalised so one client cannot spell itself two
+// ways. Anything that is not an address is hashed as-is.
+func sourceKey(ip string) string {
+	if addr, err := netip.ParseAddr(ip); err == nil {
+		addr = addr.Unmap().WithZone("")
+		if addr.Is6() {
+			addr = netip.PrefixFrom(addr, 64).Masked().Addr()
+		}
+		ip = addr.String()
+	}
+	return limiterKey(ip)
 }
 
 // constantTimeEqual compares two strings without early exit.

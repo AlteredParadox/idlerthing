@@ -152,6 +152,12 @@ func (s *Server) listSort(r *http.Request, name, defaultSort string) (sort, dir 
 	sort, dir = q.Get("sort"), q.Get("dir")
 	u := userFromCtx(r.Context())
 
+	// The query is reachable by a cross-site GET and the value is persisted
+	// and re-rendered into hx-get URLs, so only a key-shaped value gets
+	// that far; the stores allowlist the actual column on use.
+	if !validSortKey(sort) {
+		sort = ""
+	}
 	if sort != "" {
 		if dir != "desc" {
 			dir = "asc"
@@ -214,12 +220,43 @@ func safeRedirectTarget(referer, fallback string) string {
 	if err != nil {
 		return fallback
 	}
+	// Checks run on the DECODED path: a percent-encoded tab (/%09/host)
+	// decodes to "/\t/host", which browsers strip to the scheme-relative
+	// //host. The returned path is re-escaped, so what is checked is what
+	// is sent.
 	p := ref.Path
-	if p == "" || strings.HasPrefix(p, "//") || strings.Contains(p, "\\") {
+	if !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") ||
+		strings.Contains(p, "\\") || hasControlByte(p) {
 		return fallback
 	}
+	p = ref.EscapedPath()
 	if ref.RawQuery != "" {
 		p += "?" + ref.RawQuery
 	}
 	return p
+}
+
+// hasControlByte reports whether s contains an ASCII control character.
+func hasControlByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// validSortKey bounds a ?sort= value to the shape of the allowlisted keys
+// (short, lowercase, no separators) before it is persisted or rendered.
+func validSortKey(k string) bool {
+	if len(k) > 32 {
+		return false
+	}
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_') {
+			return false
+		}
+	}
+	return true
 }

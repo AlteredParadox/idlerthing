@@ -82,11 +82,17 @@ minute per source, so a flood of already-refused requests cannot amplify into
 unbounded journald writes.
 
 Built-in limits, independent of fail2ban: 10 attempts per minute per source
-(shared by the login form and the Settings → Account password change, so a
-stolen session cannot guess the real password unthrottled) and 10 per minute
-per account. The per-account limit spares addresses that have signed in
-before, so a stranger hammering the admin account cannot lock the owner out
-from a familiar address — it still applies in full to everyone else.
+(shared by the login form and the Settings → Account password change and API
+token generation, so a stolen session cannot guess the real password
+unthrottled) and 10 per minute per account. The per-account limit spares
+addresses that have signed in before, so a stranger hammering the admin
+account cannot lock the owner out from a familiar address — it still applies
+in full to everyone else. A "source" is an IPv4 address or an IPv6 /64, and
+the limiter tracks at most 4096 of them. A flood of more distinct sources
+than that is refused without being logged per address (one
+`WARN login: limiter saturated` line per minute instead, which the filter
+does not match), and addresses that have signed in before keep their own
+budget throughout, so the owner can still get in.
 
 A ready-made filter and jail ship in [`deploy/fail2ban/`](deploy/fail2ban):
 
@@ -115,7 +121,7 @@ iptables by default, and covers TCP and UDP so a ban also applies over QUIC.
 | `IDLER_ADMIN_PASSWORD`| *(none)*                 | First-run admin password (seed only)     |
 | `IDLER_SECRET`        | *(generated)*            | YABS ingest HMAC key; persisted to `<db>.secret` when unset |
 | `IDLER_BEHIND_TLS_PROXY` | *(off)*             | Set `1`/`true`/`yes` behind an HTTPS-terminating proxy: session cookies go `Secure` and the last `X-Forwarded-For` IP is trusted |
-| `IDLER_BASE_URL`      | *(none)*                 | External URL used in the YABS ingest command (default: request scheme+Host) |
+| `IDLER_BASE_URL`      | *(none)*                 | External URL used in the YABS ingest command (default: request scheme+Host). Set it behind a reverse proxy so the command never depends on the request's `Host` |
 | `IDLER_ALLOW_HTTP_INGEST` | *(off)*              | Allow plain-http YABS ingest URLs on LAN hosts (loopback http and https always work) |
 
 ## Backup & restore
@@ -144,7 +150,8 @@ iptables by default, and covers TCP and UDP so a ban also applies over QUIC.
 
 ## JSON API
 
-Generate a token in **Settings → API token**, then:
+Generate a token in **Settings → API token** (it asks for your current
+password), then:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/servers
@@ -183,6 +190,56 @@ duplicate submissions are ignored.
 - All size/bandwidth values are stored in whole MB, 1024-based
   (1 GB = 1024 MB, 1 TB = 1024 GB); the UI enters/displays friendly units
   and converts server-side. NULL bandwidth means unlimited (∞).
+
+## Security model and accepted risks
+
+idlerthing is a single-administrator tool. The one account owns everything,
+has shell access to the host it runs on, and is the only principal the
+application knows; there is no multi-tenant or privilege boundary inside it.
+The boundaries it does defend are: anonymous network clients against the
+login form and the YABS ingest, cross-site pages against the signed-in
+browser, and the host-side service account against the rest of the system
+(see the systemd unit). Security audits in November 2026 confirmed and fixed
+four issues (login-limiter lockout, logout failing open on a database error,
+an open redirect through a control character in the Referer, and
+`X-Forwarded-For` being read from the wrong header line). The following
+leads from those audits are **accepted as designed** and are not planned
+fixes:
+
+- **The dashboard GET rolls overdue billing dates forward.** A cross-site
+  link to `/` can trigger it, but all it does is the deterministic catch-up
+  the next dashboard visit would do anyway. No attacker-chosen data is
+  involved.
+- **The first-run admin password is printed to the journal.** That is how
+  it reaches you (see *systemd* above). Change it after the first login if
+  journal readers other than you exist.
+- **The Prometheus URL and the fixed outbound services (rates, whois) may
+  reach internal hosts.** Only the administrator can set the Prometheus URL,
+  and the administrator already has the host. No network-authority
+  separation between the service and its operator is claimed.
+- **The YABS command is `curl https://yabs.sh | bash`.** It runs on the
+  benchmarked server, not on idlerthing, and it is how YABS is distributed.
+  Review it there if you do not trust the publisher.
+- **The YABS command's URL derives from the request `Host` unless
+  `IDLER_BASE_URL` is set.** Set it behind a proxy. An invalid value is
+  logged at startup and ignored.
+- **Releases publish on any `v*` tag and are unsigned.** Only repository
+  owners can push tags. The checksum file is built in the same job as the
+  binaries.
+- **The SonarQube job runs the test suite before the token-bearing step on
+  same-repository pull requests.** Only repository writers can open those.
+- **Import warnings echo file content to the terminal.** The operator chose
+  the file; the CLI does not sanitise terminal control sequences in it.
+- **Smaller notes, accepted as-is:** the API accepts a bare token as well as
+  `Bearer <token>`; zoned IPv6 addresses are accepted in imports and ping
+  targets; the YABS `gb_url` link is not restricted to geekbench.com; the
+  secret file is read after a separate `Lstat` (the data directory is
+  private to the service user); bcrypt work is bounded per source, not
+  globally; `govulncheck` and the browser-test Playwright are fetched
+  unpinned; htmx history snapshots and grid preferences stay in the
+  browser after logout (clearing them would also wipe the grid layout).
+
+Report anything outside this list through the repository's issue tracker.
 
 ## License
 

@@ -162,36 +162,45 @@ func (s *Server) handleSettingsAccount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// changePassword validates + updates the password, killing other sessions.
-func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user) {
-	current := r.FormValue("current_password")
-	newPass := r.FormValue("new_password")
-	confirm := r.FormValue("confirm_password")
-
-	// Same per-source budget as /login: a stolen session cookie must not
-	// buy unthrottled online guessing of the real password (which is what
-	// survives a session wipe and may be reused elsewhere). Checked before
-	// the bcrypt verify, so refused attempts are cheap.
+// verifyCurrentPassword re-authenticates the session's user with the
+// submitted current_password before a durable credential change. On failure
+// it has already written the flash and redirect, and returns false.
+//
+// Same per-source budget as /login: a stolen session cookie must not buy
+// unthrottled online guessing of the real password (which is what survives
+// a session wipe and may be reused elsewhere). Checked before the bcrypt
+// verify, so refused attempts are cheap.
+func (s *Server) verifyCurrentPassword(w http.ResponseWriter, r *http.Request, u *user) bool {
 	ip := s.clientIP(r)
-	if !s.limit.allow(limiterKey(ip)) {
-		s.logBlocked(ip)
+	if !s.allowSource(ip) {
 		s.setFlash(w, r, "err", "Too many attempts. Try again later.")
 		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
-		return
+		return false
 	}
 
 	var hash string
 	if err := s.db.QueryRowContext(r.Context(),
 		"SELECT password_hash FROM users WHERE id = ?", u.ID).Scan(&hash); err != nil {
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
-		return
+		return false
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(r.FormValue("current_password"))) != nil {
 		// Same proxy-aware source as the login failures, so one fail2ban
 		// filter catches an attacker who got as far as a session too.
 		slog.Warn("login: failed password-change verification", "from", ip)
 		s.setFlash(w, r, "err", "Current password is wrong.")
 		http.Redirect(w, r, routeSettings, http.StatusSeeOther)
+		return false
+	}
+	return true
+}
+
+// changePassword validates + updates the password, killing other sessions.
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, u *user) {
+	newPass := r.FormValue("new_password")
+	confirm := r.FormValue("confirm_password")
+
+	if !s.verifyCurrentPassword(w, r, u) {
 		return
 	}
 	if len(newPass) < 8 || len(newPass) > 72 {
@@ -252,6 +261,11 @@ const apiTokenCookieName = "idler_api_token"
 // (PRG) with the plaintext riding a one-time cookie — rendering it directly
 // with a 200 would regenerate+revoke the token on every F5.
 func (s *Server) generateAPIToken(w http.ResponseWriter, r *http.Request, u *user) {
+	// A token outlives every session and skips CSRF, so minting one is a
+	// credential change: a stolen session alone must not be enough.
+	if !s.verifyCurrentPassword(w, r, u) {
+		return
+	}
 	token, err := randomToken(32)
 	if err != nil {
 		http.Error(w, errMsgServerErr, http.StatusInternalServerError)

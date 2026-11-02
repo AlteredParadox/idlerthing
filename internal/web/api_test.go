@@ -137,7 +137,9 @@ func TestAPITokenGeneration(t *testing.T) {
 	client := authedClient(t, ts)
 
 	// PRG: POST redirects; the revealed token rides a one-time cookie.
-	resp := postForm(t, client, ts, "/settings/account", url.Values{"action": {"token"}})
+	resp := postForm(t, client, ts, "/settings/account", url.Values{
+		"action": {"token"}, "current_password": {testPassword},
+	})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("expected 303 PRG redirect, got %d", resp.StatusCode)

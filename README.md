@@ -65,7 +65,7 @@ in-app ping tool.
 
 idlerthing logs authentication events to stderr — the systemd journal — in a
 fail2ban-friendly form. The binary calls `log.SetFlags(0)` because journald
-already stamps every entry, so a line is exactly:
+already stamps every entry, so the logged message is exactly:
 
 ```
 WARN login: failed authentication from=203.0.113.7 user=someone@example.com
@@ -76,10 +76,12 @@ INFO login: authenticated from=203.0.113.7 user=admin@localhost
 
 The attempted username is attacker-controlled, so it is only ever emitted
 **after** the address (and slog escapes it) — a crafted value cannot shift the
-filter's `<HOST>` capture. Successful logins are audited in the same stream and
-excluded by the filter's `ignoreregex`. Blocked attempts log at most once per
-minute per source, so a flood of already-refused requests cannot amplify into
-unbounded journald writes.
+filter's `<ADDR>` capture. fail2ban's systemd backend presents each entry as
+`host idlerthing[pid]: message`; the filter's prefix pattern absorbs that, so
+it matches both the journal and a plain log file. Successful logins are
+audited in the same stream and excluded by the filter's `ignoreregex`.
+Blocked attempts log at most once per minute per source, so a flood of
+already-refused requests cannot amplify into unbounded journald writes.
 
 Built-in limits, independent of fail2ban: 10 attempts per minute per source
 (shared by the login form and the Settings → Account password change and API
@@ -99,6 +101,7 @@ A ready-made filter and jail ship in [`deploy/fail2ban/`](deploy/fail2ban):
 ```sh
 sudo install -m 0644 deploy/fail2ban/idlerthing.conf /etc/fail2ban/filter.d/idlerthing.conf
 sudo install -m 0644 deploy/fail2ban/jail.local      /etc/fail2ban/jail.d/idlerthing.conf
+sudo fail2ban-regex systemd-journal /etc/fail2ban/filter.d/idlerthing.conf  # expect matched > 0 once a failed login is in the journal
 sudo systemctl restart fail2ban
 sudo fail2ban-client status idlerthing
 ```

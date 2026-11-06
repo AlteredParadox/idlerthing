@@ -23,6 +23,17 @@ benchmarks. SQLite storage, no cgo, no external services required.
 - **YABS** — signed ingest URLs for yabs.sh results, run history and views.
 - **Public page** — optional read-only `/public` server list.
 
+## Screenshots
+
+Dashboard: monthly and yearly cost, due-soon list, recently added, spec summary.
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+Servers list: dense grid with per-column drag/resize, status tabs, and usage bars.
+Hostnames and due dates are partially blanked in this capture.
+
+![Servers](docs/screenshots/servers.png)
+
 ## Quick start
 
 ```sh

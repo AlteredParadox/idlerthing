@@ -855,7 +855,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## modernc.org/sqlite@v1.61.0
+## modernc.org/sqlite@v1.61.1
 
 ### AUTHORS
 
@@ -889,6 +889,7 @@ Michael Hoffmann <mhoffm@posteo.de>
 Michael Rykov <mrykov@gmail.com>
 Morgan Bazalgette <morgan@howl.moe>
 Nathan Herring <nherring@google.com>
+Roman Khafizianov <roman@any.org>
 Ross Light <ross@zombiezen.com>
 SUSE LLC <moio@suse.com>
 Saed SayedAhmed <saadmtsa@gmail.com>

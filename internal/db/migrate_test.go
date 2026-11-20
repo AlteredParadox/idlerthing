@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"idlerthing/internal/yabs"
 )
 
 var expectedTables = []string{
@@ -522,7 +524,10 @@ func latestMigration(t *testing.T) int {
 }
 
 // 0014 clears geekbench "urls" that are not http(s) links (yabs.sh's
-// "Local (--no-upload)" placeholder) without touching the runs or real links.
+// "Local (--no-upload)" placeholder) without deleting a run or rewriting a
+// link, and it decides "is a link" exactly as yabs.ResultURL does — the rule
+// ingest and backup restore use — so an upgraded database and a restored
+// backup of it end up with the same links.
 func TestMigration0014GbURLPlaceholder(t *testing.T) {
 	db, err := Open(openTemp(t))
 	if err != nil {
@@ -534,11 +539,36 @@ func TestMigration0014GbURLPlaceholder(t *testing.T) {
 	if _, err := db.Exec("INSERT INTO servers (hostname, server_type, active) VALUES ('m14', 1, 1)"); err != nil {
 		t.Fatal(err)
 	}
-	for _, u := range []any{"Local (--no-upload)", "https://browser.geekbench.com/v6/cpu/1", "HTTP://example.com/r", nil} {
+	// All on one server. The padded variants are the legacy shape that must
+	// stay separate rows: the old ingest stored gb_url untrimmed, so they
+	// could sit beside the exact link under the unique index.
+	candidates := []string{
+		"Local (--no-upload)",
+		"https://browser.geekbench.com/v6/cpu/1",
+		" https://browser.geekbench.com/v6/cpu/1",
+		"https://browser.geekbench.com/v6/cpu/1 ",
+		"\thttps://browser.geekbench.com/v6/cpu/1",
+		"HTTP://example.com/r",
+		"hTtPs://example.com/r",
+		"http://",
+		"https://",
+		"https://x",
+		"http\u017f://example.com/x",
+		"browser.geekbench.com/v6/cpu/2",
+		"javascript:alert(1)",
+		"ftp://example.com/x",
+		"https://example.com/a\nb",
+		"",
+	}
+	for _, u := range candidates {
 		if _, err := db.Exec("INSERT INTO yabs (server_id, gb_url) VALUES (1, ?)", u); err != nil {
-			t.Fatal(err)
+			t.Fatalf("seed %q: %v", u, err)
 		}
 	}
+	if _, err := db.Exec("INSERT INTO yabs (server_id, gb_url) VALUES (1, NULL)"); err != nil {
+		t.Fatal(err)
+	}
+
 	applied, err := Migrate(db)
 	if err != nil {
 		t.Fatal(err)
@@ -546,10 +576,34 @@ func TestMigration0014GbURLPlaceholder(t *testing.T) {
 	if diff := appliedDiff(t, applied, 13); diff != "" {
 		t.Fatal(diff)
 	}
-	var runs, withURL, placeholder int
-	db.QueryRow("SELECT COUNT(*), COUNT(gb_url) FROM yabs").Scan(&runs, &withURL)
-	db.QueryRow("SELECT COUNT(*) FROM yabs WHERE gb_url LIKE 'Local%'").Scan(&placeholder)
-	if runs != 4 || withURL != 2 || placeholder != 0 {
-		t.Fatalf("runs=%d with gb_url=%d placeholder=%d, want 4/2/0", runs, withURL, placeholder)
+
+	var runs int
+	db.QueryRow("SELECT COUNT(*) FROM yabs").Scan(&runs)
+	if runs != len(candidates)+1 {
+		t.Fatalf("runs = %d, want %d — the migration must not delete runs", runs, len(candidates)+1)
+	}
+	// Rows were inserted in candidate order, so id i+1 holds candidates[i].
+	for i, u := range candidates {
+		var got sql.NullString
+		if err := db.QueryRow("SELECT gb_url FROM yabs WHERE id = ?", i+1).Scan(&got); err != nil {
+			t.Fatalf("read %q: %v", u, err)
+		}
+		want := yabs.ResultURL(u)
+		if u == "" {
+			// Not a link either way; the migration leaves '' alone and the
+			// partial unique index already ignores it.
+			if got.Valid && got.String != "" {
+				t.Errorf("empty gb_url became %q", got.String)
+			}
+			continue
+		}
+		if got.String != want || got.Valid != (want != "") {
+			t.Errorf("gb_url %q: migration left %q (valid=%v), ResultURL says %q", u, got.String, got.Valid, want)
+		}
+	}
+	var links int
+	db.QueryRow("SELECT COUNT(gb_url) FROM yabs WHERE gb_url != ''").Scan(&links)
+	if links != 6 {
+		t.Errorf("links kept = %d, want 6", links)
 	}
 }

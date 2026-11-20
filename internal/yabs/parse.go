@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -205,19 +204,29 @@ func (r *Result) empty() bool {
 		len(r.Disks) == 0 && len(r.Network) == 0
 }
 
-// ResultURL returns s when it is an absolute http(s) URL with a host, and ""
+// ResultURL returns s unchanged when it is an http(s) link — "http://" or
+// "https://" in any ASCII case, followed by at least one character — and ""
 // otherwise. yabs.sh fills the geekbench "url" field with a placeholder when
 // there is no result page — "Local (--no-upload)" under --no-upload — and
 // storing that as gb_url had two effects: the detail page linked to it, and
 // the (server_id, gb_url) unique index treated every later no-upload run on
 // the same server as a duplicate of the first and dropped it.
+//
+// The value is never rewritten (no trimming): a stored gb_url is either the
+// exact string that was submitted or NULL, so applying this rule to rows that
+// already exist can clear a link but can never make two distinct legacy
+// values collide on the unique index. Migration 0014 applies the same rule in
+// SQL to existing rows and the backup importer applies it on restore;
+// TestMigration0014GbURLPlaceholder holds the three to the same answer.
 func ResultURL(s string) string {
-	s = strings.TrimSpace(s)
-	u, err := url.Parse(s)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return ""
+	for _, prefix := range []string{"http://", "https://"} {
+		// Equal byte lengths make EqualFold an ASCII-only comparison here: a
+		// non-ASCII fold (ſ for s) is multi-byte and shortens the rune count.
+		if len(s) > len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
+			return s
+		}
 	}
-	return s
+	return ""
 }
 
 // runAtString normalizes the run timestamp. yabs.sh stamps "20260730-163130";

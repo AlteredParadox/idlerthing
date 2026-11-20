@@ -263,8 +263,10 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 			continue // server not in this document
 		}
 		// Backups taken before migration 0014 can carry yabs.sh's
-		// "Local (--no-upload)" placeholder as gb_url; drop it the same way
-		// ingest now does.
+		// "Local (--no-upload)" placeholder as gb_url. Apply the rule ingest
+		// and that migration use: keep an http(s) link exactly as exported,
+		// otherwise store NULL. The value is never rewritten, so two runs
+		// that were distinct rows in the backup stay distinct here.
 		gbURL := sql.NullString{}
 		if u := yabs.ResultURL(sget(y, "gb_url")); u != "" {
 			gbURL = sql.NullString{String: u, Valid: true}

@@ -22,11 +22,18 @@
 -- store it verbatim. The detail page then linked to it, and because
 -- idx_yabs_server_gburl is unique per (server_id, gb_url), every later
 -- no-upload run on the same server was dropped as a duplicate of the first.
--- Ingest now keeps gb_url only for http(s) URLs; this clears the placeholders
--- already stored. The runs themselves are kept. (LIKE is ASCII
--- case-insensitive in SQLite, so HTTPS://… survives too.)
+-- Ingest now keeps gb_url only for http(s) links; this clears the other
+-- values already stored. The runs themselves are kept.
+--
+-- The rule is yabs.ResultURL's, spelled in SQL: "http://" or "https://" in
+-- any ASCII case (LIKE is ASCII case-insensitive in SQLite) followed by at
+-- least one character. Nothing is rewritten or trimmed — a value is kept
+-- exactly or set to NULL — so this cannot make two distinct legacy values
+-- collide on idx_yabs_server_gburl. The backup importer applies the same
+-- rule on restore, so upgrading a database and restoring a backup of it give
+-- the same links.
 
 UPDATE yabs SET gb_url = NULL
  WHERE gb_url IS NOT NULL
-   AND gb_url NOT LIKE 'http://%'
-   AND gb_url NOT LIKE 'https://%';
+   AND gb_url NOT LIKE 'http://_%'
+   AND gb_url NOT LIKE 'https://_%';

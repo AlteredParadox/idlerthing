@@ -360,15 +360,21 @@ func TestGeekbenchPlaceholderURLDropped(t *testing.T) {
 func TestResultURL(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://browser.geekbench.com/v6/cpu/1": "https://browser.geekbench.com/v6/cpu/1",
-		" http://example.com/r/2 ":               "http://example.com/r/2",
+		"http://example.com/r/2":                 "http://example.com/r/2",
 		"HTTPS://browser.geekbench.com/v6/cpu/3": "HTTPS://browser.geekbench.com/v6/cpu/3",
 		"Local (--no-upload)":                    "",
 		"":                                       "",
 		"browser.geekbench.com/v6/cpu/4":         "",
 		"https://":                               "",
+		"http://":                                "",
 		"javascript:alert(1)":                    "",
 		"ftp://example.com/x":                    "",
-		"https://browser.geekbench.com/%zz":      "",
+		// Never rewritten: a padded value is not a link, rather than being
+		// trimmed into one that could collide with an existing row.
+		" https://browser.geekbench.com/v6/cpu/5": "",
+		"https://browser.geekbench.com/v6/cpu/6 ": "https://browser.geekbench.com/v6/cpu/6 ",
+		// ASCII case only: ſ (U+017F) folds to s but is not the scheme.
+		"http\u017f://example.com/x": "",
 	} {
 		if got := ResultURL(in); got != want {
 			t.Errorf("ResultURL(%q) = %q, want %q", in, got, want)

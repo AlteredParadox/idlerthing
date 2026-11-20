@@ -345,6 +345,20 @@ input:focus {
   outline: none;
   border-color: var(--acc);
 }
+.field textarea {
+  background: var(--panel2);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  color: var(--tx);
+  font-size: 12px;
+  padding: 8px 10px;
+  width: 100%;
+  resize: vertical;
+}
+.field textarea:focus {
+  outline: none;
+  border-color: var(--acc);
+}
 
 .btn {
   border: 1px solid var(--bd);

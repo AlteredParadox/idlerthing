@@ -668,8 +668,9 @@ func (s *Server) csvMisc(r *http.Request) ([][]string, error) {
 	return out, nil
 }
 
-// exportYABS returns all yabs runs with nested speed rows. Speed tables are
-// fetched ONCE each and grouped by run (constant query count). Runs go out
+// exportYABS returns all yabs runs with nested speed rows and, where one is
+// kept, the raw payload. Child tables are fetched ONCE each and grouped by
+// run (constant query count). Runs go out
 // OLDEST-first (ListAll is newest-first for the views) so a restore lands
 // them in id order and "latest run" displays correctly.
 func (s *Server) exportYABS(r *http.Request) (any, error) {
@@ -693,12 +694,22 @@ func (s *Server) exportYABS(r *http.Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	payloads, err := s.yabsPayloadsByRun(r, ids)
+	if err != nil {
+		return nil, err
+	}
 	var out []any
 	for _, it := range items {
 		y := it.YABS
 		m := flatten(&y).(map[string]any)
 		m["disk_speed"] = flattenSlice(disks[it.ID])
 		m["network_speed"] = flattenSlice(network[it.ID])
+		// The raw yabs.sh body, as a string so its bytes survive the round
+		// trip exactly (nesting it as JSON would re-encode it and break the
+		// payload_hash check on restore). Omitted for runs that have none.
+		if body, ok := payloads[it.ID]; ok {
+			m["payload"] = body
+		}
 		out = append(out, m)
 	}
 	if out == nil {
@@ -712,14 +723,14 @@ func (s *Server) yabsDisksByRun(r *http.Request, ids []int64) (map[int64][]model
 	out := map[int64][]model.YABSDiskSpeed{}
 	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
 		rows, err := q.QueryContext(r.Context(),
-			"SELECT id, yabs_id, block_size, read_mbps, write_mbps FROM yabs_disk_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+			model.YABSDiskSpeedSelect+" WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var d model.YABSDiskSpeed
-			if err := rows.Scan(&d.ID, &d.YabsID, &d.BlockSize, &d.ReadMbps, &d.WriteMbps); err != nil {
+			d, err := model.ScanYABSDiskSpeed(rows)
+			if err != nil {
 				return err
 			}
 			out[d.YabsID] = append(out[d.YabsID], d)
@@ -734,17 +745,41 @@ func (s *Server) yabsNetworkByRun(r *http.Request, ids []int64) (map[int64][]mod
 	out := map[int64][]model.YABSNetworkSpeed{}
 	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
 		rows, err := q.QueryContext(r.Context(),
-			"SELECT id, yabs_id, location, provider, COALESCE(mode, ''), send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+			model.YABSNetworkSpeedSelect+" WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var n model.YABSNetworkSpeed
-			if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.Mode, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
+			n, err := model.ScanYABSNetworkSpeed(rows)
+			if err != nil {
 				return err
 			}
 			out[n.YabsID] = append(out[n.YabsID], n)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// yabsPayloadsByRun batches the raw payloads kept for an export id set. Runs
+// stored before payloads were kept have no entry.
+func (s *Server) yabsPayloadsByRun(r *http.Request, ids []int64) (map[int64]string, error) {
+	out := map[int64]string{}
+	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
+		rows, err := q.QueryContext(r.Context(),
+			"SELECT yabs_id, body FROM yabs_payload WHERE yabs_id "+clause, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var body string
+			if err := rows.Scan(&id, &body); err != nil {
+				return err
+			}
+			out[id] = body
 		}
 		return rows.Err()
 	})

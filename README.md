@@ -195,7 +195,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/servers
 
 ## YABS ingest
 
-Every server detail page shows a signed command:
+Every server detail page shows a signed command (also on **YABS → ＋ Add
+run**):
 
 ```sh
 curl -fsSL --proto '=https' https://yabs.sh | bash -s -- -s 'https://your-host/api/yabs/1?sig=...&ts=...'
@@ -204,8 +205,19 @@ curl -fsSL --proto '=https' https://yabs.sh | bash -s -- -s 'https://your-host/a
 Run it on the server; the benchmark (system info, geekbench, fio disk
 speeds, iperf network speeds) appears under **YABS**. Signatures are
 HMAC-SHA256 over `{server_id}.{ts}` — valid for 2 hours, single-use
-(after a run lands, refresh the server page for a fresh command);
+(after a run lands, refresh the page for a fresh command);
 duplicate submissions are ignored.
+
+A result you already have can be added without the signed URL: run
+`yabs.sh -j` (or `-w file`) and paste the JSON into **＋ Add run**. Both
+paths store a run the same way.
+
+The raw JSON of each run is kept next to the parsed values (**Raw JSON** on
+the run's page, and in the JSON backup), so fields idlerthing does not read
+yet are not lost. Runs ingested before this was added have no raw copy, nor
+does a result that is not valid UTF-8 (it is still parsed and stored). A
+result yabs.sh could not measure — an iperf endpoint reporting `busy` — is
+stored as missing rather than as 0.
 
 ## Tech notes
 

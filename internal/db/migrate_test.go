@@ -610,3 +610,87 @@ func TestMigration0014GbURLPlaceholder(t *testing.T) {
 		t.Errorf("links kept = %d, want 6", links)
 	}
 }
+
+// 0015 adds the raw-payload side table: one row per run at most, removed
+// with its run.
+func TestMigration0015YABSPayload(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := Migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO servers (hostname, server_type, active) VALUES ('m15', 1, 1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO yabs (server_id) VALUES (1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO yabs_payload (yabs_id, body) VALUES (1, '{}')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO yabs_payload (yabs_id, body) VALUES (1, '{}')"); err == nil {
+		t.Error("a second payload for the same run must be refused")
+	}
+	if _, err := db.Exec("INSERT INTO yabs_payload (yabs_id, body) VALUES (99, '{}')"); err == nil {
+		t.Error("a payload for a run that does not exist must be refused")
+	}
+	// Deleting the server cascades run → payload.
+	if _, err := db.Exec("DELETE FROM servers WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	db.QueryRow("SELECT COUNT(*) FROM yabs_payload").Scan(&left)
+	if left != 0 {
+		t.Fatalf("payload rows after server delete = %d, want 0", left)
+	}
+}
+
+// 0016 turns the 0s that meant "not measured" into NULL and leaves real
+// measurements, and the rows themselves, alone.
+func TestMigration0016UnmeasuredNull(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	migrateTo(t, db, 15)
+
+	for _, q := range []string{
+		"INSERT INTO servers (hostname, server_type, active) VALUES ('m16', 1, 1)",
+		"INSERT INTO yabs (server_id) VALUES (1)",
+		"INSERT INTO yabs_network_speed (yabs_id, location, send_mbps, recv_mbps, latency_ms) VALUES (1, 'busy', 0, 0, 190)",
+		"INSERT INTO yabs_network_speed (yabs_id, location, send_mbps, recv_mbps, latency_ms) VALUES (1, 'ok', 683, 343, 0)",
+		"INSERT INTO yabs_disk_speed (yabs_id, block_size, read_mbps, write_mbps) VALUES (1, '4k', 99.5, 0)",
+		"INSERT INTO yabs_disk_speed (yabs_id, block_size, read_mbps, write_mbps) VALUES (1, '1m', 0, 1600)",
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	applied, err := Migrate(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := appliedDiff(t, applied, 15); diff != "" {
+		t.Fatal(diff)
+	}
+
+	var netRows, diskRows, zeros int
+	db.QueryRow("SELECT COUNT(*) FROM yabs_network_speed").Scan(&netRows)
+	db.QueryRow("SELECT COUNT(*) FROM yabs_disk_speed").Scan(&diskRows)
+	db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM yabs_network_speed WHERE send_mbps = 0 OR recv_mbps = 0 OR latency_ms = 0) +
+		(SELECT COUNT(*) FROM yabs_disk_speed WHERE read_mbps = 0 OR write_mbps = 0)`).Scan(&zeros)
+	if netRows != 2 || diskRows != 2 || zeros != 0 {
+		t.Fatalf("net rows=%d disk rows=%d zeros left=%d, want 2/2/0", netRows, diskRows, zeros)
+	}
+	var avgSend, avgLatency, avgRead, avgWrite float64
+	db.QueryRow("SELECT AVG(send_mbps), AVG(latency_ms) FROM yabs_network_speed").Scan(&avgSend, &avgLatency)
+	db.QueryRow("SELECT AVG(read_mbps), AVG(write_mbps) FROM yabs_disk_speed").Scan(&avgRead, &avgWrite)
+	if avgSend != 683 || avgLatency != 190 || avgRead != 99.5 || avgWrite != 1600 {
+		t.Fatalf("averages over measured values: send=%v latency=%v read=%v write=%v", avgSend, avgLatency, avgRead, avgWrite)
+	}
+}

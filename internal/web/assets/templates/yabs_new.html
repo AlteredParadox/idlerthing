@@ -1,0 +1,92 @@
+{{/*
+idlerthing — a lightweight, self-hosted inventory for hosting services.
+Copyright (C) 2026 AlteredParadox
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/}}
+
+
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>Add YABS run{{if $v.ServerName}} · <span class="mono">{{$v.ServerName}}</span>{{end}}</h1>
+    <div class="page-sub">{{if $v.ServerID}}Run the benchmark on the server, or paste a result you already have.{{else}}Choose the server the run belongs to.{{end}}</div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="{{$v.BackURL}}">Cancel</a>
+  </div>
+</header>
+
+{{if not $v.ServerID}}
+{{if $v.Servers}}
+<form method="get" action="/yabs/new" class="form-sections">
+  <section class="panel form-section">
+    <h2 class="section-title">Which server?</h2>
+    <div class="form-grid">
+      <label class="field">
+        <span class="field-label">Server</span>
+        <select name="server" required>
+          {{range $v.Servers}}
+          <option value="{{.ID}}">{{.Name}}</option>
+          {{end}}
+        </select>
+      </label>
+    </div>
+  </section>
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">Continue</button>
+  </div>
+</form>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">No servers yet</div>
+  <div class="empty-sub">A YABS run belongs to a server. Add one first.</div>
+  <a class="btn btn-primary" href="/servers/new">＋ Add server</a>
+</div>
+{{end}}
+{{else}}
+<div class="form-sections">
+  <section class="panel form-section">
+    <h2 class="section-title">Run it on the server</h2>
+    {{if $v.Command}}
+    <div class="empty-sub">This runs yabs.sh there and sends the result here. The link works for one run and expires after 2 hours; reload this page for a fresh one.</div>
+    <div class="cmd-block">
+      <code class="mono">{{$v.Command}}</code>
+      <button class="icon-btn copy-btn" type="button" data-copy="{{$v.Command}}" title="Copy">⧉</button>
+    </div>
+    {{else}}
+    <div class="empty-sub">Set <code class="mono">IDLER_BASE_URL=https://…</code> (or <code class="mono">IDLER_ALLOW_HTTP_INGEST=1</code> on a LAN) to enable the ingest command.</div>
+    {{end}}
+  </section>
+
+  <form method="post" action="/servers/{{$v.ServerID}}/yabs" class="form-sections">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <section class="panel form-section">
+      <h2 class="section-title">Or paste a result</h2>
+      <div class="empty-sub">Run yabs.sh with <code class="mono">-j</code> to print the result as JSON (or <code class="mono">-w file</code> to save it), then paste the JSON here.</div>
+      {{if $v.Error}}<div class="field-err" role="alert">{{$v.Error}}</div>{{end}}
+      <label class="field">
+        <span class="field-label">yabs.sh JSON</span>
+        <textarea class="mono" name="payload" rows="10" required spellcheck="false" autocomplete="off">{{$v.Payload}}</textarea>
+      </label>
+    </section>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">Add run</button>
+      <a class="btn" href="{{$v.BackURL}}">Cancel</a>
+    </div>
+  </form>
+</div>
+{{end}}
+{{end}}

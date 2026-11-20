@@ -294,8 +294,12 @@ func (s *Server) Handler() http.Handler {
 
 	// YABS views + ping tool.
 	mux.Handle("GET /yabs", s.protect(http.HandlerFunc(s.handleYABSIndex)))
+	mux.Handle("GET "+routeYABSNew, s.protect(http.HandlerFunc(s.handleYABSNew)))
 	mux.Handle("GET /servers/{id}/yabs", s.protect(http.HandlerFunc(s.handleServerYABS)))
+	mux.Handle("POST /servers/{id}/yabs", s.protect(http.HandlerFunc(s.handleServerYABSCreate)))
+	mux.Handle("GET /servers/{id}/yabs/new", s.protect(http.HandlerFunc(s.handleServerYABSNew)))
 	mux.Handle("GET /servers/{id}/yabs/{yid}", s.protect(http.HandlerFunc(s.handleServerYABSDetail)))
+	mux.Handle("GET /servers/{id}/yabs/{yid}/raw", s.protect(http.HandlerFunc(s.handleServerYABSRaw)))
 	mux.Handle("POST /servers/{id}/yabs/{yid}/delete", s.protect(http.HandlerFunc(s.handleServerYABSDelete)))
 	mux.Handle("POST /tools/ping", s.protect(http.HandlerFunc(s.handlePing)))
 

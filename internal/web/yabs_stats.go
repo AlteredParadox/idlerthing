@@ -130,12 +130,19 @@ func yabsNetMedian(r *model.YABSRun, send bool) float64 {
 	return median(vals)
 }
 
+// yabsHasGB reports whether a run carries a Geekbench result. Either score
+// counts, as it does for the parser (bestGeekbench): a run can have a
+// multi-core score and no single-core one.
+func yabsHasGB(y *model.YABS) bool {
+	return y.GbSingle.Int64 > 0 || y.GbMulti.Int64 > 0
+}
+
 // yabsGBVersion is the Geekbench major version of the newest run that has a
 // score, 0 when no run does. Scores are only comparable within a version, so
 // every Geekbench statistic is taken over that version alone.
 func yabsGBVersion(runs []model.YABSRun) int64 {
 	for i := len(runs) - 1; i >= 0; i-- {
-		if runs[i].GbSingle.Int64 > 0 {
+		if yabsHasGB(&runs[i].YABS) {
 			return runs[i].GeekbenchVersion.Int64
 		}
 	}

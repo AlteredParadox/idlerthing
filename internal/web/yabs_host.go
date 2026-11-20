@@ -532,7 +532,7 @@ func buildYABSCompareView(srv *model.Server, a, b *model.YABSRun) yabsCompareVie
 		}
 		return "Geekbench " + kind
 	}
-	if a.GbSingle.Int64 > 0 || b.GbSingle.Int64 > 0 {
+	if yabsHasGB(&a.YABS) || yabsHasGB(&b.YABS) {
 		v.Scores = append(v.Scores,
 			num(gbLabel("single"), "", float64(a.GbSingle.Int64), float64(b.GbSingle.Int64), sameGB, false),
 			num(gbLabel("multi"), "", float64(a.GbMulti.Int64), float64(b.GbMulti.Int64), sameGB, false))

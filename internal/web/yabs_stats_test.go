@@ -254,6 +254,23 @@ func TestYABSMetricsFollowLatestGeekbenchVersion(t *testing.T) {
 			t.Errorf("otherVersionScore(%s) = %q, want nothing", key, got)
 		}
 	}
+	// A run with a multi-core score and no single-core one is still a scored
+	// run (the parser treats it as one): its version is the one to follow,
+	// and its multi score is measured.
+	multiOnly := []model.YABSRun{
+		statRun(1, "2025-01-01", 900, 2100, 5, 50, 400),
+		statRun(2, "2026-01-01", 0, 4000, 6, 50, 400),
+	}
+	if v := yabsGBVersion(multiOnly); v != 6 {
+		t.Errorf("multi-only run: version = %d, want 6", v)
+	}
+	mm := yabsMetrics(multiOnly)
+	if s := newYabsSeries(multiOnly, mm[1].Value); len(s.Points) != 1 || s.Points[0].V != 4000 {
+		t.Errorf("multi-only run: multi series = %+v", s.Points)
+	}
+	if s := newYabsSeries(multiOnly, mm[0].Value); len(s.Points) != 0 {
+		t.Errorf("multi-only run: the v5 single score must not be the baseline: %+v", s.Points)
+	}
 	if none := yabsMetrics(nil); none[0].Label != "Geekbench single" {
 		t.Errorf("no scores yet: label = %q", none[0].Label)
 	}

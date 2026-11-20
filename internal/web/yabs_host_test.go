@@ -316,6 +316,25 @@ func TestYABSCompare(t *testing.T) {
 	}
 }
 
+// A run that has only a multi-core Geekbench score is a scored run: it shows
+// on the dashboard tile and in the comparison.
+func TestYABSMultiOnlyGeekbench(t *testing.T) {
+	ts, database, _ := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "multi-only-host")
+	seedHostRuns(t, database, 1,
+		hostRun{at: "2026-06-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 0, multi: 4321, disk: 80, net: 600},
+		hostRun{at: "2026-07-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 0, multi: 4400, disk: 80, net: 600})
+	_, page := getPage(t, client, ts.URL+"/servers/1/yabs")
+	if !strings.Contains(page, "Geekbench 6 multi") || !strings.Contains(page, ">4,400<") {
+		t.Errorf("a multi-only run should fill the Geekbench multi tile")
+	}
+	_, cmp := getPage(t, client, ts.URL+"/servers/1/yabs/compare?run=1&run=2")
+	if !strings.Contains(cmp, "Geekbench 6 multi") || !strings.Contains(cmp, "4,321") || !strings.Contains(cmp, "▲ 1.8%") {
+		t.Errorf("multi-only runs should appear in the comparison")
+	}
+}
+
 // History() loads a server's runs with their speed rows and nobody else's.
 func TestYABSHistoryLoad(t *testing.T) {
 	ts, database, _ := newTestServerFull(t)

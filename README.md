@@ -267,9 +267,11 @@ The per-location breakdown follows each location on its own.
   first.
 - **Not benchmarked lately** — active servers with no run in 180 days.
 
-Fleet statistics compare Geekbench scores on the version most servers use;
-a server on another version is listed with its score marked and left out of
-the medians.
+"Latest run" is meant literally: a metric a server's latest run did not
+measure is shown as missing, not carried over from an older run. Fleet
+statistics compare Geekbench scores on the version most servers use; a score
+on another version, or with no version recorded, is listed with a marker
+(`900 · v5`) and left out of the medians.
 
 ## Tech notes
 

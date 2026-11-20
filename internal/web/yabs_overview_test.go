@@ -26,11 +26,19 @@ import (
 	"idlerthing/internal/model"
 )
 
-// fleetRun is statRun for a given server and CPU model.
-func fleetRun(id, serverID int64, at, cpu string, single, multi, gbVersion int64, disk4k, net float64) model.YABSRun {
-	r := statRun(id, at, single, multi, gbVersion, disk4k, net)
-	r.ServerID = serverID
-	r.CPU = ns(cpu)
+// fr describes one run of the fleet fixtures: statRun for a given server and
+// CPU model.
+type fr struct {
+	id, server           int64
+	at, cpu              string
+	single, multi, gbVer int64
+	disk4k, net          float64
+}
+
+func (f fr) run() model.YABSRun {
+	r := statRun(f.id, f.at, f.single, f.multi, f.gbVer, f.disk4k, f.net)
+	r.ServerID = f.server
+	r.CPU = ns(f.cpu)
 	r.CPUCores = sqlNi(4)
 	return r
 }
@@ -58,17 +66,17 @@ func overviewFleet() ([]yabsFleetServer, []model.YABSRun) {
 	}
 	const epyc, xeon, old = "AMD EPYC 7543", "Intel Xeon Gold 6152", "Intel Xeon E5-2680 v2"
 	runs := []model.YABSRun{
-		fleetRun(1, 1, "2026-09-01 00:00:00", epyc, 1700, 6000, 6, 100, 800),
-		fleetRun(2, 1, "2026-10-01 00:00:00", epyc, 1720, 6050, 6, 101, 810),
-		fleetRun(3, 1, "2026-11-01 00:00:00", epyc, 1710, 6020, 6, 99, 790),
-		fleetRun(4, 2, "2026-08-01 00:00:00", epyc, 1650, 3100, 6, 80, 600),
-		fleetRun(5, 2, "2026-09-02 00:00:00", epyc, 1660, 3120, 6, 81, 610),
-		fleetRun(6, 2, "2026-10-02 00:00:00", epyc, 1640, 3090, 6, 79, 590),
-		fleetRun(7, 2, "2026-11-10 00:00:00", old, 760, 1420, 6, 40, 300),
-		fleetRun(8, 3, "2026-11-05 00:00:00", epyc, 1500, 5000, 6, 60, 700),
-		fleetRun(9, 4, "2026-11-12 00:00:00", xeon, 900, 2100, 5, 50, 500),
-		fleetRun(10, 5, "2026-01-24 00:00:00", xeon, 1100, 2900, 6, 70, 400),
-		fleetRun(11, 7, "2026-11-15 00:00:00", epyc, 1800, 6500, 6, 120, 900),
+		fr{1, 1, "2026-09-01 00:00:00", epyc, 1700, 6000, 6, 100, 800}.run(),
+		fr{2, 1, "2026-10-01 00:00:00", epyc, 1720, 6050, 6, 101, 810}.run(),
+		fr{3, 1, "2026-11-01 00:00:00", epyc, 1710, 6020, 6, 99, 790}.run(),
+		fr{4, 2, "2026-08-01 00:00:00", epyc, 1650, 3100, 6, 80, 600}.run(),
+		fr{5, 2, "2026-09-02 00:00:00", epyc, 1660, 3120, 6, 81, 610}.run(),
+		fr{6, 2, "2026-10-02 00:00:00", epyc, 1640, 3090, 6, 79, 590}.run(),
+		fr{7, 2, "2026-11-10 00:00:00", old, 760, 1420, 6, 40, 300}.run(),
+		fr{8, 3, "2026-11-05 00:00:00", epyc, 1500, 5000, 6, 60, 700}.run(),
+		fr{9, 4, "2026-11-12 00:00:00", xeon, 900, 2100, 5, 50, 500}.run(),
+		fr{10, 5, "2026-01-24 00:00:00", xeon, 1100, 2900, 6, 70, 400}.run(),
+		fr{11, 7, "2026-11-15 00:00:00", epyc, 1800, 6500, 6, 120, 900}.run(),
 	}
 	return servers, runs
 }
@@ -204,11 +212,81 @@ func TestYABSOverviewServersAndRecent(t *testing.T) {
 	if drop == nil || drop.Cells[0].Value != "760" || drop.Cells[0].Delta == nil || drop.Cells[0].Delta.Text != "▼ 54%" || !drop.Cells[0].Low {
 		t.Fatalf("bravo's drop in the feed = %+v", drop)
 	}
+	// delta's score is Geekbench 5 under a "GB6" heading: it carries its
+	// version, and it still has no delta (it is that server's first run).
+	var gb5 *yabsRecentRow
+	for i := range v.Recent {
+		if v.Recent[i].Name == "delta" {
+			gb5 = &v.Recent[i]
+		}
+	}
+	if gb5 == nil || gb5.Cells[0].Value != "900 · v5" || gb5.Cells[1].Value != "2,100 · v5" {
+		t.Errorf("a score on another Geekbench version must be marked in the feed: %+v", gb5)
+	}
 	// A server's first run has nothing to be compared with.
 	for _, r := range v.Recent {
 		if r.Name == "charlie" && r.Cells[0].Delta != nil {
 			t.Errorf("a first run must have no delta: %+v", r.Cells[0])
 		}
+	}
+}
+
+// "Latest run" means the latest run: a metric that run did not measure is
+// missing, not filled in from an older one. Here "moved" was benchmarked on
+// CPU A (twice normally, then once badly), then moved to CPU B where the
+// newest run skipped Geekbench and disk.
+func TestYABSOverviewUsesTheLatestRunOnly(t *testing.T) {
+	servers := []yabsFleetServer{
+		{ID: 1, Hostname: "moved", Provider: "Acme", Active: true, Cost: 10},
+		{ID: 2, Hostname: "peer-a", Provider: "Bolt", Active: true, Cost: 10},
+		{ID: 3, Hostname: "peer-b", Provider: "Bolt", Active: true, Cost: 10},
+	}
+	runs := []model.YABSRun{
+		fr{1, 1, "2026-06-01 00:00:00", "CPU A", 1600, 3000, 6, 80, 600}.run(),
+		fr{2, 1, "2026-07-01 00:00:00", "CPU A", 1610, 3010, 6, 80, 600}.run(),
+		fr{3, 1, "2026-08-01 00:00:00", "CPU A", 1590, 2990, 6, 80, 600}.run(),
+		fr{4, 1, "2026-09-01 00:00:00", "CPU A", 700, 1300, 6, 30, 600}.run(), // a low run…
+		fr{5, 1, "2026-10-01 00:00:00", "CPU B", 0, 0, 0, 0, 600}.run(),       // …then a partial one on new hardware
+		fr{6, 2, "2026-10-01 00:00:00", "CPU B", 2000, 4000, 6, 90, 700}.run(),
+		fr{7, 3, "2026-10-01 00:00:00", "CPU A", 1500, 2900, 6, 85, 650}.run(),
+	}
+	v := buildYABSOverview(servers, runs, overviewNow)
+
+	// The servers table shows what the latest run measured: no Geekbench, no disk.
+	var moved *yabsFleetRow
+	for i := range v.Servers {
+		if v.Servers[i].Name == "moved" {
+			moved = &v.Servers[i]
+		}
+	}
+	if moved == nil || moved.Cells[ymSingle].Value != "—" || moved.Cells[ymDisk4k].Value != "—" ||
+		moved.Cells[ymNetSend].Value == "—" || moved.BarPct != "" || moved.Value != "—" {
+		t.Fatalf("moved row must show only the latest run's measurements: %+v", moved)
+	}
+	for _, c := range moved.Cells {
+		if c.Low {
+			t.Errorf("an older low result must not mark the latest run: %+v", moved.Cells)
+		}
+	}
+	// The old low Geekbench result is not an alert on the latest run. The
+	// CPU change is — that is about the latest run.
+	if len(v.Attention) != 1 || v.Attention[0].Name != "moved" {
+		t.Fatalf("attention = %+v", v.Attention)
+	}
+	reasons := strings.Join(v.Attention[0].Reasons, " | ")
+	if strings.Contains(reasons, "below its own median") || !strings.Contains(reasons, "CPU changed: CPU A → CPU B") {
+		t.Errorf("attention reasons = %q", reasons)
+	}
+	// Acme's Geekbench median has no server to draw on; its network does.
+	for _, p := range v.Providers {
+		if p.Name == "Acme" && (p.Values[ymSingle] != "—" || p.Values[ymNetSend] == "—" || p.Value != "—") {
+			t.Errorf("Acme = %+v", p)
+		}
+	}
+	// CPU A's old score is not counted under CPU B: CPU B is then at one
+	// provider only (peer-a) and CPU A at one (peer-b) — nothing to compare.
+	if len(v.CPUs) != 0 {
+		t.Errorf("a carried-forward score created a same-CPU comparison: %+v", v.CPUs)
 	}
 }
 
@@ -239,8 +317,8 @@ func TestYABSOverviewEmptyAndVersionTie(t *testing.T) {
 		{ID: 2, Hostname: "unknown", Provider: "Acme", Active: true},
 	}
 	rs := []model.YABSRun{
-		fleetRun(1, 1, "2026-11-01 00:00:00", "X", 1500, 4000, 6, 50, 400),
-		fleetRun(2, 2, "2026-11-02 00:00:00", "X", 1900, 5000, 0, 50, 400),
+		fr{1, 1, "2026-11-01 00:00:00", "X", 1500, 4000, 6, 50, 400}.run(),
+		fr{2, 2, "2026-11-02 00:00:00", "X", 1900, 5000, 0, 50, 400}.run(),
 	}
 	ov := buildYABSOverview(srvs, rs, overviewNow)
 	if ov.GBLabel != "GB6" || ov.Providers[0].Values[ymSingle] != "1,500" {

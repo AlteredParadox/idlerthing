@@ -55,41 +55,46 @@ type yabsFleetServer struct {
 }
 
 // yabsHostSummary is one server's history reduced to what the fleet views
-// compare: the newest measurement of each headline metric and its flags.
+// compare: what its latest run measured, and that run's flags.
 type yabsHostSummary struct {
 	Srv       yabsFleetServer
 	Runs      []model.YABSRun // oldest first
 	GBVersion int64
 	Series    []yabsSeries // one per headline metric
-	Latest    []float64    // newest measurement per metric, 0 = none
-	Low       []string     // labels of the metrics whose newest measurement is low
-	Hardware  []yabsChange // newest run against the one before
-	CPU       string       // newest run's CPU model
-	Last      time.Time
+	// Latest is what the LATEST RUN measured per metric; 0 when that run
+	// did not measure it. An older run's value is never carried forward:
+	// these feed "latest run" tables, medians and alerts, and the CPU they
+	// are grouped under is the latest run's.
+	Latest   []float64
+	Low      []string     // labels of the metrics the latest run measured low
+	Hardware []yabsChange // latest run against the one before
+	CPU      string       // latest run's CPU model
+	Last     time.Time
 }
 
 // summarizeYABSHost reduces a server's runs (any order) to a summary, using
-// the same series, baseline and low rule as the server's own dashboard.
+// the same series, baseline and low rule as the server's own dashboard, so
+// what is flagged here is exactly what that page flags on its latest row.
 func summarizeYABSHost(srv yabsFleetServer, runs []model.YABSRun) yabsHostSummary {
 	sortYABSRuns(runs)
+	last := len(runs) - 1
 	h := yabsHostSummary{Srv: srv, Runs: runs, GBVersion: yabsGBVersion(runs)}
-	latest := &runs[len(runs)-1]
-	h.Last = yabsRunTime(&latest.YABS)
-	h.CPU = strings.TrimSpace(latest.CPU.String)
+	h.Last = yabsRunTime(&runs[last].YABS)
+	h.CPU = strings.TrimSpace(runs[last].CPU.String)
 	for _, m := range yabsMetrics(runs) {
-		s := newYabsSeries(runs, m.Value)
+		s := m.series(runs)
 		h.Series = append(h.Series, s)
 		var cur float64
-		if n := len(s.Points); n > 0 {
-			cur = s.Points[n-1].V
-			if s.low(cur) {
+		if pos := s.at(last); pos >= 0 {
+			cur = s.Points[pos].V
+			if s.lowAt(pos) {
 				h.Low = append(h.Low, m.Label)
 			}
 		}
 		h.Latest = append(h.Latest, cur)
 	}
-	if len(runs) >= 2 {
-		h.Hardware, _ = yabsSystemChanges(&runs[len(runs)-2].YABS, &latest.YABS)
+	if last >= 1 {
+		h.Hardware, _ = yabsSystemChanges(&runs[last-1].YABS, &runs[last].YABS)
 	}
 	return h
 }
@@ -304,28 +309,21 @@ func buildYABSOverview(servers []yabsFleetServer, runs []model.YABSRun, now time
 	for _, run := range runs {
 		byServer[run.ServerID] = append(byServer[run.ServerID], run)
 	}
-	var hosts []yabsHostSummary // active servers with runs
-	byID := map[int64]*yabsHostSummary{}
-	var all []yabsHostSummary // every server with runs (the feed needs them)
+	var all []yabsHostSummary // every server with runs (the feed needs them all)
 	for _, srv := range servers {
 		if srv.Active {
 			v.ActiveServers++
 		}
-		if len(byServer[srv.ID]) == 0 {
-			if srv.Active {
-				v.Coverage = append(v.Coverage, yabsCoverageRow{
-					Name: srv.Hostname, URL: serverYABSURL(srv.ID), Provider: srv.Provider,
-					LastRun: "never", AddURL: serverYABSURL(srv.ID) + "/new",
-				})
-			}
-			continue
+		if len(byServer[srv.ID]) > 0 {
+			all = append(all, summarizeYABSHost(srv, byServer[srv.ID]))
+		} else if srv.Active {
+			v.Coverage = append(v.Coverage, yabsCoverage(srv, time.Time{}, now))
 		}
-		all = append(all, summarizeYABSHost(srv, byServer[srv.ID]))
 	}
-	for i := range all {
-		byID[all[i].Srv.ID] = &all[i]
-		if all[i].Srv.Active {
-			hosts = append(hosts, all[i])
+	var hosts []yabsHostSummary // the active ones: what the statistics cover
+	for _, h := range all {
+		if h.Srv.Active {
+			hosts = append(hosts, h)
 		}
 	}
 	v.Benchmarked = len(hosts)
@@ -334,19 +332,11 @@ func buildYABSOverview(servers []yabsFleetServer, runs []model.YABSRun, now time
 	if fleetGB > 0 {
 		v.GBLabel += strconv.FormatInt(fleetGB, 10)
 	}
-
 	for i := range hosts {
 		h := &hosts[i]
-		if h.Srv.Cost > 0 {
-			v.HasCost = true
-		}
+		v.HasCost = v.HasCost || h.Srv.Cost > 0
 		if !h.Last.IsZero() && now.Sub(h.Last) > yabsStaleDays*24*time.Hour {
-			v.Coverage = append(v.Coverage, yabsCoverageRow{
-				Name: h.Srv.Hostname, URL: serverYABSURL(h.Srv.ID), Provider: h.Srv.Provider,
-				LastRun: h.Last.Format(time.DateOnly),
-				Age:     fmt.Sprintf("%d days ago", int(now.Sub(h.Last).Hours()/24)),
-				AddURL:  serverYABSURL(h.Srv.ID) + "/new",
-			})
+			v.Coverage = append(v.Coverage, yabsCoverage(h.Srv, h.Last, now))
 		}
 		if row, ok := yabsAttention(h); ok {
 			v.Attention = append(v.Attention, row)
@@ -355,14 +345,28 @@ func buildYABSOverview(servers []yabsFleetServer, runs []model.YABSRun, now time
 	v.Flagged = len(v.Attention)
 	v.Uncovered = len(v.Coverage)
 
-	v.Recent = yabsRecent(runs, byID)
+	v.Recent = yabsRecent(all, fleetGB)
 	v.Providers = yabsProviderRows(hosts, fleetGB)
 	v.CPUs = yabsCPURows(hosts, fleetGB)
 	v.Servers = yabsFleetRows(hosts, fleetGB)
 	return v
 }
 
-// yabsAttention reports why a server's newest run needs a look, if it does.
+// yabsCoverage is the coverage-gap row of a server: never benchmarked when
+// last is zero, otherwise not since last.
+func yabsCoverage(srv yabsFleetServer, last, now time.Time) yabsCoverageRow {
+	row := yabsCoverageRow{
+		Name: srv.Hostname, URL: serverYABSURL(srv.ID), Provider: srv.Provider,
+		LastRun: "never", AddURL: serverYABSURL(srv.ID) + "/new",
+	}
+	if !last.IsZero() {
+		row.LastRun = last.Format(time.DateOnly)
+		row.Age = fmt.Sprintf("%d days ago", int(now.Sub(last).Hours()/24))
+	}
+	return row
+}
+
+// yabsAttention reports why a server's latest run needs a look, if it does.
 func yabsAttention(h *yabsHostSummary) (yabsAttentionRow, bool) {
 	row := yabsAttentionRow{
 		Name: h.Srv.Hostname, URL: serverYABSURL(h.Srv.ID), Provider: h.Srv.Provider,
@@ -378,33 +382,36 @@ func yabsAttention(h *yabsHostSummary) (yabsAttentionRow, bool) {
 	return row, len(row.Reasons) > 0
 }
 
+// yabsFeedRef points at one run of one server.
+type yabsFeedRef struct {
+	host *yabsHostSummary
+	idx  int // position in host.Runs
+}
+
+func (rf yabsFeedRef) run() *model.YABSRun { return &rf.host.Runs[rf.idx] }
+
 // yabsRecent is the newest runs across all servers, each against the run
 // before it on the same server.
-func yabsRecent(runs []model.YABSRun, hosts map[int64]*yabsHostSummary) []yabsRecentRow {
-	type ref struct {
-		host *yabsHostSummary
-		idx  int // position in host.Runs
-	}
-	var refs []ref
-	for _, h := range hosts {
-		for i := range h.Runs {
-			refs = append(refs, ref{h, i})
+func yabsRecent(hosts []yabsHostSummary, fleetGB int64) []yabsRecentRow {
+	var refs []yabsFeedRef
+	for i := range hosts {
+		for j := range hosts[i].Runs {
+			refs = append(refs, yabsFeedRef{&hosts[i], j})
 		}
 	}
 	sort.Slice(refs, func(a, b int) bool {
-		ra, rb := &refs[a].host.Runs[refs[a].idx], &refs[b].host.Runs[refs[b].idx]
-		ta, tb := yabsRunTime(&ra.YABS), yabsRunTime(&rb.YABS)
+		ta, tb := yabsRunTime(&refs[a].run().YABS), yabsRunTime(&refs[b].run().YABS)
 		if !ta.Equal(tb) {
 			return ta.After(tb)
 		}
-		return ra.ID > rb.ID
+		return refs[a].run().ID > refs[b].run().ID
 	})
 	if len(refs) > yabsRecentRuns {
 		refs = refs[:yabsRecentRuns]
 	}
 	var out []yabsRecentRow
 	for _, rf := range refs {
-		h, run := rf.host, &rf.host.Runs[rf.idx]
+		h, run := rf.host, rf.run()
 		row := yabsRecentRow{
 			Date:      yabsDate(&run.YABS, true),
 			RunURL:    yabsRunURL(h.Srv.ID, run.ID),
@@ -413,22 +420,32 @@ func yabsRecent(runs []model.YABSRun, hosts map[int64]*yabsHostSummary) []yabsRe
 			CPU:       strings.TrimSpace(run.CPU.String),
 		}
 		for _, mi := range []int{ymSingle, ymMulti, ymDisk4k, ymNetSend} {
-			cell := yabsCell{Value: "—"}
-			s := h.Series[mi]
-			if pos := s.at(rf.idx); pos >= 0 {
-				cell.Value = fmtYABS(s.Points[pos].V)
-				if pos > 0 {
-					cell.Delta = newYabsDelta(s.Points[pos].V, s.Points[pos-1].V, false)
-				}
-				cell.Low = s.low(s.Points[pos].V)
-			} else if other := otherVersionScore(run, yabsMetricKeys[mi], h.GBVersion); other != "" {
-				cell.Value = other
-			}
-			row.Cells = append(row.Cells, cell)
+			row.Cells = append(row.Cells, yabsFeedCell(rf, mi, fleetGB))
 		}
 		out = append(out, row)
 	}
 	return out
+}
+
+// yabsFeedCell is one metric of one run in the feed. The change and the low
+// mark come from the server's own history, as on its dashboard. The feed's
+// Geekbench columns are headed with the fleet's version, so a score from any
+// other version — or with none recorded — carries its own marker
+// ("900 · v5", "1,900 · v?") rather than sitting unmarked under that heading.
+func yabsFeedCell(rf yabsFeedRef, mi int, fleetGB int64) yabsCell {
+	cell := yabsCell{Value: "—"}
+	s := rf.host.Series[mi]
+	if pos := s.at(rf.idx); pos >= 0 {
+		cell.Value = fmtYABS(s.Points[pos].V)
+		cell.Delta = s.deltaPrev(pos)
+		cell.Low = s.lowAt(pos)
+	}
+	if mi == ymSingle || mi == ymMulti {
+		if marked := otherVersionScore(rf.run(), yabsMetricKeys[mi], fleetGB); marked != "" {
+			cell.Value = marked
+		}
+	}
+	return cell
 }
 
 // yabsMetricKeys mirrors yabsMetrics' keys by index.
@@ -436,11 +453,11 @@ var yabsMetricKeys = [ymCount]string{"gb_single", "gb_multi", "disk_4k", "disk_1
 
 // barPct scales v against the largest value in its column, for the inline
 // bars ("" when there is nothing to draw).
-func barPct(v, max float64) string {
-	if v <= 0 || max <= 0 {
+func barPct(v, top float64) string {
+	if v <= 0 || top <= 0 {
 		return ""
 	}
-	return strconv.FormatFloat(v/max*100, 'f', 1, 64)
+	return strconv.FormatFloat(v/top*100, 'f', 1, 64)
 }
 
 // fmtCost renders a monthly cost ("—" when unknown).
@@ -451,91 +468,104 @@ func fmtCost(v float64) string {
 	return strconv.FormatFloat(v, 'f', 2, 64)
 }
 
-// yabsProviderRows groups servers by provider. Each figure is the median
-// across the provider's servers of each server's newest measurement, so one
-// unusually fast or slow box does not stand for the provider.
-func yabsProviderRows(hosts []yabsHostSummary, fleetGB int64) []yabsGroupRow {
-	type group struct {
-		name   string
-		hosts  []*yabsHostSummary
-		single float64
+// yabsProvider is the servers of one provider.
+type yabsProvider struct {
+	name  string
+	hosts []*yabsHostSummary
+}
+
+// col is the provider's figure for metric mi: the median across its servers
+// of what each server's latest run measured.
+func (g *yabsProvider) col(mi int, fleetGB int64) float64 {
+	var vals []float64
+	for _, h := range g.hosts {
+		if v := h.fleetValue(mi, fleetGB); v > 0 {
+			vals = append(vals, v)
+		}
 	}
-	groups := map[string]*group{}
-	var order []*group
+	return median(vals)
+}
+
+// row renders the provider. Cost is the median over the servers that have
+// one; value is the median of each server's single-core points per unit of
+// its own cost.
+func (g *yabsProvider) row(fleetGB int64, best float64) yabsGroupRow {
+	row := yabsGroupRow{Name: g.name, Servers: len(g.hosts), BarPct: barPct(g.col(ymSingle, fleetGB), best)}
+	if row.Name == "" {
+		row.Name = "No provider set"
+	}
+	var costs, values []float64
+	for _, h := range g.hosts {
+		row.Runs += len(h.Runs)
+		if h.Srv.Cost <= 0 {
+			continue
+		}
+		costs = append(costs, h.Srv.Cost)
+		if single := h.fleetValue(ymSingle, fleetGB); single > 0 {
+			values = append(values, single/h.Srv.Cost)
+		}
+	}
+	for mi := 0; mi < ymCount; mi++ {
+		row.Values = append(row.Values, fmtYABS(g.col(mi, fleetGB)))
+	}
+	row.Cost, row.Value = fmtCost(median(costs)), fmtYABS(median(values))
+	return row
+}
+
+// yabsProviderRows groups servers by provider, best single-core median
+// first. Medians, so one unusually fast or slow box does not stand for the
+// provider.
+func yabsProviderRows(hosts []yabsHostSummary, fleetGB int64) []yabsGroupRow {
+	groups := map[string]*yabsProvider{}
+	var order []*yabsProvider
 	for i := range hosts {
 		name := hosts[i].Srv.Provider
-		g := groups[name]
-		if g == nil {
-			g = &group{name: name}
-			groups[name] = g
-			order = append(order, g)
+		if groups[name] == nil {
+			groups[name] = &yabsProvider{name: name}
+			order = append(order, groups[name])
 		}
-		g.hosts = append(g.hosts, &hosts[i])
-	}
-	col := func(g *group, mi int) float64 {
-		var vals []float64
-		for _, h := range g.hosts {
-			if v := h.fleetValue(mi, fleetGB); v > 0 {
-				vals = append(vals, v)
-			}
-		}
-		return median(vals)
+		groups[name].hosts = append(groups[name].hosts, &hosts[i])
 	}
 	var best float64
 	for _, g := range order {
-		g.single = col(g, ymSingle)
-		if g.single > best {
-			best = g.single
+		if v := g.col(ymSingle, fleetGB); v > best {
+			best = v
 		}
 	}
 	sort.SliceStable(order, func(a, b int) bool {
-		if order[a].single != order[b].single {
-			return order[a].single > order[b].single
+		sa, sb := order[a].col(ymSingle, fleetGB), order[b].col(ymSingle, fleetGB)
+		if sa != sb {
+			return sa > sb
 		}
 		return strings.ToLower(order[a].name) < strings.ToLower(order[b].name)
 	})
 	var out []yabsGroupRow
 	for _, g := range order {
-		row := yabsGroupRow{Name: g.name, Servers: len(g.hosts), BarPct: barPct(g.single, best)}
-		if row.Name == "" {
-			row.Name = "No provider set"
-		}
-		var costs, values []float64
-		for _, h := range g.hosts {
-			row.Runs += len(h.Runs)
-			if h.Srv.Cost > 0 {
-				costs = append(costs, h.Srv.Cost)
-				if single := h.fleetValue(ymSingle, fleetGB); single > 0 {
-					values = append(values, single/h.Srv.Cost)
-				}
-			}
-		}
-		for mi := 0; mi < ymCount; mi++ {
-			row.Values = append(row.Values, fmtYABS(col(g, mi)))
-		}
-		row.Cost, row.Value = fmtCost(median(costs)), fmtYABS(median(values))
-		out = append(out, row)
+		out = append(out, g.row(fleetGB, best))
 	}
 	return out
 }
 
+// yabsCPUKey is one CPU model at one provider.
+type yabsCPUKey struct{ cpu, provider string }
+
 // yabsCPURows compares providers on identical CPU models: the same chip
 // scoring lower at one provider is the clearest sign of an oversold node.
 // Only models found at two or more providers are listed — with one provider
-// there is nobody to compare against.
+// there is nobody to compare against. A server counts under the CPU its
+// latest run reports, with the score that same run measured.
 func yabsCPURows(hosts []yabsHostSummary, fleetGB int64) []yabsCPURow {
-	type key struct{ cpu, provider string }
-	single, multi := map[key][]float64{}, map[key][]float64{}
+	single, multi := map[yabsCPUKey][]float64{}, map[yabsCPUKey][]float64{}
 	perCPU := map[string][]float64{}
 	providers := map[string]int{} // CPU model → number of providers running it
-	var keys []key
+	var keys []yabsCPUKey
 	for i := range hosts {
 		h := &hosts[i]
 		s := h.fleetValue(ymSingle, fleetGB)
 		if h.CPU == "" || s <= 0 {
 			continue
 		}
-		k := key{h.CPU, h.Srv.Provider}
+		k := yabsCPUKey{h.CPU, h.Srv.Provider}
 		if _, seen := single[k]; !seen {
 			keys = append(keys, k)
 			providers[h.CPU]++
@@ -570,8 +600,9 @@ func yabsCPURows(hosts []yabsHostSummary, fleetGB int64) []yabsCPURow {
 	return out
 }
 
-// yabsFleetRows lists every benchmarked active server, fastest single-core
-// first; servers without a comparable score go last, by name.
+// yabsFleetRows lists every benchmarked active server by its latest run,
+// fastest single-core first; servers without a comparable score go last, by
+// name.
 func yabsFleetRows(hosts []yabsHostSummary, fleetGB int64) []yabsFleetRow {
 	sorted := make([]*yabsHostSummary, len(hosts))
 	var best float64
@@ -590,48 +621,41 @@ func yabsFleetRows(hosts []yabsHostSummary, fleetGB int64) []yabsFleetRow {
 	})
 	var out []yabsFleetRow
 	for _, h := range sorted {
-		latest := &h.Runs[len(h.Runs)-1]
-		row := yabsFleetRow{
-			Name: h.Srv.Hostname, URL: serverYABSURL(h.Srv.ID), Provider: h.Srv.Provider,
-			LastRun: yabsDate(&latest.YABS, false), Runs: len(h.Runs),
-			BarPct: barPct(h.fleetValue(ymSingle, fleetGB), best),
-			Cost:   fmtCost(h.Srv.Cost), Value: "—",
-		}
-		low := map[string]bool{}
-		for _, l := range h.Low {
-			low[l] = true
-		}
-		metrics := yabsMetrics(h.Runs)
-		for mi := 0; mi < ymCount; mi++ {
-			cell := yabsCell{Value: fmtYABS(h.Latest[mi]), Low: low[metrics[mi].Label]}
-			// A score the fleet statistics do not use — another Geekbench
-			// version, or no recorded version — is shown, marked, and kept
-			// out of the ranking and the group medians.
-			if (mi == ymSingle || mi == ymMulti) && h.fleetValue(mi, fleetGB) == 0 {
-				if raw := newestUncomparedScore(h.Runs, yabsMetricKeys[mi], fleetGB); raw != "" {
-					cell.Value = raw
-				}
-			}
-			row.Cells = append(row.Cells, cell)
-		}
-		if single := h.fleetValue(ymSingle, fleetGB); single > 0 && h.Srv.Cost > 0 {
-			row.Value = fmtYABS(single / h.Srv.Cost)
-		}
-		out = append(out, row)
+		out = append(out, h.fleetRow(fleetGB, best))
 	}
 	return out
 }
 
-// newestUncomparedScore is the newest Geekbench score in a history that is
-// not on the given version, formatted with its version marker ("900 · v5",
-// "1,900 · v?"); "" when there is none.
-func newestUncomparedScore(runs []model.YABSRun, key string, version int64) string {
-	for i := len(runs) - 1; i >= 0; i-- {
-		if other := otherVersionScore(&runs[i], key, version); other != "" {
-			return other
-		}
+// fleetRow renders the server's latest run. A metric that run did not
+// measure reads "—" even when an earlier run has a value.
+func (h *yabsHostSummary) fleetRow(fleetGB int64, best float64) yabsFleetRow {
+	latest := &h.Runs[len(h.Runs)-1]
+	single := h.fleetValue(ymSingle, fleetGB)
+	row := yabsFleetRow{
+		Name: h.Srv.Hostname, URL: serverYABSURL(h.Srv.ID), Provider: h.Srv.Provider,
+		LastRun: yabsDate(&latest.YABS, false), Runs: len(h.Runs),
+		BarPct: barPct(single, best), Cost: fmtCost(h.Srv.Cost), Value: "—",
 	}
-	return ""
+	if single > 0 && h.Srv.Cost > 0 {
+		row.Value = fmtYABS(single / h.Srv.Cost)
+	}
+	low := map[string]bool{}
+	for _, l := range h.Low {
+		low[l] = true
+	}
+	for mi, m := range yabsMetrics(h.Runs) {
+		cell := yabsCell{Value: fmtYABS(h.Latest[mi]), Low: low[m.Label]}
+		// A score the fleet statistics do not use — another Geekbench
+		// version, or no recorded version — is shown, marked, and kept out
+		// of the ranking and the group medians.
+		if mi == ymSingle || mi == ymMulti {
+			if marked := otherVersionScore(latest, yabsMetricKeys[mi], fleetGB); marked != "" {
+				cell.Value = marked
+			}
+		}
+		row.Cells = append(row.Cells, cell)
+	}
+	return row
 }
 
 // handleYABSRuns renders GET /yabs/runs: every run, newest first.

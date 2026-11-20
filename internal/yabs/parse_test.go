@@ -337,3 +337,41 @@ func TestBestGeekbenchPrefersScoredEntry(t *testing.T) {
 		t.Fatalf("unscored: version=%d single=%d", r.GeekbenchVersion, r.GbSingle)
 	}
 }
+
+// yabs.sh puts a placeholder in the geekbench url when there is no result
+// page ("Local (--no-upload)"). It must not be kept as the result link: the
+// (server_id, gb_url) unique index would then drop every later no-upload run
+// on the same server as a duplicate. The scores are still real.
+func TestGeekbenchPlaceholderURLDropped(t *testing.T) {
+	r, err := Parse([]byte(`{"cpu": {"model": "X"}, "geekbench": [
+		{"version": 6, "single": 1102, "multi": 2981, "url": "Local (--no-upload)"}
+	]}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if r.GbURL != "" {
+		t.Errorf("GbURL = %q, want empty", r.GbURL)
+	}
+	if r.GbSingle != 1102 || r.GbMulti != 2981 {
+		t.Errorf("scores = %d/%d, want 1102/2981", r.GbSingle, r.GbMulti)
+	}
+}
+
+func TestResultURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://browser.geekbench.com/v6/cpu/1": "https://browser.geekbench.com/v6/cpu/1",
+		" http://example.com/r/2 ":               "http://example.com/r/2",
+		"HTTPS://browser.geekbench.com/v6/cpu/3": "HTTPS://browser.geekbench.com/v6/cpu/3",
+		"Local (--no-upload)":                    "",
+		"":                                       "",
+		"browser.geekbench.com/v6/cpu/4":         "",
+		"https://":                               "",
+		"javascript:alert(1)":                    "",
+		"ftp://example.com/x":                    "",
+		"https://browser.geekbench.com/%zz":      "",
+	} {
+		if got := ResultURL(in); got != want {
+			t.Errorf("ResultURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

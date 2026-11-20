@@ -167,3 +167,23 @@ func TestNormTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// A backup taken before migration 0014 can carry yabs.sh's placeholder as
+// gb_url. Restoring it must not bring the placeholder back; real links stay.
+func TestImportYABSPlaceholderGbURLDropped(t *testing.T) {
+	database := testDB(t)
+	doc := `{"format":1,
+	  "servers":[{"server":{"id":1,"hostname":"yabs-restore"}}],
+	  "yabs":[
+	    {"server_id":1,"gb_single":1102,"gb_url":"Local (--no-upload)","payload_hash":"aa"},
+	    {"server_id":1,"gb_single":1150,"gb_url":"Local (--no-upload)","payload_hash":"bb"},
+	    {"server_id":1,"gb_single":1200,"gb_url":"https://browser.geekbench.com/v6/cpu/1","payload_hash":"cc"}]}`
+	if _, err := Import(context.Background(), database, strings.NewReader(doc), false); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var runs, withURL int
+	database.QueryRow("SELECT COUNT(*), COUNT(gb_url) FROM yabs").Scan(&runs, &withURL)
+	if runs != 3 || withURL != 1 {
+		t.Fatalf("runs=%d with gb_url=%d, want 3 and 1", runs, withURL)
+	}
+}

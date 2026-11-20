@@ -520,3 +520,36 @@ func latestMigration(t *testing.T) int {
 	}
 	return pending[len(pending)-1].version
 }
+
+// 0014 clears geekbench "urls" that are not http(s) links (yabs.sh's
+// "Local (--no-upload)" placeholder) without touching the runs or real links.
+func TestMigration0014GbURLPlaceholder(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	migrateTo(t, db, 13)
+
+	if _, err := db.Exec("INSERT INTO servers (hostname, server_type, active) VALUES ('m14', 1, 1)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []any{"Local (--no-upload)", "https://browser.geekbench.com/v6/cpu/1", "HTTP://example.com/r", nil} {
+		if _, err := db.Exec("INSERT INTO yabs (server_id, gb_url) VALUES (1, ?)", u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied, err := Migrate(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := appliedDiff(t, applied, 13); diff != "" {
+		t.Fatal(diff)
+	}
+	var runs, withURL, placeholder int
+	db.QueryRow("SELECT COUNT(*), COUNT(gb_url) FROM yabs").Scan(&runs, &withURL)
+	db.QueryRow("SELECT COUNT(*) FROM yabs WHERE gb_url LIKE 'Local%'").Scan(&placeholder)
+	if runs != 4 || withURL != 2 || placeholder != 0 {
+		t.Fatalf("runs=%d with gb_url=%d placeholder=%d, want 4/2/0", runs, withURL, placeholder)
+	}
+}

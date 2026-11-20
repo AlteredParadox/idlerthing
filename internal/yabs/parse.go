@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -135,7 +136,7 @@ func Parse(body []byte) (*Result, error) {
 	if r.GbMulti > maxGBScore {
 		r.GbMulti = 0
 	}
-	r.GbURL = firstString(gb, "url", "link")
+	r.GbURL = ResultURL(firstString(gb, "url", "link"))
 
 	for _, arr := range digArrays(m, "disk.fio", "fio", "disk", "disk_speed") {
 		for _, item := range arr {
@@ -202,6 +203,21 @@ func (r *Result) empty() bool {
 		r.Distro == "" && r.Kernel == "" && r.Uptime == "" &&
 		r.GbSingle == 0 && r.GbMulti == 0 && r.GbURL == "" &&
 		len(r.Disks) == 0 && len(r.Network) == 0
+}
+
+// ResultURL returns s when it is an absolute http(s) URL with a host, and ""
+// otherwise. yabs.sh fills the geekbench "url" field with a placeholder when
+// there is no result page — "Local (--no-upload)" under --no-upload — and
+// storing that as gb_url had two effects: the detail page linked to it, and
+// the (server_id, gb_url) unique index treated every later no-upload run on
+// the same server as a duplicate of the first and dropped it.
+func ResultURL(s string) string {
+	s = strings.TrimSpace(s)
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return ""
+	}
+	return s
 }
 
 // runAtString normalizes the run timestamp. yabs.sh stamps "20260730-163130";

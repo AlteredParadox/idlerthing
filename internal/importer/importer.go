@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"idlerthing/internal/model"
+	"idlerthing/internal/yabs"
 )
 
 // Summary reports per-type inserted counts.
@@ -261,6 +262,13 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 		if !ok {
 			continue // server not in this document
 		}
+		// Backups taken before migration 0014 can carry yabs.sh's
+		// "Local (--no-upload)" placeholder as gb_url; drop it the same way
+		// ingest now does.
+		gbURL := sql.NullString{}
+		if u := yabs.ResultURL(sget(y, "gb_url")); u != "" {
+			gbURL = sql.NullString{String: u, Valid: true}
+		}
 		// INSERT OR IGNORE: pre-0009/0010 backups may contain duplicate
 		// payload_hash/gb_url rows — keep the first, skip the rest (the
 		// unique indexes do the deduping).
@@ -271,7 +279,7 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 			newServer, sgetN(y, "run_at"), sgetN(y, "cpu"), nget(y, "cpu_cores"),
 			sgetN(y, "ram"), sgetN(y, "swap"), sgetN(y, "distro"), sgetN(y, "kernel"),
 			sgetN(y, "uptime"), nget(y, "geekbench_version"), nget(y, "gb_single"),
-			nget(y, "gb_multi"), sgetN(y, "gb_url"), sgetN(y, "payload_hash"))
+			nget(y, "gb_multi"), gbURL, sgetN(y, "payload_hash"))
 		if err != nil {
 			return fmt.Errorf("import yabs for server %d: %w", oldServer, err)
 		}

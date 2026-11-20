@@ -232,6 +232,23 @@ func TestYABSOverviewEmptyAndVersionTie(t *testing.T) {
 	if got := yabsFleetGBVersion([]yabsHostSummary{{GBVersion: 5}, {GBVersion: 5}, {GBVersion: 6}}); got != 5 {
 		t.Errorf("majority version = %d, want 5", got)
 	}
+	// A server whose only score records no version: listed with the score
+	// marked, and not counted in any Geekbench median.
+	srvs := []yabsFleetServer{
+		{ID: 1, Hostname: "known", Provider: "Acme", Active: true},
+		{ID: 2, Hostname: "unknown", Provider: "Acme", Active: true},
+	}
+	rs := []model.YABSRun{
+		fleetRun(1, 1, "2026-11-01 00:00:00", "X", 1500, 4000, 6, 50, 400),
+		fleetRun(2, 2, "2026-11-02 00:00:00", "X", 1900, 5000, 0, 50, 400),
+	}
+	ov := buildYABSOverview(srvs, rs, overviewNow)
+	if ov.GBLabel != "GB6" || ov.Providers[0].Values[ymSingle] != "1,500" {
+		t.Errorf("unversioned score entered the fleet median: %+v", ov.Providers[0])
+	}
+	if last := ov.Servers[len(ov.Servers)-1]; last.Name != "unknown" || last.Cells[ymSingle].Value != "1,900 · v?" || last.BarPct != "" {
+		t.Errorf("unversioned server row = %+v", last)
+	}
 	if got := yabsFleetGBVersion(nil); got != 0 {
 		t.Errorf("no scores = %d, want 0", got)
 	}

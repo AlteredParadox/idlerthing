@@ -604,10 +604,13 @@ func yabsFleetRows(hosts []yabsHostSummary, fleetGB int64) []yabsFleetRow {
 		metrics := yabsMetrics(h.Runs)
 		for mi := 0; mi < ymCount; mi++ {
 			cell := yabsCell{Value: fmtYABS(h.Latest[mi]), Low: low[metrics[mi].Label]}
-			// A score on another Geekbench version is shown, marked, and
-			// kept out of the ranking and the group medians.
-			if (mi == ymSingle || mi == ymMulti) && h.Latest[mi] > 0 && h.GBVersion != fleetGB {
-				cell.Value += " · v" + strconv.FormatInt(h.GBVersion, 10)
+			// A score the fleet statistics do not use — another Geekbench
+			// version, or no recorded version — is shown, marked, and kept
+			// out of the ranking and the group medians.
+			if (mi == ymSingle || mi == ymMulti) && h.fleetValue(mi, fleetGB) == 0 {
+				if raw := newestUncomparedScore(h.Runs, yabsMetricKeys[mi], fleetGB); raw != "" {
+					cell.Value = raw
+				}
 			}
 			row.Cells = append(row.Cells, cell)
 		}
@@ -617,6 +620,18 @@ func yabsFleetRows(hosts []yabsHostSummary, fleetGB int64) []yabsFleetRow {
 		out = append(out, row)
 	}
 	return out
+}
+
+// newestUncomparedScore is the newest Geekbench score in a history that is
+// not on the given version, formatted with its version marker ("900 · v5",
+// "1,900 · v?"); "" when there is none.
+func newestUncomparedScore(runs []model.YABSRun, key string, version int64) string {
+	for i := len(runs) - 1; i >= 0; i-- {
+		if other := otherVersionScore(&runs[i], key, version); other != "" {
+			return other
+		}
+	}
+	return ""
 }
 
 // handleYABSRuns renders GET /yabs/runs: every run, newest first.

@@ -20,7 +20,9 @@ benchmarks. SQLite storage, no cgo, no external services required.
   servers, paginated.
 - **Export/import** — full JSON export and CSV zip; restore with
   `idlerthing import`.
-- **YABS** — signed ingest URLs for yabs.sh results, run history and views.
+- **YABS** — signed ingest URLs (or paste) for yabs.sh results, a
+  per-server dashboard of its history, and a fleet overview with provider
+  statistics.
 - **Public page** — optional read-only `/public` server list.
 
 ## Screenshots
@@ -240,6 +242,28 @@ list:
 
 Geekbench scores are only compared within one major version; a run made with
 another version is listed but left out of the statistics.
+
+### The fleet overview
+
+**YABS** in the sidebar opens an overview of the active servers:
+
+- **Need a look** — servers whose latest run is 15% or more below their own
+  median, or whose hardware changed since the run before.
+- **Recent runs** — the newest runs across all servers, each against the
+  same server's previous run. **All runs** has the complete list.
+- **Providers** — per provider, the median across its servers of each
+  server's latest run, the median monthly cost, and single-core points per
+  unit of monthly cost. Costs come from each server's active recurring
+  price, in the dashboard currency when a rate is available.
+- **Same CPU, different providers** — CPU models found at two or more
+  providers, each provider's single-core median against the model's.
+- **Servers** — every benchmarked server's latest run, fastest single-core
+  first.
+- **Not benchmarked lately** — active servers with no run in 180 days.
+
+Fleet statistics compare Geekbench scores on the version most servers use;
+a server on another version is listed with its score marked and left out of
+the medians.
 
 ## Tech notes
 

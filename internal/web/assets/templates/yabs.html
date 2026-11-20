@@ -16,44 +16,197 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */}}
 
+
+{{define "cell"}}<td class="mono{{if .Low}} ybs-low{{end}}">{{.Value}}{{with .Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>{{end}}
+
+{{define "bar"}}{{if .}}<svg class="ybs-bar" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><line class="ybs-bar-track" x1="0" y1="3" x2="100" y2="3" /><line class="ybs-bar-fill" x1="0" y1="3" x2="{{.}}" y2="3" /></svg>{{end}}{{end}}
+
+{{define "units"}}Disk is read + write in MB/s; network is the median across iperf locations in Mbit/s{{if .HasCost}}; cost is {{.Currency}} per month and “Single/{{.Currency}}” is single-core points per {{.Currency}} of monthly cost{{end}}.{{end}}
+
 {{define "content"}}
 {{$v := .Data}}
 <header class="page-head">
   <div>
     <h1>YABS</h1>
-    <div class="page-sub">{{len $v.Rows}} runs</div>
+    <div class="page-sub">{{if $v.TotalRuns}}Benchmarks across your active servers{{else}}No runs yet{{end}}</div>
   </div>
   <div class="head-actions">
+    {{if $v.TotalRuns}}<a class="btn" href="{{$v.RunsURL}}">All runs</a>{{end}}
     <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
   </div>
 </header>
 
-{{if $v.Rows}}
-<table class="tbl">
-  <thead>
-    <tr>
-      <th>Server</th>
-      <th>Date</th><th>CPU</th><th>GB Single</th><th>GB Multi</th>
-    </tr>
-  </thead>
-  <tbody>
-    {{range $v.Rows}}
-    <tr class="row-link" data-href="{{.URL}}">
-      <td><a class="cell-title mono" href="{{.ServerURL}}">{{.ServerName}}</a></td>
-      <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Date}}</a></td>
-      <td>{{if .CPU}}{{.CPU}}{{else}}—{{end}}</td>
-      <td class="mono">{{.GbSingle}}</td>
-      <td class="mono">{{.GbMulti}}</td>
-    </tr>
-    {{end}}
-  </tbody>
-</table>
-<div class="table-foot">{{len $v.Rows}} rows</div>
-{{else}}
+{{if not $v.TotalRuns}}
 <div class="empty-state">
   <div class="empty-title">No YABS runs yet</div>
   <div class="empty-sub">Run the benchmark on a server, or paste a result you already have.</div>
   <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
 </div>
+{{else}}
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Runs</div>
+    <div class="stat-value">{{$v.TotalRuns}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Servers benchmarked</div>
+    <div class="stat-value">{{$v.Benchmarked}} <span class="ybs-unit">of {{$v.ActiveServers}} active</span></div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Need a look</div>
+    <div class="stat-value">{{$v.Flagged}}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Not benchmarked lately</div>
+    <div class="stat-value">{{$v.Uncovered}}</div>
+  </div>
+</div>
+
+{{if $v.Attention}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Need a look · latest run against the server's own history</h2>
+  <table class="tbl mini">
+    <thead><tr><th>Server</th><th>Provider</th><th>Latest run</th><th>Why</th></tr></thead>
+    <tbody>
+      {{range $v.Attention}}
+      <tr class="row-link" data-href="{{.URL}}">
+        <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Name}}</a></td>
+        <td>{{if .Provider}}{{.Provider}}{{else}}—{{end}}</td>
+        <td class="mono">{{.LastRun}}</td>
+        <td class="wrap">{{range $i, $r := .Reasons}}{{if $i}}<br>{{end}}{{$r}}{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+<section class="panel ybs-section">
+  <h2 class="section-title">Recent runs · change against the same server's previous run</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr><th>Run</th><th>Server</th><th>CPU</th><th>{{$v.GBLabel}} single</th><th>{{$v.GBLabel}} multi</th><th>Disk 4k</th><th>Net send</th></tr>
+    </thead>
+    <tbody>
+      {{range $v.Recent}}
+      <tr class="row-link" data-href="{{.RunURL}}">
+        <td class="mono"><a class="cell-title" href="{{.RunURL}}">{{.Date}}</a></td>
+        <td class="mono"><a class="cell-title" href="{{.ServerURL}}">{{.Name}}</a></td>
+        <td>{{if .CPU}}{{.CPU}}{{else}}—{{end}}</td>
+        {{range .Cells}}{{template "cell" .}}{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div class="table-foot"><a href="{{$v.RunsURL}}">All {{$v.TotalRuns}} runs →</a></div>
+</section>
+
+{{if $v.Providers}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Providers · median of each server's latest run</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr>
+        <th>Provider</th><th>Servers</th><th>Runs</th>
+        <th>{{$v.GBLabel}} single</th><th>{{$v.GBLabel}} multi</th>
+        <th>Disk 4k</th><th>Disk 1m</th><th>Net send</th><th>Net recv</th>
+        {{if $v.HasCost}}<th>Cost/mo</th><th>Single/{{$v.Currency}}</th>{{end}}
+      </tr>
+    </thead>
+    <tbody>
+      {{range $v.Providers}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td class="mono">{{.Servers}}</td>
+        <td class="mono">{{.Runs}}</td>
+        <td class="mono">{{index .Values 0}}{{template "bar" .BarPct}}</td>
+        <td class="mono">{{index .Values 1}}</td>
+        <td class="mono">{{index .Values 2}}</td>
+        <td class="mono">{{index .Values 3}}</td>
+        <td class="mono">{{index .Values 4}}</td>
+        <td class="mono">{{index .Values 5}}</td>
+        {{if $v.HasCost}}<td class="mono">{{.Cost}}</td><td class="mono">{{.Value}}</td>{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div class="table-foot">{{template "units" $v}}{{if $v.RatesNote}} {{$v.RatesNote}}{{end}}</div>
+</section>
+{{end}}
+
+{{if $v.CPUs}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Same CPU, different providers · {{$v.GBLabel}} single against the model's median</h2>
+  <table class="tbl mini">
+    <thead><tr><th>CPU</th><th>Provider</th><th>Servers</th><th>{{$v.GBLabel}} single</th><th>vs model median</th><th>{{$v.GBLabel}} multi</th></tr></thead>
+    <tbody>
+      {{range $v.CPUs}}
+      <tr>
+        <td>{{.CPU}}</td>
+        <td>{{.Provider}}</td>
+        <td class="mono">{{.Servers}}</td>
+        <td class="mono">{{.Single}}</td>
+        <td>{{with .Delta}}<span class="ybs-delta {{.Class}}">{{.Text}}</span>{{else}}<span class="col-muted">—</span>{{end}}</td>
+        <td class="mono">{{.Multi}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+{{if $v.Servers}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Servers · latest run, fastest single-core first</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr>
+        <th>Server</th><th>Provider</th><th>Latest run</th><th>Runs</th>
+        <th>{{$v.GBLabel}} single</th><th>{{$v.GBLabel}} multi</th>
+        <th>Disk 4k</th><th>Disk 1m</th><th>Net send</th><th>Net recv</th>
+        {{if $v.HasCost}}<th>Cost/mo</th><th>Single/{{$v.Currency}}</th>{{end}}
+      </tr>
+    </thead>
+    <tbody>
+      {{range $row := $v.Servers}}
+      <tr class="row-link" data-href="{{.URL}}">
+        <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Name}}</a></td>
+        <td>{{if .Provider}}{{.Provider}}{{else}}—{{end}}</td>
+        <td class="mono">{{.LastRun}}</td>
+        <td class="mono">{{.Runs}}</td>
+        {{with index .Cells 0}}<td class="mono{{if .Low}} ybs-low{{end}}">{{.Value}}{{template "bar" $row.BarPct}}</td>{{end}}
+        {{template "cell" index .Cells 1}}
+        {{template "cell" index .Cells 2}}
+        {{template "cell" index .Cells 3}}
+        {{template "cell" index .Cells 4}}
+        {{template "cell" index .Cells 5}}
+        {{if $v.HasCost}}<td class="mono">{{.Cost}}</td><td class="mono">{{.Value}}</td>{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <div class="table-foot">{{template "units" $v}} A marked cell is 15% or more below that server's own median.</div>
+</section>
+{{end}}
+{{end}}
+
+{{if $v.Coverage}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Not benchmarked lately · active servers with no run in 180 days</h2>
+  <table class="tbl mini">
+    <thead><tr><th>Server</th><th>Provider</th><th>Latest run</th><th class="col-actions">Actions</th></tr></thead>
+    <tbody>
+      {{range $v.Coverage}}
+      <tr>
+        <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Name}}</a></td>
+        <td>{{if .Provider}}{{.Provider}}{{else}}—{{end}}</td>
+        <td class="mono">{{.LastRun}}{{if .Age}} <span class="col-muted">· {{.Age}}</span>{{end}}</td>
+        <td class="col-actions"><a class="btn" href="{{.AddURL}}">＋ Add run</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
 {{end}}
 {{end}}

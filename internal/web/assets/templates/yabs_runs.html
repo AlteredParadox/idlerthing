@@ -1,0 +1,60 @@
+{{/*
+idlerthing — a lightweight, self-hosted inventory for hosting services.
+Copyright (C) 2026 AlteredParadox
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/}}
+
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>YABS runs</h1>
+    <div class="page-sub">{{len $v.Rows}} runs, newest first</div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="/yabs">Overview</a>
+    <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
+  </div>
+</header>
+
+{{if $v.Rows}}
+<table class="tbl">
+  <thead>
+    <tr>
+      <th>Server</th>
+      <th>Date</th><th>CPU</th><th>GB Single</th><th>GB Multi</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range $v.Rows}}
+    <tr class="row-link" data-href="{{.URL}}">
+      <td><a class="cell-title mono" href="{{.ServerURL}}">{{.ServerName}}</a></td>
+      <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Date}}</a></td>
+      <td>{{if .CPU}}{{.CPU}}{{else}}—{{end}}</td>
+      <td class="mono">{{.GbSingle}}</td>
+      <td class="mono">{{.GbMulti}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+<div class="table-foot">{{len $v.Rows}} rows</div>
+{{else}}
+<div class="empty-state">
+  <div class="empty-title">No YABS runs yet</div>
+  <div class="empty-sub">Run the benchmark on a server, or paste a result you already have.</div>
+  <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
+</div>
+{{end}}
+{{end}}

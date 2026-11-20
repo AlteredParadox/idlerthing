@@ -40,7 +40,7 @@ type flash struct {
 }
 
 // assetVersion busts the immutable static-asset cache when assets change.
-const assetVersion = "30"
+const assetVersion = "31"
 
 // pageData is the root template context for full-page renders.
 type pageData struct {

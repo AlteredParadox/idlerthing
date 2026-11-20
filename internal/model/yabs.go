@@ -358,9 +358,22 @@ type YABSRun struct {
 // (callers order by run time). Three queries regardless of the run count:
 // the per-host views read a server's whole history at once.
 func (st *YABSStore) History(ctx context.Context, serverID int64) ([]YABSRun, error) {
+	return st.history(ctx, " WHERE server_id = ?",
+		" WHERE yabs_id IN (SELECT id FROM yabs WHERE server_id = ?)", serverID)
+}
+
+// HistoryAll returns every run of every server with its speed rows, in id
+// order — three queries for the whole fleet, for the overview.
+func (st *YABSStore) HistoryAll(ctx context.Context) ([]YABSRun, error) {
+	return st.history(ctx, "", "")
+}
+
+// history loads runs matching runFilter and the speed rows matching
+// speedFilter (the same scope, expressed against yabs_id).
+func (st *YABSStore) history(ctx context.Context, runFilter, speedFilter string, args ...any) ([]YABSRun, error) {
 	q := QuerierFrom(ctx, st.DB)
 	rows, err := q.QueryContext(ctx,
-		"SELECT "+yabsColumns+" FROM yabs WHERE server_id = ? ORDER BY id", serverID)
+		"SELECT "+yabsColumns+" FROM yabs"+runFilter+" ORDER BY id", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -385,8 +398,8 @@ func (st *YABSStore) History(ctx context.Context, serverID int64) ([]YABSRun, er
 		return nil, nil
 	}
 
-	const ofServer = " WHERE yabs_id IN (SELECT id FROM yabs WHERE server_id = ?) ORDER BY yabs_id, id"
-	disks, err := q.QueryContext(ctx, YABSDiskSpeedSelect+ofServer, serverID)
+	const order = " ORDER BY yabs_id, id"
+	disks, err := q.QueryContext(ctx, YABSDiskSpeedSelect+speedFilter+order, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +417,7 @@ func (st *YABSStore) History(ctx context.Context, serverID int64) ([]YABSRun, er
 		return nil, err
 	}
 
-	network, err := q.QueryContext(ctx, YABSNetworkSpeedSelect+ofServer, serverID)
+	network, err := q.QueryContext(ctx, YABSNetworkSpeedSelect+speedFilter+order, args...)
 	if err != nil {
 		return nil, err
 	}

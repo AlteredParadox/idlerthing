@@ -180,15 +180,64 @@ func TestYABSRunValues(t *testing.T) {
 	if got := yabsDiskTotal(&r, "64k"); got != 0 {
 		t.Errorf("missing block size = %v, want 0", got)
 	}
-	// Median over the measured locations only: {400, 800}, the busy row ignored.
-	if got := yabsNetMedian(&r, true); got != 600 {
-		t.Errorf("net send median = %v, want 600", got)
+}
+
+// netRun is a run with the given send speed per location (0 = busy); receive
+// is half of send.
+func netRun(id int64, speeds ...float64) model.YABSRun {
+	r := model.YABSRun{YABS: model.YABS{ID: id}}
+	for i, v := range speeds {
+		r.Network = append(r.Network, model.YABSNetworkSpeed{
+			Location: string(rune('A' + i)), Mode: "IPv4", SendMbps: v, RecvMbps: v / 2, LatencyMs: 10,
+		})
 	}
-	if got := yabsNetMedian(&r, false); got != 300 {
-		t.Errorf("net recv median = %v, want 300", got)
+	return r
+}
+
+func TestYABSNetLikeForLike(t *testing.T) {
+	near := func(got, want float64) bool { return got > want-0.001 && got < want+0.001 }
+
+	// One run: the median across the locations that answered ({400, 800}).
+	one := []model.YABSRun{netRun(1, 400, 800, 0)}
+	if got := yabsNetLikeForLike(one, true)[1]; !near(got, 600) {
+		t.Errorf("single run send = %v, want 600", got)
 	}
-	if got := yabsNetMedian(&model.YABSRun{}, true); got != 0 {
-		t.Errorf("no network rows = %v, want 0", got)
+	if got := yabsNetLikeForLike(one, false)[1]; !near(got, 300) {
+		t.Errorf("single run recv = %v, want 300", got)
+	}
+
+	// The case a plain median gets wrong: two runs measure 900/900/100, the
+	// third reaches only the unchanged 100 because the other endpoints were
+	// busy. No measured path got slower, so the run's level must not fall.
+	busy := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 0, 0, 100)}
+	got := yabsNetLikeForLike(busy, true)
+	if !near(got[1], 900) || !near(got[2], 900) || !near(got[3], 900) {
+		t.Fatalf("busy endpoints must not read as a drop: %v", got)
+	}
+	series := newYabsSeries(busy, yabsMetrics(busy)[4].Value)
+	if len(series.Points) != 3 || series.low(series.Points[2].V) {
+		t.Errorf("the run with busy endpoints was flagged low: %+v", series)
+	}
+
+	// A real slowdown on the paths that were measured does show: the one
+	// location that answered is at half its usual speed.
+	slow := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 900, 900, 100), netRun(4, 0, 0, 50)}
+	got = yabsNetLikeForLike(slow, true)
+	if !near(got[4], 450) {
+		t.Errorf("a halved endpoint should halve the run's level: %v", got[4])
+	}
+	series = newYabsSeries(slow, yabsMetrics(slow)[4].Value)
+	if !series.low(series.Points[3].V) {
+		t.Errorf("a real slowdown must still be flagged: %+v", series)
+	}
+
+	// Every endpoint busy: the run has no network figure at all.
+	none := []model.YABSRun{netRun(1, 900, 800), netRun(2, 0, 0)}
+	if _, ok := yabsNetLikeForLike(none, true)[2]; ok {
+		t.Errorf("a run with nothing measured must have no value")
+	}
+	if got := yabsNetLikeForLike(nil, true); len(got) != 0 {
+		t.Errorf("no runs = %v", got)
 	}
 }
 
@@ -270,6 +319,37 @@ func TestYABSMetricsFollowLatestGeekbenchVersion(t *testing.T) {
 	}
 	if s := newYabsSeries(multiOnly, mm[0].Value); len(s.Points) != 0 {
 		t.Errorf("multi-only run: the v5 single score must not be the baseline: %+v", s.Points)
+	}
+	// A score that does not say which version produced it is never the
+	// baseline: the newest run with a KNOWN version is followed, and the
+	// unversioned score is shown raw.
+	unknown := []model.YABSRun{
+		statRun(1, "2026-01-01", 1500, 4000, 6, 50, 400),
+		statRun(2, "2026-02-01", 1900, 5000, 0, 50, 400),
+	}
+	if v := yabsGBVersion(unknown); v != 6 {
+		t.Errorf("unversioned newest run: version = %d, want 6", v)
+	}
+	if s := newYabsSeries(unknown, yabsMetrics(unknown)[0].Value); len(s.Points) != 1 || s.Points[0].V != 1500 {
+		t.Errorf("an unversioned score must stay out of the series: %+v", s.Points)
+	}
+	if got := otherVersionScore(&unknown[1], "gb_single", 6); got != "1,900 · v?" {
+		t.Errorf("unversioned score = %q", got)
+	}
+	// Only unversioned scores: nothing to follow, and they are not compared
+	// with each other — they may come from different versions.
+	allUnknown := []model.YABSRun{
+		statRun(1, "2026-01-01", 900, 2000, 0, 50, 400),
+		statRun(2, "2026-02-01", 1900, 5000, 0, 50, 400),
+	}
+	if v := yabsGBVersion(allUnknown); v != 0 {
+		t.Errorf("only unversioned scores: version = %d, want 0", v)
+	}
+	if s := newYabsSeries(allUnknown, yabsMetrics(allUnknown)[0].Value); len(s.Points) != 0 {
+		t.Errorf("unversioned scores must not form a series: %+v", s.Points)
+	}
+	if got := otherVersionScore(&allUnknown[0], "gb_multi", 0); got != "2,000 · v?" {
+		t.Errorf("unversioned multi = %q", got)
 	}
 	if none := yabsMetrics(nil); none[0].Label != "Geekbench single" {
 		t.Errorf("no scores yet: label = %q", none[0].Label)

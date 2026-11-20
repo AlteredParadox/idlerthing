@@ -335,6 +335,107 @@ func TestYABSMultiOnlyGeekbench(t *testing.T) {
 	}
 }
 
+// Scores that do not record their Geekbench version are shown and never
+// compared — on the dashboard and in the two-run view.
+func TestYABSUnversionedGeekbench(t *testing.T) {
+	ts, database, _ := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "unversioned-host")
+	createServer(t, client, ts, "mixed-host")
+	st := &model.YABSStore{DB: database}
+	add := func(serverID int64, at string, single, multi, version int64) {
+		t.Helper()
+		if _, err := st.Create(context.Background(), &model.YABS{
+			ServerID: serverID, RunAt: sqlNs(at), CPU: sqlNs(cpuA),
+			GbSingle: sqlNi(single), GbMulti: sqlNi(multi), GeekbenchVersion: sqlNi(version),
+		}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Server 1: two scores, neither says which version.
+	add(1, "2026-01-01 00:00:00", 900, 2000, 0)
+	add(1, "2026-02-01 00:00:00", 1900, 5000, 0)
+	// Server 2: a known v6 score, then a newer unversioned one.
+	add(2, "2026-01-01 00:00:00", 1500, 4000, 6)
+	add(2, "2026-02-01 00:00:00", 1900, 5000, 0)
+
+	_, page := getPage(t, client, ts.URL+"/servers/1/yabs")
+	for _, want := range []string{"1,900 · v?", "900 · v?", "Geekbench version differs or was not recorded; not compared"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("unversioned dashboard missing %q", want)
+		}
+	}
+	for _, absent := range []string{"▲ 111%", "vs previous", "badge-warn"} {
+		if strings.Contains(page, absent) {
+			t.Errorf("unversioned scores were compared: found %q", absent)
+		}
+	}
+	_, cmp := getPage(t, client, ts.URL+"/servers/1/yabs/compare?run=1&run=2")
+	if !strings.Contains(cmp, "Geekbench version") || !strings.Contains(cmp, "1,900") || strings.Contains(cmp, "▲ 111%") {
+		t.Errorf("two unversioned scores must be shown without a percentage")
+	}
+
+	// Mixed: the known version is followed; the unversioned run is listed raw.
+	_, page = getPage(t, client, ts.URL+"/servers/2/yabs")
+	for _, want := range []string{"Geekbench 6 single", ">1,500<", "1,900 · v?", "1 run · trends start with the next one"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("mixed dashboard missing %q", want)
+		}
+	}
+	if strings.Contains(page, "▲ 27%") {
+		t.Errorf("a known score was compared with an unversioned one")
+	}
+	_, cmp = getPage(t, client, ts.URL+"/servers/2/yabs/compare?run=3&run=4")
+	if strings.Contains(cmp, "▲ 27%") || !strings.Contains(cmp, "Geekbench version") {
+		t.Errorf("known vs unversioned must not produce a percentage")
+	}
+}
+
+// An endpoint that answers pings in every run but is busy for iperf has a
+// latency history and no throughput history; its latency median is shown.
+func TestYABSLatencyBaselineWithoutThroughput(t *testing.T) {
+	ts, database, _ := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "latency-host")
+	seedHostRuns(t, database, 1,
+		hostRun{at: "2026-06-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 1100, multi: 2980, disk: 99, net: 0},
+		hostRun{at: "2026-07-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 1100, multi: 2980, disk: 99, net: 0},
+		hostRun{at: "2026-08-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 1100, multi: 2980, disk: 99, net: 0})
+	_, page := getPage(t, client, ts.URL+"/servers/1/yabs")
+	if !strings.Contains(page, "Median latency") || !strings.Contains(page, `<td class="mono col-muted">134</td>`) {
+		t.Errorf("the latency median should be shown when only latency has a history")
+	}
+}
+
+// The history table is not inside the compare form: the row-link click
+// handler skips anything inside a form, so wrapping the table would stop a
+// click on a row from opening its run. The checkboxes join the form by id.
+func TestYABSHistoryRowsStayClickable(t *testing.T) {
+	ts, database, _ := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "click-host")
+	seedHostRuns(t, database, 1,
+		hostRun{at: "2026-06-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 1100, multi: 2980, disk: 99, net: 600},
+		hostRun{at: "2026-07-01 09:00:00", cpu: cpuA, kernel: "6.1", single: 1100, multi: 2980, disk: 99, net: 600})
+	_, page := getPage(t, client, ts.URL+"/servers/1/yabs")
+	form := strings.Index(page, `<form id="yabs-compare" method="get" action="/servers/1/yabs/compare">`)
+	if form < 0 {
+		t.Fatal("compare form missing")
+	}
+	closed := form + strings.Index(page[form:], "</form>")
+	table := strings.Index(page, `<table class="tbl">`)
+	if closed < form || table < closed {
+		t.Fatalf("the compare form must be closed before the history table (form=%d close=%d table=%d)", form, closed, table)
+	}
+	if strings.Count(page, `<input type="checkbox" form="yabs-compare" name="run"`) != 2 ||
+		!strings.Contains(page, `<button class="btn" type="submit" form="yabs-compare">`) {
+		t.Errorf("checkboxes and the button must be associated with the form by id")
+	}
+	if !strings.Contains(page, `<tr class="row-link" data-href="/servers/1/yabs/2">`) {
+		t.Errorf("history rows should be row links")
+	}
+}
+
 // History() loads a server's runs with their speed rows and nobody else's.
 func TestYABSHistoryLoad(t *testing.T) {
 	ts, database, _ := newTestServerFull(t)

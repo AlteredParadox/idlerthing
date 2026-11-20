@@ -39,7 +39,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 {{else}}
 
 {{range $v.Notices}}
-<div class="ybs-notice ybs-notice-{{.Kind}}" role="status">{{.Text}}</div>
+<div class="ybs-notice ybs-notice-{{.Kind}}">{{.Text}}</div>
 {{end}}
 
 <div class="card-grid ybs-tiles">
@@ -67,7 +67,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <section class="panel ybs-section">
   <h2 class="section-title">History</h2>
-  <form method="get" action="{{$v.CompareURL}}">
+  {{/* The compare form is empty and sits beside the table: the checkboxes
+       and the button join it by id. Wrapping the table in the form would make
+       every cell a form descendant, which the row-link click handler skips,
+       so clicking a row would no longer open its run. */}}
+  <form id="yabs-compare" method="get" action="{{$v.CompareURL}}"></form>
     <table class="tbl">
       <thead>
         <tr>
@@ -80,7 +84,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <tbody>
         {{range $v.Rows}}
         <tr class="row-link" data-href="{{.URL}}">
-          {{if gt $v.RunCount 1}}<td class="ybs-pick"><input type="checkbox" name="run" value="{{.ID}}" aria-label="Compare the run of {{.Date}}"></td>{{end}}
+          {{if gt $v.RunCount 1}}<td class="ybs-pick"><input type="checkbox" form="yabs-compare" name="run" value="{{.ID}}" aria-label="Compare the run of {{.Date}}"></td>{{end}}
           <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Date}}</a></td>
           {{range .Cells}}
           <td class="mono{{if .Low}} ybs-low{{end}}">{{.Value}}{{with .Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>
@@ -96,11 +100,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     </table>
     {{if gt $v.RunCount 1}}
     <div class="form-actions ybs-compare-actions">
-      <button class="btn" type="submit">Compare selected</button>
+      <button class="btn" type="submit" form="yabs-compare">Compare selected</button>
       <span class="field-hint">Tick two runs. Changes are against the previous run; “low” is 15% or more below this host's median.</span>
     </div>
     {{end}}
-  </form>
 </section>
 
 {{if $v.Disk}}

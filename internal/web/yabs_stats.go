@@ -113,21 +113,62 @@ func yabsDiskTotal(r *model.YABSRun, blockSize string) float64 {
 	return read + write
 }
 
-// yabsNetMedian is the median throughput across the iperf locations a run
-// measured, in one direction. The median, not the mean: a run always has a
-// far or congested endpoint or two, and which ones answered varies run to run.
-func yabsNetMedian(r *model.YABSRun, send bool) float64 {
-	var vals []float64
-	for _, n := range r.Network {
-		v := n.RecvMbps
+// yabsNetKey identifies an iperf endpoint across runs.
+func yabsNetKey(n *model.YABSNetworkSpeed) string {
+	return strings.ToLower(strings.TrimSpace(n.Location) + "\x00" + strings.TrimSpace(n.Provider) + "\x00" + n.Mode)
+}
+
+// yabsNetLikeForLike gives each run one network figure (by run id) that is
+// comparable across the history even when the runs did not measure the same
+// set of iperf locations.
+//
+// A plain median over whichever locations answered is not: if two runs
+// measure 900/900/100 Mbit/s and the next one only reaches the unchanged 100
+// because the other two endpoints were busy, the plain median falls by 89%
+// though no measured path got slower. So every location is first compared
+// with its own history — a run's throughput there divided by that location's
+// median across the runs — and a run's level is the median of those ratios
+// over the locations it did measure. The level is scaled by the typical
+// location's typical throughput (the median of the per-location medians) to
+// read in Mbit/s. With a single run, or runs that all measured the same
+// locations at the same speeds, this is exactly the median across locations.
+func yabsNetLikeForLike(runs []model.YABSRun, send bool) map[int64]float64 {
+	value := func(n *model.YABSNetworkSpeed) float64 {
 		if send {
-			v = n.SendMbps
+			return n.SendMbps
 		}
-		if v > 0 {
-			vals = append(vals, v)
+		return n.RecvMbps
+	}
+	history := map[string][]float64{}
+	for i := range runs {
+		for j := range runs[i].Network {
+			n := &runs[i].Network[j]
+			if v := value(n); v > 0 {
+				history[yabsNetKey(n)] = append(history[yabsNetKey(n)], v)
+			}
 		}
 	}
-	return median(vals)
+	typical := make(map[string]float64, len(history))
+	var levels []float64
+	for key, vals := range history {
+		typical[key] = median(vals)
+		levels = append(levels, typical[key])
+	}
+	scale := median(levels)
+	out := make(map[int64]float64, len(runs))
+	for i := range runs {
+		var ratios []float64
+		for j := range runs[i].Network {
+			n := &runs[i].Network[j]
+			if v := value(n); v > 0 {
+				ratios = append(ratios, v/typical[yabsNetKey(n)])
+			}
+		}
+		if len(ratios) > 0 {
+			out[runs[i].ID] = median(ratios) * scale
+		}
+	}
+	return out
 }
 
 // yabsHasGB reports whether a run carries a Geekbench result. Either score
@@ -138,11 +179,14 @@ func yabsHasGB(y *model.YABS) bool {
 }
 
 // yabsGBVersion is the Geekbench major version of the newest run that has a
-// score, 0 when no run does. Scores are only comparable within a version, so
-// every Geekbench statistic is taken over that version alone.
+// score and says which version produced it; 0 when no run does. Scores are
+// only comparable within a version, so every Geekbench statistic is taken
+// over that version alone. A score with no recorded version (the parser and
+// the importer both accept one) is never a baseline: two such scores may come
+// from different versions, so they are shown and never compared.
 func yabsGBVersion(runs []model.YABSRun) int64 {
 	for i := len(runs) - 1; i >= 0; i-- {
-		if yabsHasGB(&runs[i].YABS) {
+		if yabsHasGB(&runs[i].YABS) && runs[i].GeekbenchVersion.Int64 > 0 {
 			return runs[i].GeekbenchVersion.Int64
 		}
 	}
@@ -150,7 +194,9 @@ func yabsGBVersion(runs []model.YABSRun) int64 {
 }
 
 // yabsMetrics is the fixed set of headline metrics for a history (time
-// ordered). All are higher-is-better.
+// ordered). All are higher-is-better. The network metrics are like-for-like
+// across the history (see yabsNetLikeForLike), so the value functions are
+// only meaningful for runs of this history.
 func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 	version := yabsGBVersion(runs)
 	gbLabel := "Geekbench"
@@ -159,7 +205,7 @@ func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 	}
 	gb := func(multi bool) func(r *model.YABSRun) float64 {
 		return func(r *model.YABSRun) float64 {
-			if r.GeekbenchVersion.Int64 != version {
+			if version <= 0 || r.GeekbenchVersion.Int64 != version {
 				return 0
 			}
 			if multi {
@@ -171,6 +217,7 @@ func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 	disk := func(bs string) func(r *model.YABSRun) float64 {
 		return func(r *model.YABSRun) float64 { return yabsDiskTotal(r, bs) }
 	}
+	netSend, netRecv := yabsNetLikeForLike(runs, true), yabsNetLikeForLike(runs, false)
 	gbShort := "GB"
 	if version > 0 {
 		gbShort += strconv.FormatInt(version, 10)
@@ -181,9 +228,9 @@ func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 		{Key: "disk_4k", Label: "Disk 4k read + write", Short: "Disk 4k", Unit: "MB/s", Value: disk("4k")},
 		{Key: "disk_1m", Label: "Disk 1m read + write", Short: "Disk 1m", Unit: "MB/s", Value: disk("1m")},
 		{Key: "net_send", Label: "Network send (median)", Short: "Net send", Unit: "Mbit/s",
-			Value: func(r *model.YABSRun) float64 { return yabsNetMedian(r, true) }},
+			Value: func(r *model.YABSRun) float64 { return netSend[r.ID] }},
 		{Key: "net_recv", Label: "Network receive (median)", Short: "Net recv", Unit: "Mbit/s",
-			Value: func(r *model.YABSRun) float64 { return yabsNetMedian(r, false) }},
+			Value: func(r *model.YABSRun) float64 { return netRecv[r.ID] }},
 	}
 }
 

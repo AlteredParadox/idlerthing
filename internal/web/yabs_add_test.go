@@ -42,11 +42,14 @@ const busyYABS = `{"time":"20261119-185420","cpu":{"model":"Test CPU","cores":4}
 	`{"mode":"IPv4","provider":"Edgoo","loc":"Sao Paulo, BR (1G)","send":"busy ","recv":"busy ","latency":"190 ms"}],` +
 	`"geekbench":[{"version":6,"single":1102,"multi":2981,"url":"Local (--no-upload)"}]}`
 
-// ingestSigned posts body to the signed ingest URL of serverID with a fresh,
-// distinct capability (tsOffset keeps single-use caps apart within a test).
-func ingestSigned(t *testing.T, ts *httptest.Server, srv *Server, serverID, tsOffset int64, body string) (int, string) {
+// ingestSigned posts body to the signed ingest URL of serverID. Each ingest
+// URL works once, so calls within one test pass distinct slot numbers: slots
+// are a minute apart, which keeps two calls on different URLs even when the
+// clock ticks over between them (a one-second spacing would not — the second
+// call could land on the first one's timestamp).
+func ingestSigned(t *testing.T, ts *httptest.Server, srv *Server, serverID, slot int64, body string) (int, string) {
 	t.Helper()
-	stamp := time.Now().Unix() - tsOffset
+	stamp := time.Now().Unix() - 60*slot
 	resp, err := http.Post(
 		fmt.Sprintf("%s/api/yabs/%d?sig=%s&ts=%d", ts.URL, serverID, signYABSTest(srv.secret, serverID, stamp), stamp),
 		"application/json", strings.NewReader(body))

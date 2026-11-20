@@ -240,6 +240,12 @@ type yabsPoint struct {
 type yabsSeries struct {
 	Points           []yabsPoint
 	Median, Min, Max float64
+	// cohorts holds, per group, the summary of the points measured over that
+	// group — built once with the series, so asking "is this row low against
+	// its peers" for every row of a long history does not re-sort the same
+	// values each time. nil for a metric without groups, whose only cohort
+	// is the series itself.
+	cohorts map[string]yabsSeries
 }
 
 // newYabsSeries collects the runs that measured value. group may be nil.
@@ -256,7 +262,18 @@ func newYabsSeries(runs []model.YABSRun, value func(r *model.YABSRun) float64, g
 		}
 		points = append(points, p)
 	}
-	return seriesOf(points)
+	s := seriesOf(points)
+	if group != nil {
+		byGroup := map[string][]yabsPoint{}
+		for _, p := range points {
+			byGroup[p.Group] = append(byGroup[p.Group], p)
+		}
+		s.cohorts = make(map[string]yabsSeries, len(byGroup))
+		for g, ps := range byGroup {
+			s.cohorts[g] = seriesOf(ps)
+		}
+	}
+	return s
 }
 
 // seriesOf summarises a set of points.
@@ -299,14 +316,10 @@ func (s yabsSeries) low(v float64) bool {
 // with: every point measured over the same group, itself included. For a
 // metric without groups that is the whole series.
 func (s yabsSeries) peers(pos int) yabsSeries {
-	group := s.Points[pos].Group
-	var points []yabsPoint
-	for _, p := range s.Points {
-		if p.Group == group {
-			points = append(points, p)
-		}
+	if s.cohorts == nil {
+		return s
 	}
-	return seriesOf(points)
+	return s.cohorts[s.Points[pos].Group]
 }
 
 // deltaPrev compares the measurement at pos with the one before it; nil for

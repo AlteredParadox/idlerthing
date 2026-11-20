@@ -1178,3 +1178,15 @@ select:focus { outline: none; border-color: var(--acc); }
 .ybs-pick { width: 30px; }
 .ybs-compare-actions { margin-top: 10px; align-items: center; }
 .tbl td.ybs-low { box-shadow: inset 2px 0 0 var(--warn); }
+/* Inline magnitude bar (one hue): a butt-capped stroke, so it stays 6px tall
+   whatever width the stretched viewBox is drawn at. */
+.ybs-bar {
+  display: block;
+  width: 100%;
+  max-width: 80px;
+  height: 6px;
+  margin-top: 4px;
+}
+.ybs-bar * { fill: none; stroke-width: 6px; vector-effect: non-scaling-stroke; }
+.ybs-bar-track { stroke: var(--panel2); }
+.ybs-bar-fill { stroke: var(--acc); }

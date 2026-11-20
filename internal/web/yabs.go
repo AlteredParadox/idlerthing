@@ -277,18 +277,6 @@ func (s *Server) storeYABSRun(ctx context.Context, serverID int64, body []byte) 
 
 // ---------- Views ----------
 
-// handleYABSIndex renders GET /yabs (all runs).
-func (s *Server) handleYABSIndex(w http.ResponseWriter, r *http.Request) {
-	items, err := (&model.YABSStore{DB: s.db}).ListAll(r.Context())
-	if err != nil {
-		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
-		return
-	}
-	data := s.newPageData(w, r, "YABS", "yabs")
-	data.Data = yabsIndexView{Rows: yabsRows(items), AddURL: routeYABSNew}
-	s.render(w, r, "yabs", data)
-}
-
 // yabsIndexView is the payload for the all-servers run list.
 type yabsIndexView struct {
 	Rows   []yabsRow

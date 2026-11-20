@@ -20,7 +20,9 @@ benchmarks. SQLite storage, no cgo, no external services required.
   servers, paginated.
 - **Export/import** — full JSON export and CSV zip; restore with
   `idlerthing import`.
-- **YABS** — signed ingest URLs for yabs.sh results, run history and views.
+- **YABS** — signed ingest URLs (or paste) for yabs.sh results, a
+  per-server dashboard of its history, and a fleet overview with provider
+  statistics.
 - **Public page** — optional read-only `/public` server list.
 
 ## Screenshots
@@ -246,6 +248,30 @@ The network tiles show the median across the iperf locations a run actually
 measured, and compare two runs only when they measured the same locations: a
 run in which some were busy is shown but not marked down against the others.
 The per-location breakdown follows each location on its own.
+
+### The fleet overview
+
+**YABS** in the sidebar opens an overview of the active servers:
+
+- **Need a look** — servers whose latest run is 15% or more below their own
+  median, or whose hardware changed since the run before.
+- **Recent runs** — the newest runs across all servers, each against the
+  same server's previous run. **All runs** has the complete list.
+- **Providers** — per provider, the median across its servers of each
+  server's latest run, the median monthly cost, and single-core points per
+  unit of monthly cost. Costs come from each server's active recurring
+  price, in the dashboard currency when a rate is available.
+- **Same CPU, different providers** — CPU models found at two or more
+  providers, each provider's single-core median against the model's.
+- **Servers** — every benchmarked server's latest run, fastest single-core
+  first.
+- **Not benchmarked lately** — active servers with no run in 180 days.
+
+"Latest run" is meant literally: a metric a server's latest run did not
+measure is shown as missing, not carried over from an older run. Fleet
+statistics compare Geekbench scores on the version most servers use; a score
+on another version, or with no version recorded, is listed with a marker
+(`900 · v5`) and left out of the medians.
 
 ## Tech notes
 

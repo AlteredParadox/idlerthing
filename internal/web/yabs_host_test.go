@@ -505,6 +505,19 @@ func TestYABSHistoryLoad(t *testing.T) {
 	if runs[0].Disks[0].ReadMbps != 10 || runs[1].Disks[0].ReadMbps != 20 || runs[1].Network[0].SendMbps != 0 {
 		t.Errorf("speed rows attached to the wrong run, or NULL not read as 0: %+v", runs)
 	}
+	// HistoryAll: the same shape for every server at once.
+	all, err := st.HistoryAll(context.Background())
+	if err != nil || len(all) != 3 {
+		t.Fatalf("HistoryAll = %d runs, %v, want 3", len(all), err)
+	}
+	for i, r := range all {
+		if len(r.Disks) != 2 || len(r.Network) != 2 {
+			t.Errorf("HistoryAll run %d: %d disk rows, %d network rows", i, len(r.Disks), len(r.Network))
+		}
+	}
+	if all[2].ServerID != 2 || all[2].Disks[0].ReadMbps != 30 {
+		t.Errorf("HistoryAll: speed rows attached to the wrong run: %+v", all[2])
+	}
 	if none, err := st.History(context.Background(), 99); err != nil || none != nil {
 		t.Errorf("History of a server without runs = %v, %v", none, err)
 	}

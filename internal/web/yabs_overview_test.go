@@ -171,6 +171,49 @@ func TestYABSOverviewSameCPU(t *testing.T) {
 	}
 }
 
+// A server with no provider set is not a provider to compare against, and its
+// score does not move a CPU model's median.
+func TestYABSOverviewSameCPUIgnoresUnassigned(t *testing.T) {
+	const at = "2026-11-01 00:00:00"
+	// One named provider and one unassigned server on the same CPU: the
+	// inventory knows a single provider for this model — nothing to compare.
+	v := buildYABSOverview(
+		[]yabsFleetServer{
+			{ID: 1, Hostname: "named", Provider: "Acme", Active: true},
+			{ID: 2, Hostname: "loose", Active: true},
+		},
+		[]model.YABSRun{
+			fr{1, 1, at, "CPU X", 1700, 6000, 6, 50, 400}.run(),
+			fr{2, 2, at, "CPU X", 1000, 3000, 6, 50, 400}.run(),
+		}, overviewNow)
+	if len(v.CPUs) != 0 {
+		t.Fatalf("an unassigned server opened a provider comparison: %+v", v.CPUs)
+	}
+	// It still has its place in the Providers table.
+	if len(v.Providers) != 2 || v.Providers[1].Name != "No provider set" {
+		t.Errorf("providers = %+v", v.Providers)
+	}
+
+	// Two named providers plus an unassigned server far below both: the
+	// model's median is over the named ones only (1600), so the deltas are
+	// ±10%, not skewed by the unassigned 400.
+	v = buildYABSOverview(
+		[]yabsFleetServer{
+			{ID: 1, Hostname: "a", Provider: "Acme", Active: true},
+			{ID: 2, Hostname: "b", Provider: "Bolt", Active: true},
+			{ID: 3, Hostname: "loose", Active: true},
+		},
+		[]model.YABSRun{
+			fr{1, 1, at, "CPU X", 1760, 6000, 6, 50, 400}.run(),
+			fr{2, 2, at, "CPU X", 1440, 5000, 6, 50, 400}.run(),
+			fr{3, 3, at, "CPU X", 400, 1000, 6, 50, 400}.run(),
+		}, overviewNow)
+	if len(v.CPUs) != 2 || v.CPUs[0].Provider != "Acme" || v.CPUs[0].Delta.Text != "▲ 10%" ||
+		v.CPUs[1].Provider != "Bolt" || v.CPUs[1].Delta.Text != "▼ 10%" {
+		t.Fatalf("cpu rows = %+v (deltas %+v, %+v)", v.CPUs, v.CPUs[0].Delta, v.CPUs[1].Delta)
+	}
+}
+
 func TestYABSOverviewServersAndRecent(t *testing.T) {
 	servers, runs := overviewFleet()
 	v := buildYABSOverview(servers, runs, overviewNow)

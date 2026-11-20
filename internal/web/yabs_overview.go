@@ -587,7 +587,10 @@ type yabsCPUKey struct{ cpu, provider string }
 // scoring lower at one provider is the clearest sign of an oversold node.
 // Only models found at two or more providers are listed — with one provider
 // there is nobody to compare against. A server counts under the CPU its
-// latest run reports, with the score that same run measured.
+// latest run reports, with the score that same run measured. Servers with no
+// provider set are left out entirely: "no provider" is not a provider to be
+// compared with, and their scores must not move the model's median either.
+// (They keep their row in the Providers table.)
 func yabsCPURows(hosts []yabsHostSummary, fleetGB int64) []yabsCPURow {
 	single, multi := map[yabsCPUKey][]float64{}, map[yabsCPUKey][]float64{}
 	perCPU := map[string][]float64{}
@@ -596,7 +599,7 @@ func yabsCPURows(hosts []yabsHostSummary, fleetGB int64) []yabsCPURow {
 	for i := range hosts {
 		h := &hosts[i]
 		s := h.fleetValue(ymSingle, fleetGB)
-		if h.CPU == "" || s <= 0 {
+		if h.CPU == "" || h.Srv.Provider == "" || s <= 0 {
 			continue
 		}
 		k := yabsCPUKey{h.CPU, h.Srv.Provider}
@@ -625,9 +628,6 @@ func yabsCPURows(hosts []yabsHostSummary, fleetGB int64) []yabsCPURow {
 			CPU: k.cpu, Provider: k.provider, Servers: len(single[k]),
 			Single: fmtYABS(median(single[k])), Multi: fmtYABS(median(multi[k])),
 			Delta: newYabsDelta(median(single[k]), median(perCPU[k.cpu]), false),
-		}
-		if row.Provider == "" {
-			row.Provider = "No provider set"
 		}
 		out = append(out, row)
 	}

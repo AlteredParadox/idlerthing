@@ -219,6 +219,34 @@ does a result that is not valid UTF-8 (it is still parsed and stored). A
 result yabs.sh could not measure — an iperf endpoint reporting `busy` — is
 stored as missing rather than as 0.
 
+### Tracking a server over time
+
+A server's **YABS** page is a dashboard of its run history rather than a
+list:
+
+- Six headline tiles (Geekbench single and multi, disk 4k and 1m, network
+  send and receive) with the latest value, the change against the previous
+  run and against the server's own median, and a trend line.
+- A history table with per-run changes. A value 15% or more below the
+  server's median is flagged **low**; a median is used once there are three
+  runs. Changes under 5% are shown but not coloured — that is ordinary
+  run-to-run noise.
+- A note when the CPU model, core count or RAM differs from the previous run
+  (the host may have been moved to other hardware), and a quieter one for a
+  kernel or distro change.
+- The latest run's disk and network results broken down by block size and
+  by iperf location, each against its own history.
+- Tick two runs to compare them side by side.
+
+Geekbench scores are only compared within one major version; a run made with
+another version, or one that does not record its version, is listed but left
+out of the statistics.
+
+The network tiles show the median across the iperf locations a run actually
+measured, and compare two runs only when they measured the same locations: a
+run in which some were busy is shown but not marked down against the others.
+The per-location breakdown follows each location on its own.
+
 ## Tech notes
 
 - Go stdlib only: `net/http`, `html/template`, `embed` — plus

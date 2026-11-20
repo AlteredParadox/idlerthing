@@ -1112,3 +1112,69 @@ select:focus { outline: none; border-color: var(--acc); }
 }
 .auth-legal a { color: var(--mut); }
 .auth-legal a:hover { color: var(--acc); }
+
+/* ---------- YABS dashboards ---------- */
+/* Six tiles: one row when there is room, otherwise 3×2 or 2×3 — never a
+   ragged 4+2. */
+.ybs-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (min-width: 1500px) {
+  .ybs-tiles { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .ybs-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ybs-tile .metric-name { margin: 0; }
+.ybs-value { margin: 3px 0 2px; }
+.ybs-num { font-size: 22px; font-weight: 600; }
+.ybs-unit { font-size: 11px; color: var(--mut); }
+.ybs-deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  min-height: 17px;
+  font-size: 11px;
+}
+.ybs-delta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ybs-delta-ref { color: var(--mut); }
+.delta-good { color: var(--ok); }
+.delta-bad { color: var(--err); }
+.delta-flat { color: var(--mut); }
+/* Trend line: the history is quiet (muted), the newest run is the accent dot.
+   Strokes are non-scaling because the viewBox is stretched to the tile width;
+   the dot is a zero-length round-capped stroke so it stays a circle. */
+.ybs-spark {
+  display: block;
+  width: 100%;
+  height: 40px;
+  margin-top: 6px;
+  overflow: visible;
+}
+.ybs-spark * { fill: none; vector-effect: non-scaling-stroke; }
+.ybs-spark-median { stroke: var(--bd); stroke-width: 1px; }
+.ybs-spark-line {
+  stroke: var(--mut);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.ybs-spark-ring { stroke: var(--panel); stroke-width: 12px; stroke-linecap: round; }
+.ybs-spark-dot { stroke: var(--acc); stroke-width: 8px; stroke-linecap: round; }
+.ybs-notice {
+  border: 1px solid var(--bd);
+  border-left: 3px solid var(--mut);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 9px 14px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.ybs-notice-warn { border-left-color: var(--warn); }
+.ybs-notice-info { border-left-color: var(--acc); }
+.ybs-section { margin-top: 14px; }
+.ybs-pick { width: 30px; }
+.ybs-compare-actions { margin-top: 10px; align-items: center; }
+.tbl td.ybs-low { box-shadow: inset 2px 0 0 var(--warn); }

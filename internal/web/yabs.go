@@ -289,41 +289,10 @@ func (s *Server) handleYABSIndex(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "yabs", data)
 }
 
-// handleServerYABS renders GET /servers/{id}/yabs (runs for one server).
-func (s *Server) handleServerYABS(w http.ResponseWriter, r *http.Request) {
-	serverID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	srv, _, _, err := s.servers.Get(r.Context(), serverID)
-	if err == sql.ErrNoRows {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
-		return
-	}
-	items, err := (&model.YABSStore{DB: s.db}).ListFor(r.Context(), serverID)
-	if err != nil {
-		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
-		return
-	}
-	data := s.newPageData(w, r, "YABS · "+srv.Hostname, "yabs")
-	data.Data = yabsIndexView{
-		Rows:       yabsRows(items),
-		ServerName: srv.Hostname,
-		AddURL:     serverYABSURL(serverID) + "/new",
-	}
-	s.render(w, r, "yabs", data)
-}
-
-// yabsIndexView is the payload for yabs list pages.
+// yabsIndexView is the payload for the all-servers run list.
 type yabsIndexView struct {
-	Rows       []yabsRow
-	ServerName string // set on per-server pages
-	AddURL     string // the add-run page for this list's scope
+	Rows   []yabsRow
+	AddURL string
 }
 
 // routeYABSNew is the add-run entry point that asks which server.

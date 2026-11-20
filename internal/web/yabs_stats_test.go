@@ -254,6 +254,18 @@ func TestYABSNetComparability(t *testing.T) {
 		t.Errorf("same-set drop must be flagged low (and the run before it not)")
 	}
 
+	// Cohorts are summarised once with the series: a cohort's median is its
+	// own, not the whole series', and an ungrouped metric is its own cohort.
+	mixedSets := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 0, 0, 100), netRun(4, 0, 0, 80), netRun(5, 0, 0, 120)}
+	s = send(mixedSets)
+	if full, partial := s.peers(0), s.peers(4); len(full.Points) != 2 || full.Median != 900 || len(partial.Points) != 3 || partial.Median != 100 {
+		t.Errorf("cohorts: full=%+v partial=%+v", full, partial)
+	}
+	scored := []model.YABSRun{statRun(1, "", 1000, 1, 6, 0, 0), statRun(2, "", 1100, 1, 6, 0, 0)}
+	if got := yabsMetrics(scored)[0].series(scored).peers(1); len(got.Points) != 2 || got.Median != 1050 {
+		t.Errorf("an ungrouped metric's cohort is the whole series: %+v", got)
+	}
+
 	// Send and receive are judged separately: here receive was measured at
 	// one location only in the second run.
 	a, b := netRun(1, 900, 800), netRun(2, 900, 800)

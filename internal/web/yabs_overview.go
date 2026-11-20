@@ -57,10 +57,15 @@ type yabsFleetServer struct {
 // yabsHostSummary is one server's history reduced to what the fleet views
 // compare: what its latest run measured, and that run's flags.
 type yabsHostSummary struct {
-	Srv       yabsFleetServer
-	Runs      []model.YABSRun // oldest first
-	GBVersion int64
-	Series    []yabsSeries // one per headline metric
+	Srv  yabsFleetServer
+	Runs []model.YABSRun // oldest first
+	// LatestGB is the Geekbench major version of the latest run's score, 0
+	// when that run has no score or does not record its version. It is what
+	// the server contributes to the fleet's Geekbench statistics — an older
+	// run's version says nothing about a figure the latest run did not
+	// produce.
+	LatestGB int64
+	Series   []yabsSeries // one per headline metric
 	// Latest is what the LATEST RUN measured per metric; 0 when that run
 	// did not measure it. An older run's value is never carried forward:
 	// these feed "latest run" tables, medians and alerts, and the CPU they
@@ -78,7 +83,10 @@ type yabsHostSummary struct {
 func summarizeYABSHost(srv yabsFleetServer, runs []model.YABSRun) yabsHostSummary {
 	sortYABSRuns(runs)
 	last := len(runs) - 1
-	h := yabsHostSummary{Srv: srv, Runs: runs, GBVersion: yabsGBVersion(runs)}
+	h := yabsHostSummary{Srv: srv, Runs: runs}
+	if yabsHasGB(&runs[last].YABS) {
+		h.LatestGB = runs[last].GeekbenchVersion.Int64
+	}
 	h.Last = yabsRunTime(&runs[last].YABS)
 	h.CPU = strings.TrimSpace(runs[last].CPU.String)
 	for _, m := range yabsMetrics(runs) {
@@ -110,14 +118,17 @@ const (
 	ymCount
 )
 
-// yabsFleetGBVersion is the Geekbench major version most servers' newest
-// scored run uses (the higher one on a tie), 0 when none has a score. Fleet
-// statistics compare Geekbench only across servers on this version.
+// yabsFleetGBVersion is the Geekbench major version most servers' latest
+// scores use (the higher one on a tie), 0 when no latest run has a versioned
+// score. Only a server whose latest run carries such a score gets a vote:
+// those are the scores the latest-run tables can show, so a server with an
+// old score and a newer run that skipped Geekbench must not pick a version
+// nothing current is on.
 func yabsFleetGBVersion(hosts []yabsHostSummary) int64 {
 	count := map[int64]int{}
 	for _, h := range hosts {
-		if h.GBVersion > 0 {
-			count[h.GBVersion]++
+		if h.LatestGB > 0 {
+			count[h.LatestGB]++
 		}
 	}
 	var best int64
@@ -129,11 +140,11 @@ func yabsFleetGBVersion(hosts []yabsHostSummary) int64 {
 	return best
 }
 
-// fleetValue is a server's newest measurement of metric i as the fleet
-// statistics see it: Geekbench scores count only when the server is on the
-// fleet's version.
+// fleetValue is what the server's latest run measured for metric i, as the
+// fleet statistics see it: Geekbench scores count only when that run is on
+// the fleet's version.
 func (h *yabsHostSummary) fleetValue(i int, fleetGB int64) float64 {
-	if (i == ymSingle || i == ymMulti) && h.GBVersion != fleetGB {
+	if (i == ymSingle || i == ymMulti) && (fleetGB <= 0 || h.LatestGB != fleetGB) {
 		return 0
 	}
 	return h.Latest[i]
@@ -305,21 +316,7 @@ func (s *Server) yabsFleetServers(r *http.Request, rates map[string]float64, cur
 func buildYABSOverview(servers []yabsFleetServer, runs []model.YABSRun, now time.Time) yabsOverviewView {
 	v := yabsOverviewView{AddURL: routeYABSNew, RunsURL: routeYABSRuns, TotalRuns: len(runs), GBLabel: "GB"}
 
-	byServer := map[int64][]model.YABSRun{}
-	for _, run := range runs {
-		byServer[run.ServerID] = append(byServer[run.ServerID], run)
-	}
-	var all []yabsHostSummary // every server with runs (the feed needs them all)
-	for _, srv := range servers {
-		if srv.Active {
-			v.ActiveServers++
-		}
-		if len(byServer[srv.ID]) > 0 {
-			all = append(all, summarizeYABSHost(srv, byServer[srv.ID]))
-		} else if srv.Active {
-			v.Coverage = append(v.Coverage, yabsCoverage(srv, time.Time{}, now))
-		}
-	}
+	all := v.summarize(servers, runs, now)
 	var hosts []yabsHostSummary // the active ones: what the statistics cover
 	for _, h := range all {
 		if h.Srv.Active {
@@ -350,6 +347,29 @@ func buildYABSOverview(servers []yabsFleetServer, runs []model.YABSRun, now time
 	v.CPUs = yabsCPURows(hosts, fleetGB)
 	v.Servers = yabsFleetRows(hosts, fleetGB)
 	return v
+}
+
+// summarize reduces every server that has runs to a summary (the feed needs
+// inactive servers' runs too), counting the active servers and listing the
+// active ones that have never been benchmarked.
+func (v *yabsOverviewView) summarize(servers []yabsFleetServer, runs []model.YABSRun, now time.Time) []yabsHostSummary {
+	byServer := map[int64][]model.YABSRun{}
+	for _, run := range runs {
+		byServer[run.ServerID] = append(byServer[run.ServerID], run)
+	}
+	var all []yabsHostSummary
+	for _, srv := range servers {
+		if srv.Active {
+			v.ActiveServers++
+		}
+		switch {
+		case len(byServer[srv.ID]) > 0:
+			all = append(all, summarizeYABSHost(srv, byServer[srv.ID]))
+		case srv.Active:
+			v.Coverage = append(v.Coverage, yabsCoverage(srv, time.Time{}, now))
+		}
+	}
+	return all
 }
 
 // yabsCoverage is the coverage-gap row of a server: never benchmarked when
@@ -428,10 +448,14 @@ func yabsRecent(hosts []yabsHostSummary, fleetGB int64) []yabsRecentRow {
 }
 
 // yabsFeedCell is one metric of one run in the feed. The change and the low
-// mark come from the server's own history, as on its dashboard. The feed's
-// Geekbench columns are headed with the fleet's version, so a score from any
-// other version — or with none recorded — carries its own marker
-// ("900 · v5", "1,900 · v?") rather than sitting unmarked under that heading.
+// mark come from the server's own history, as on its dashboard.
+//
+// A Geekbench cell always shows the score the run recorded, whether or not
+// that run is part of the server's current series (a server that moved from
+// GB5 to GB6 still has GB5 runs in the feed). The columns are headed with the
+// fleet's version, so a score on any other version — or with none recorded —
+// carries its own marker ("900 · v5", "1,900 · v?") rather than sitting
+// unmarked under that heading.
 func yabsFeedCell(rf yabsFeedRef, mi int, fleetGB int64) yabsCell {
 	cell := yabsCell{Value: "—"}
 	s := rf.host.Series[mi]
@@ -440,10 +464,20 @@ func yabsFeedCell(rf yabsFeedRef, mi int, fleetGB int64) yabsCell {
 		cell.Delta = s.deltaPrev(pos)
 		cell.Low = s.lowAt(pos)
 	}
-	if mi == ymSingle || mi == ymMulti {
-		if marked := otherVersionScore(rf.run(), yabsMetricKeys[mi], fleetGB); marked != "" {
-			cell.Value = marked
-		}
+	if mi != ymSingle && mi != ymMulti {
+		return cell
+	}
+	run := rf.run()
+	score := run.GbSingle.Int64
+	if mi == ymMulti {
+		score = run.GbMulti.Int64
+	}
+	if score <= 0 {
+		return cell
+	}
+	cell.Value = commaInt(score)
+	if marked := otherVersionScore(run, yabsMetricKeys[mi], fleetGB); marked != "" {
+		cell.Value = marked
 	}
 	return cell
 }

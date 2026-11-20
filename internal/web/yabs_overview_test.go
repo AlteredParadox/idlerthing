@@ -290,6 +290,96 @@ func TestYABSOverviewUsesTheLatestRunOnly(t *testing.T) {
 	}
 }
 
+// The fleet's Geekbench version is chosen by the scores the latest-run tables
+// can actually show. Two servers with an old GB5 score and a newer run that
+// skipped Geekbench must not outvote the one server with a current GB6 score.
+func TestYABSOverviewFleetVersionFromLatestScores(t *testing.T) {
+	servers := []yabsFleetServer{
+		{ID: 1, Hostname: "old-a", Provider: "Acme", Active: true, Cost: 10},
+		{ID: 2, Hostname: "old-b", Provider: "Acme", Active: true, Cost: 10},
+		{ID: 3, Hostname: "current", Provider: "Bolt", Active: true, Cost: 10},
+	}
+	runs := []model.YABSRun{
+		fr{1, 1, "2025-01-01 00:00:00", "X", 900, 2100, 5, 50, 400}.run(),
+		fr{2, 1, "2026-11-01 00:00:00", "X", 0, 0, 0, 55, 420}.run(), // disk + network only
+		fr{3, 2, "2025-02-01 00:00:00", "X", 950, 2200, 5, 50, 400}.run(),
+		fr{4, 2, "2026-11-02 00:00:00", "X", 0, 0, 0, 56, 430}.run(), // disk + network only
+		fr{5, 3, "2026-11-03 00:00:00", "X", 1700, 6000, 6, 60, 500}.run(),
+	}
+	v := buildYABSOverview(servers, runs, overviewNow)
+
+	if v.GBLabel != "GB6" {
+		t.Fatalf("fleet version label = %q, want GB6 (the only current score)", v.GBLabel)
+	}
+	// The current score is ranked and feeds its provider's median.
+	if v.Servers[0].Name != "current" || v.Servers[0].Cells[ymSingle].Value != "1,700" || v.Servers[0].BarPct != "100.0" {
+		t.Errorf("the current score must be ranked: %+v", v.Servers[0])
+	}
+	for _, p := range v.Providers {
+		switch p.Name {
+		case "Bolt":
+			if p.Values[ymSingle] != "1,700" || p.Value != "170" {
+				t.Errorf("Bolt = %+v", p)
+			}
+		case "Acme": // nothing current on Geekbench; disk still counts
+			if p.Values[ymSingle] != "—" || p.Values[ymDisk4k] != "111" {
+				t.Errorf("Acme = %+v", p)
+			}
+		}
+	}
+
+	// The feed shows every run's own score. The GB5 runs are older scores of
+	// servers whose history "follows" GB5, and they sit under a GB6 heading:
+	// shown, and marked.
+	feed := map[string]string{}
+	for _, r := range v.Recent {
+		feed[r.RunURL] = r.Cells[0].Value
+	}
+	for url, want := range map[string]string{
+		"/servers/1/yabs/1": "900 · v5", "/servers/2/yabs/3": "950 · v5",
+		"/servers/1/yabs/2": "—", "/servers/3/yabs/5": "1,700",
+	} {
+		if feed[url] != want {
+			t.Errorf("feed %s = %q, want %q", url, feed[url], want)
+		}
+	}
+}
+
+// A server that moved from GB5 to GB6 while the fleet is mostly on GB5: its
+// older GB5 runs are outside its own (GB6) series but match the fleet's
+// version, and must still show their scores in the feed — unmarked, since
+// they are on the version the column is headed with.
+func TestYABSOverviewFeedKeepsScoresOutsideTheSeries(t *testing.T) {
+	servers := []yabsFleetServer{
+		{ID: 1, Hostname: "upgraded", Active: true},
+		{ID: 2, Hostname: "gb5-a", Active: true},
+		{ID: 3, Hostname: "gb5-b", Active: true},
+	}
+	runs := []model.YABSRun{
+		fr{1, 1, "2026-01-01 00:00:00", "X", 900, 2100, 5, 50, 400}.run(),
+		fr{2, 1, "2026-06-01 00:00:00", "X", 1500, 4000, 6, 50, 400}.run(),
+		fr{3, 2, "2026-06-02 00:00:00", "X", 950, 2200, 5, 50, 400}.run(),
+		fr{4, 3, "2026-06-03 00:00:00", "X", 940, 2150, 5, 50, 400}.run(),
+	}
+	v := buildYABSOverview(servers, runs, overviewNow)
+	if v.GBLabel != "GB5" {
+		t.Fatalf("fleet version label = %q, want GB5", v.GBLabel)
+	}
+	feed := map[string]yabsCell{}
+	for _, r := range v.Recent {
+		feed[r.RunURL] = r.Cells[0]
+	}
+	if got := feed["/servers/1/yabs/1"]; got.Value != "900" || got.Delta != nil {
+		t.Errorf("the upgraded server's older GB5 run = %+v, want its score, unmarked, no delta", got)
+	}
+	if got := feed["/servers/1/yabs/2"]; got.Value != "1,500 · v6" || got.Delta != nil {
+		t.Errorf("the upgraded server's GB6 run = %+v, want it marked, with no cross-version delta", got)
+	}
+	if got := feed["/servers/2/yabs/3"]; got.Value != "950" {
+		t.Errorf("a GB5 server's run = %+v", got)
+	}
+}
+
 func TestYABSOverviewEmptyAndVersionTie(t *testing.T) {
 	v := buildYABSOverview(nil, nil, overviewNow)
 	if v.TotalRuns != 0 || len(v.Providers)+len(v.Servers)+len(v.Recent)+len(v.Coverage) != 0 || v.GBLabel != "GB" {
@@ -303,11 +393,11 @@ func TestYABSOverviewEmptyAndVersionTie(t *testing.T) {
 	}
 
 	// One server on each Geekbench version: follow the newer one.
-	hosts := []yabsHostSummary{{GBVersion: 5}, {GBVersion: 6}, {GBVersion: 0}}
+	hosts := []yabsHostSummary{{LatestGB: 5}, {LatestGB: 6}, {LatestGB: 0}}
 	if got := yabsFleetGBVersion(hosts); got != 6 {
 		t.Errorf("version tie = %d, want 6", got)
 	}
-	if got := yabsFleetGBVersion([]yabsHostSummary{{GBVersion: 5}, {GBVersion: 5}, {GBVersion: 6}}); got != 5 {
+	if got := yabsFleetGBVersion([]yabsHostSummary{{LatestGB: 5}, {LatestGB: 5}, {LatestGB: 6}}); got != 5 {
 		t.Errorf("majority version = %d, want 5", got)
 	}
 	// A server whose only score records no version: listed with the score

@@ -167,7 +167,7 @@ func buildYABSHostView(srv *model.Server, runs []model.YABSRun) yabsHostView {
 	gbVersion := yabsGBVersion(runs)
 	series := make([]yabsSeries, len(metrics))
 	for i, m := range metrics {
-		series[i] = newYabsSeries(runs, m.Value)
+		series[i] = m.series(runs)
 		v.Columns = append(v.Columns, m.Short)
 		tile := buildYABSTile(m, series[i], runs)
 		if len(series[i].Points) == 0 {
@@ -194,12 +194,9 @@ func buildYABSHistoryRow(serverID int64, runs []model.YABSRun, i int, metrics []
 	for mi, m := range metrics {
 		cell := yabsCell{Value: "—"}
 		if pos := series[mi].at(i); pos >= 0 {
-			p := series[mi].Points[pos]
-			cell.Value = fmtYABS(p.V)
-			if pos > 0 {
-				cell.Delta = newYabsDelta(p.V, series[mi].Points[pos-1].V, false)
-			}
-			if series[mi].low(p.V) {
+			cell.Value = fmtYABS(series[mi].Points[pos].V)
+			cell.Delta = series[mi].deltaPrev(pos)
+			if series[mi].lowAt(pos) {
 				cell.Low = true
 				row.Low = append(row.Low, m.Label)
 			}
@@ -255,6 +252,9 @@ func uncomparedTile(t *yabsTile, key string, runs []model.YABSRun, version int64
 
 // buildYABSTile summarises one metric. The value is the newest measurement;
 // when the latest run did not measure it, the note says which run it is from.
+// Comparisons, the baseline and the trend line use only the measurements the
+// newest one is comparable with (see yabsSeries.peers) — for the network
+// tiles, the runs that measured the same iperf locations.
 func buildYABSTile(m yabsMetric, s yabsSeries, runs []model.YABSRun) yabsTile {
 	t := yabsTile{Label: m.Label, Unit: m.Unit, Value: "—"}
 	n := len(s.Points)
@@ -267,21 +267,45 @@ func buildYABSTile(m yabsMetric, s yabsSeries, runs []model.YABSRun) yabsTile {
 	if cur.Run != len(runs)-1 {
 		t.Note = "from " + yabsDate(&runs[cur.Run].YABS, false) + "; the latest run did not measure it"
 	}
-	if n >= 2 {
-		t.VsPrev = newYabsDelta(cur.V, s.Points[n-2].V, false)
+	t.VsPrev = s.deltaPrev(n - 1)
+	peers := s.peers(n - 1)
+	if peers.hasBaseline() {
+		t.VsMedian = newYabsDelta(cur.V, peers.Median, false)
+		t.Low = peers.low(cur.V)
 	}
-	if s.hasBaseline() {
-		t.VsMedian = newYabsDelta(cur.V, s.Median, false)
-		t.Low = s.low(cur.V)
-		t.Stats = fmt.Sprintf("median %s · range %s–%s · %d runs",
-			fmtYABS(s.Median), fmtYABS(s.Min), fmtYABS(s.Max), n)
-	} else if n == 2 {
-		t.Stats = "2 runs · a median needs 3"
-	} else {
-		t.Stats = "1 run · trends start with the next one"
-	}
-	t.Spark = newYabsSpark(s, m.Label)
+	t.Stats = yabsTileStats(peers, n-len(peers.Points))
+	t.Spark = newYabsSpark(peers, m.Label)
 	return t
+}
+
+// yabsTileStats is the line under a tile: the baseline of the comparable
+// measurements, and how many others were left out as not comparable.
+func yabsTileStats(peers yabsSeries, others int) string {
+	n := len(peers.Points)
+	var stats string
+	switch {
+	case peers.hasBaseline():
+		stats = fmt.Sprintf("median %s · range %s–%s · %d runs",
+			fmtYABS(peers.Median), fmtYABS(peers.Min), fmtYABS(peers.Max), n)
+	case n == 2:
+		stats = "2 runs · a median needs 3"
+	case others > 0:
+		return fmt.Sprintf("not compared · %s measured other locations", plural(others, "the other run", "the other %d runs"))
+	default:
+		return "1 run · trends start with the next one"
+	}
+	if others > 0 {
+		stats += " · " + plural(others, "1 more", "%d more") + " on other locations"
+	}
+	return stats
+}
+
+// plural picks the singular text for 1 and formats the plural one otherwise.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return fmt.Sprintf(many, n)
 }
 
 // yabsLatestNotices turns the latest run's flags into the banner lines at
@@ -333,8 +357,8 @@ func buildYABSDiskRows(runs []model.YABSRun) (rows []yabsDiskRow, baseline bool)
 		add(normBlockSize(d.BlockSize))
 	}
 	for _, bs := range sizes {
-		read := newYabsSeries(runs, func(r *model.YABSRun) float64 { v, _ := yabsDisk(r, bs); return v })
-		write := newYabsSeries(runs, func(r *model.YABSRun) float64 { _, v := yabsDisk(r, bs); return v })
+		read := newYabsSeries(runs, func(r *model.YABSRun) float64 { v, _ := yabsDisk(r, bs); return v }, nil)
+		write := newYabsSeries(runs, func(r *model.YABSRun) float64 { _, v := yabsDisk(r, bs); return v }, nil)
 		curRead, curWrite := yabsDisk(latest, bs)
 		row := yabsDiskRow{
 			BlockSize:   bs,
@@ -395,7 +419,7 @@ func buildYABSNetRows(runs []model.YABSRun) (rows []yabsNetRow, baseline bool) {
 					return f(row)
 				}
 				return 0
-			})
+			}, nil)
 		}
 		send := pick(func(n *model.YABSNetworkSpeed) float64 { return n.SendMbps })
 		recv := pick(func(n *model.YABSNetworkSpeed) float64 { return n.RecvMbps })

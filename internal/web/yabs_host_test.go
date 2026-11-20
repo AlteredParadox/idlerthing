@@ -436,6 +436,48 @@ func TestYABSHistoryRowsStayClickable(t *testing.T) {
 	}
 }
 
+// A latest run that reached only one of the usual iperf locations shows what
+// it measured and is not compared with the runs that measured more: no drop,
+// no low flag, and the tile says why.
+func TestYABSNetworkPartialLatestRun(t *testing.T) {
+	ts, database, _ := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "partial-net-host")
+	st := &model.YABSStore{DB: database}
+	add := func(at string, fast, slow float64) {
+		t.Helper()
+		if _, err := st.Create(context.Background(), &model.YABS{ServerID: 1, RunAt: sqlNs(at), CPU: sqlNs(cpuA)}, nil,
+			[]model.YABSNetworkSpeed{
+				{Location: "Fast A", Mode: "IPv4", SendMbps: fast, RecvMbps: fast, LatencyMs: 5},
+				{Location: "Fast B", Mode: "IPv4", SendMbps: fast, RecvMbps: fast, LatencyMs: 6},
+				{Location: "Slow C", Mode: "IPv4", SendMbps: slow, RecvMbps: slow, LatencyMs: 180},
+			}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("2026-06-01 09:00:00", 900, 100)
+	add("2026-07-01 09:00:00", 900, 100)
+	add("2026-08-01 09:00:00", 900, 100)
+	add("2026-09-01 09:00:00", 0, 100) // both fast endpoints busy; the slow one unchanged
+
+	_, page := getPage(t, client, ts.URL+"/servers/1/yabs")
+	for _, want := range []string{
+		">100<", // the headline is what the latest run measured
+		"not compared · the other 3 runs measured other locations",
+		// The breakdown still follows the one location that did answer.
+		"Slow C", "Median send",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("partial network run: page missing %q", want)
+		}
+	}
+	for _, absent := range []string{"▼ 89%", "badge-warn", "ybs-notice", "ybs-low"} {
+		if strings.Contains(page, absent) {
+			t.Errorf("a run that measured fewer locations must not read as a drop: found %q", absent)
+		}
+	}
+}
+
 // History() loads a server's runs with their speed rows and nobody else's.
 func TestYABSHistoryLoad(t *testing.T) {
 	ts, database, _ := newTestServerFull(t)

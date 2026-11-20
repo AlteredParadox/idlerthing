@@ -244,9 +244,10 @@ Geekbench scores are only compared within one major version; a run made with
 another version, or one that does not record its version, is listed but left
 out of the statistics.
 
-The network figures are like-for-like: each iperf location is compared with
-its own history across the server's runs, so a run in which some locations
-were busy is not marked down for the ones it could not reach.
+The network tiles show the median across the iperf locations a run actually
+measured, and compare two runs only when they measured the same locations: a
+run in which some were busy is shown but not marked down against the others.
+The per-location breakdown follows each location on its own.
 
 ### The fleet overview
 

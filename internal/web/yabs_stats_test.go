@@ -194,50 +194,76 @@ func netRun(id int64, speeds ...float64) model.YABSRun {
 	return r
 }
 
-func TestYABSNetLikeForLike(t *testing.T) {
-	near := func(got, want float64) bool { return got > want-0.001 && got < want+0.001 }
+// The network headline is what a run actually measured (the median across
+// the locations that answered), and two runs are compared only when they
+// measured the same set of locations.
+func TestYABSNetComparability(t *testing.T) {
+	send := func(runs []model.YABSRun) yabsSeries { return yabsMetrics(runs)[4].series(runs) }
 
-	// One run: the median across the locations that answered ({400, 800}).
+	// One run: the median over the locations that answered ({400, 800}).
 	one := []model.YABSRun{netRun(1, 400, 800, 0)}
-	if got := yabsNetLikeForLike(one, true)[1]; !near(got, 600) {
-		t.Errorf("single run send = %v, want 600", got)
+	if got := yabsNetMedian(&one[0], true); got != 600 {
+		t.Errorf("send median = %v, want 600", got)
 	}
-	if got := yabsNetLikeForLike(one, false)[1]; !near(got, 300) {
-		t.Errorf("single run recv = %v, want 300", got)
+	if got := yabsNetMedian(&one[0], false); got != 300 {
+		t.Errorf("recv median = %v, want 300", got)
 	}
-
-	// The case a plain median gets wrong: two runs measure 900/900/100, the
-	// third reaches only the unchanged 100 because the other endpoints were
-	// busy. No measured path got slower, so the run's level must not fall.
-	busy := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 0, 0, 100)}
-	got := yabsNetLikeForLike(busy, true)
-	if !near(got[1], 900) || !near(got[2], 900) || !near(got[3], 900) {
-		t.Fatalf("busy endpoints must not read as a drop: %v", got)
-	}
-	series := newYabsSeries(busy, yabsMetrics(busy)[4].Value)
-	if len(series.Points) != 3 || series.low(series.Points[2].V) {
-		t.Errorf("the run with busy endpoints was flagged low: %+v", series)
+	if got := yabsNetMedian(&model.YABSRun{}, true); got != 0 {
+		t.Errorf("no network rows = %v, want 0", got)
 	}
 
-	// A real slowdown on the paths that were measured does show: the one
-	// location that answered is at half its usual speed.
-	slow := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 900, 900, 100), netRun(4, 0, 0, 50)}
-	got = yabsNetLikeForLike(slow, true)
-	if !near(got[4], 450) {
-		t.Errorf("a halved endpoint should halve the run's level: %v", got[4])
+	// Busy endpoints: two runs measure 900/900/100, the third reaches only
+	// the unchanged 100. The headline stays the measured 100 — not an
+	// estimate — and is neither a drop against the earlier runs nor low.
+	busy := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 900, 900, 100), netRun(4, 0, 0, 100)}
+	s := send(busy)
+	if len(s.Points) != 4 || s.Points[3].V != 100 || s.Points[0].V != 900 {
+		t.Fatalf("values must be the measured medians: %+v", s.Points)
 	}
-	series = newYabsSeries(slow, yabsMetrics(slow)[4].Value)
-	if !series.low(series.Points[3].V) {
-		t.Errorf("a real slowdown must still be flagged: %+v", series)
+	if s.deltaPrev(3) != nil || s.lowAt(3) {
+		t.Errorf("a run that measured other locations must not be compared: delta=%v low=%v", s.deltaPrev(3), s.lowAt(3))
+	}
+	if peers := s.peers(3); len(peers.Points) != 1 {
+		t.Errorf("the partial run has no peers but itself: %+v", peers.Points)
+	}
+	if d := s.deltaPrev(1); d == nil || d.Text != "0%" {
+		t.Errorf("runs over the same locations are compared: %+v", d)
 	}
 
-	// Every endpoint busy: the run has no network figure at all.
-	none := []model.YABSRun{netRun(1, 900, 800), netRun(2, 0, 0)}
-	if _, ok := yabsNetLikeForLike(none, true)[2]; ok {
-		t.Errorf("a run with nothing measured must have no value")
+	// Disjoint locations: three runs each measure a different endpoint. No
+	// path was tested twice, so there is no trend, baseline or flag — only
+	// the three measured values.
+	disjoint := []model.YABSRun{netRun(1, 900, 0, 0), netRun(2, 0, 500, 0), netRun(3, 0, 0, 100)}
+	s = send(disjoint)
+	if len(s.Points) != 3 || s.Points[0].V != 900 || s.Points[1].V != 500 || s.Points[2].V != 100 {
+		t.Fatalf("disjoint values = %+v", s.Points)
 	}
-	if got := yabsNetLikeForLike(nil, true); len(got) != 0 {
-		t.Errorf("no runs = %v", got)
+	for pos := range s.Points {
+		if s.deltaPrev(pos) != nil || s.lowAt(pos) || len(s.peers(pos).Points) != 1 {
+			t.Errorf("disjoint run %d was compared with another", pos)
+		}
+	}
+
+	// A real drop over the same set of locations is reported and flagged.
+	drop := []model.YABSRun{netRun(1, 900, 900, 100), netRun(2, 900, 900, 100), netRun(3, 900, 900, 100), netRun(4, 450, 450, 50)}
+	s = send(drop)
+	if d := s.deltaPrev(3); d == nil || d.Text != "▼ 50%" || d.Class != "delta-bad" {
+		t.Errorf("same-set drop delta = %+v", d)
+	}
+	if !s.lowAt(3) || s.lowAt(2) {
+		t.Errorf("same-set drop must be flagged low (and the run before it not)")
+	}
+
+	// Send and receive are judged separately: here receive was measured at
+	// one location only in the second run.
+	a, b := netRun(1, 900, 800), netRun(2, 900, 800)
+	b.Network[1].RecvMbps = 0
+	mixed := []model.YABSRun{a, b}
+	if yabsMetrics(mixed)[4].series(mixed).deltaPrev(1) == nil {
+		t.Errorf("send sets match: a delta is due")
+	}
+	if yabsMetrics(mixed)[5].series(mixed).deltaPrev(1) != nil {
+		t.Errorf("receive sets differ: no delta")
 	}
 }
 
@@ -249,7 +275,7 @@ func TestYABSSeriesBaselineAndLow(t *testing.T) {
 		statRun(4, "2026-04-01", 800, 3000, 6, 50, 400),
 	}
 	metrics := yabsMetrics(runs)
-	single := newYabsSeries(runs, metrics[0].Value)
+	single := newYabsSeries(runs, metrics[0].Value, nil)
 	if len(single.Points) != 3 || single.Median != 1000 || single.Min != 800 || single.Max != 1020 {
 		t.Fatalf("single series = %+v", single)
 	}
@@ -260,11 +286,11 @@ func TestYABSSeriesBaselineAndLow(t *testing.T) {
 		t.Errorf("low: 800 is ≥15%% under the median 1000, 900 is not, 0 is unmeasured")
 	}
 	// Two measurements are not a baseline: nothing is "low" against them.
-	two := newYabsSeries(runs[:3], metrics[0].Value)
+	two := newYabsSeries(runs[:3], metrics[0].Value, nil)
 	if two.hasBaseline() || two.low(1) {
 		t.Errorf("two measurements must not form a baseline: %+v", two)
 	}
-	if empty := newYabsSeries(nil, metrics[0].Value); len(empty.Points) != 0 || empty.Median != 0 {
+	if empty := newYabsSeries(nil, metrics[0].Value, nil); len(empty.Points) != 0 || empty.Median != 0 {
 		t.Errorf("empty series = %+v", empty)
 	}
 }
@@ -284,7 +310,7 @@ func TestYABSMetricsFollowLatestGeekbenchVersion(t *testing.T) {
 	if metrics[0].Label != "Geekbench 6 single" || metrics[0].Short != "GB6 single" {
 		t.Errorf("labels = %q / %q", metrics[0].Label, metrics[0].Short)
 	}
-	single := newYabsSeries(runs, metrics[0].Value)
+	single := newYabsSeries(runs, metrics[0].Value, nil)
 	if len(single.Points) != 1 || single.Points[0].V != 1500 {
 		t.Fatalf("the v5 score must stay out of the v6 series: %+v", single.Points)
 	}
@@ -314,10 +340,10 @@ func TestYABSMetricsFollowLatestGeekbenchVersion(t *testing.T) {
 		t.Errorf("multi-only run: version = %d, want 6", v)
 	}
 	mm := yabsMetrics(multiOnly)
-	if s := newYabsSeries(multiOnly, mm[1].Value); len(s.Points) != 1 || s.Points[0].V != 4000 {
+	if s := newYabsSeries(multiOnly, mm[1].Value, nil); len(s.Points) != 1 || s.Points[0].V != 4000 {
 		t.Errorf("multi-only run: multi series = %+v", s.Points)
 	}
-	if s := newYabsSeries(multiOnly, mm[0].Value); len(s.Points) != 0 {
+	if s := newYabsSeries(multiOnly, mm[0].Value, nil); len(s.Points) != 0 {
 		t.Errorf("multi-only run: the v5 single score must not be the baseline: %+v", s.Points)
 	}
 	// A score that does not say which version produced it is never the
@@ -330,7 +356,7 @@ func TestYABSMetricsFollowLatestGeekbenchVersion(t *testing.T) {
 	if v := yabsGBVersion(unknown); v != 6 {
 		t.Errorf("unversioned newest run: version = %d, want 6", v)
 	}
-	if s := newYabsSeries(unknown, yabsMetrics(unknown)[0].Value); len(s.Points) != 1 || s.Points[0].V != 1500 {
+	if s := newYabsSeries(unknown, yabsMetrics(unknown)[0].Value, nil); len(s.Points) != 1 || s.Points[0].V != 1500 {
 		t.Errorf("an unversioned score must stay out of the series: %+v", s.Points)
 	}
 	if got := otherVersionScore(&unknown[1], "gb_single", 6); got != "1,900 · v?" {
@@ -345,7 +371,7 @@ func TestYABSMetricsFollowLatestGeekbenchVersion(t *testing.T) {
 	if v := yabsGBVersion(allUnknown); v != 0 {
 		t.Errorf("only unversioned scores: version = %d, want 0", v)
 	}
-	if s := newYabsSeries(allUnknown, yabsMetrics(allUnknown)[0].Value); len(s.Points) != 0 {
+	if s := newYabsSeries(allUnknown, yabsMetrics(allUnknown)[0].Value, nil); len(s.Points) != 0 {
 		t.Errorf("unversioned scores must not form a series: %+v", s.Points)
 	}
 	if got := otherVersionScore(&allUnknown[0], "gb_multi", 0); got != "2,000 · v?" {
@@ -362,7 +388,7 @@ func TestNewYabsSpark(t *testing.T) {
 		for i, v := range vals {
 			runs[i] = statRun(int64(i+1), "", int64(v), 1, 6, 0, 0)
 		}
-		return newYabsSeries(runs, func(r *model.YABSRun) float64 { return float64(r.GbSingle.Int64) })
+		return newYabsSeries(runs, func(r *model.YABSRun) float64 { return float64(r.GbSingle.Int64) }, nil)
 	}
 	if newYabsSpark(series(1000), "x") != nil || newYabsSpark(series(), "x") != nil {
 		t.Fatal("fewer than two measurements is not a trend")

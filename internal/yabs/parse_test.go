@@ -367,6 +367,9 @@ func TestResultURL(t *testing.T) {
 		"browser.geekbench.com/v6/cpu/4":         "",
 		"https://":                               "",
 		"http://":                                "",
+		"httpss://example.com/x":                 "",
+		"http:/example.com/x":                    "",
+		"htt":                                    "",
 		"javascript:alert(1)":                    "",
 		"ftp://example.com/x":                    "",
 		// Never rewritten: a padded value is not a link, rather than being

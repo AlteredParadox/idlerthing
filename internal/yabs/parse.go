@@ -219,12 +219,19 @@ func (r *Result) empty() bool {
 // SQL to existing rows and the backup importer applies it on restore;
 // TestMigration0014GbURLPlaceholder holds the three to the same answer.
 func ResultURL(s string) string {
-	for _, prefix := range []string{"http://", "https://"} {
-		// Equal byte lengths make EqualFold an ASCII-only comparison here: a
-		// non-ASCII fold (ſ for s) is multi-byte and shortens the rune count.
-		if len(s) > len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
-			return s
-		}
+	// Scheme "http", an optional "s", then "://" and at least one character.
+	// Equal byte lengths make EqualFold an ASCII-only comparison here: a
+	// non-ASCII fold is multi-byte and so shortens the rune count.
+	const scheme, sep = "http", "://"
+	if len(s) < len(scheme) || !strings.EqualFold(s[:len(scheme)], scheme) {
+		return ""
+	}
+	rest := s[len(scheme):]
+	if rest != "" && (rest[0] == 's' || rest[0] == 'S') {
+		rest = rest[1:]
+	}
+	if len(rest) > len(sep) && strings.HasPrefix(rest, sep) {
+		return s
 	}
 	return ""
 }

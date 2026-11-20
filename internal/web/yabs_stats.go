@@ -86,6 +86,15 @@ type yabsMetric struct {
 	Short string // column heading
 	Unit  string
 	Value func(r *model.YABSRun) float64
+	// Group, when set, names what a run's value was measured over; values
+	// are compared only within one group (see yabsNetSet). nil: every
+	// measurement of the metric is comparable.
+	Group func(r *model.YABSRun) string
+}
+
+// series collects the metric's measurements over a history.
+func (m yabsMetric) series(runs []model.YABSRun) yabsSeries {
+	return newYabsSeries(runs, m.Value, m.Group)
 }
 
 // normBlockSize canonicalises a fio block size ("4K " → "4k").
@@ -118,57 +127,43 @@ func yabsNetKey(n *model.YABSNetworkSpeed) string {
 	return strings.ToLower(strings.TrimSpace(n.Location) + "\x00" + strings.TrimSpace(n.Provider) + "\x00" + n.Mode)
 }
 
-// yabsNetLikeForLike gives each run one network figure (by run id) that is
-// comparable across the history even when the runs did not measure the same
-// set of iperf locations.
-//
-// A plain median over whichever locations answered is not: if two runs
-// measure 900/900/100 Mbit/s and the next one only reaches the unchanged 100
-// because the other two endpoints were busy, the plain median falls by 89%
-// though no measured path got slower. So every location is first compared
-// with its own history — a run's throughput there divided by that location's
-// median across the runs — and a run's level is the median of those ratios
-// over the locations it did measure. The level is scaled by the typical
-// location's typical throughput (the median of the per-location medians) to
-// read in Mbit/s. With a single run, or runs that all measured the same
-// locations at the same speeds, this is exactly the median across locations.
-func yabsNetLikeForLike(runs []model.YABSRun, send bool) map[int64]float64 {
-	value := func(n *model.YABSNetworkSpeed) float64 {
-		if send {
-			return n.SendMbps
-		}
-		return n.RecvMbps
+// netValue is one direction of an iperf row.
+func netValue(n *model.YABSNetworkSpeed, send bool) float64 {
+	if send {
+		return n.SendMbps
 	}
-	history := map[string][]float64{}
-	for i := range runs {
-		for j := range runs[i].Network {
-			n := &runs[i].Network[j]
-			if v := value(n); v > 0 {
-				history[yabsNetKey(n)] = append(history[yabsNetKey(n)], v)
-			}
+	return n.RecvMbps
+}
+
+// yabsNetMedian is the median throughput across the iperf locations a run
+// measured, in one direction: what the run actually saw. The median, not the
+// mean — a run always has a far or congested endpoint or two.
+func yabsNetMedian(r *model.YABSRun, send bool) float64 {
+	var vals []float64
+	for i := range r.Network {
+		if v := netValue(&r.Network[i], send); v > 0 {
+			vals = append(vals, v)
 		}
 	}
-	typical := make(map[string]float64, len(history))
-	var levels []float64
-	for key, vals := range history {
-		typical[key] = median(vals)
-		levels = append(levels, typical[key])
-	}
-	scale := median(levels)
-	out := make(map[int64]float64, len(runs))
-	for i := range runs {
-		var ratios []float64
-		for j := range runs[i].Network {
-			n := &runs[i].Network[j]
-			if v := value(n); v > 0 {
-				ratios = append(ratios, v/typical[yabsNetKey(n)])
-			}
-		}
-		if len(ratios) > 0 {
-			out[runs[i].ID] = median(ratios) * scale
+	return median(vals)
+}
+
+// yabsNetSet names the set of iperf locations a run measured in one
+// direction. Two runs' network medians are comparable only when these match:
+// a median over 900/900/100 and one over the unchanged 100 alone (the other
+// endpoints busy) differ by 89% though no path got slower, and medians over
+// disjoint locations say nothing about each other at all. Runs with different
+// sets are shown side by side and not compared; the per-location breakdown,
+// which follows each location on its own, covers the overlap.
+func yabsNetSet(r *model.YABSRun, send bool) string {
+	var keys []string
+	for i := range r.Network {
+		if netValue(&r.Network[i], send) > 0 {
+			keys = append(keys, yabsNetKey(&r.Network[i]))
 		}
 	}
-	return out
+	sort.Strings(keys)
+	return strings.Join(keys, "\x01")
 }
 
 // yabsHasGB reports whether a run carries a Geekbench result. Either score
@@ -194,9 +189,7 @@ func yabsGBVersion(runs []model.YABSRun) int64 {
 }
 
 // yabsMetrics is the fixed set of headline metrics for a history (time
-// ordered). All are higher-is-better. The network metrics are like-for-like
-// across the history (see yabsNetLikeForLike), so the value functions are
-// only meaningful for runs of this history.
+// ordered). All are higher-is-better.
 func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 	version := yabsGBVersion(runs)
 	gbLabel := "Geekbench"
@@ -217,7 +210,6 @@ func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 	disk := func(bs string) func(r *model.YABSRun) float64 {
 		return func(r *model.YABSRun) float64 { return yabsDiskTotal(r, bs) }
 	}
-	netSend, netRecv := yabsNetLikeForLike(runs, true), yabsNetLikeForLike(runs, false)
 	gbShort := "GB"
 	if version > 0 {
 		gbShort += strconv.FormatInt(version, 10)
@@ -228,16 +220,19 @@ func yabsMetrics(runs []model.YABSRun) []yabsMetric {
 		{Key: "disk_4k", Label: "Disk 4k read + write", Short: "Disk 4k", Unit: "MB/s", Value: disk("4k")},
 		{Key: "disk_1m", Label: "Disk 1m read + write", Short: "Disk 1m", Unit: "MB/s", Value: disk("1m")},
 		{Key: "net_send", Label: "Network send (median)", Short: "Net send", Unit: "Mbit/s",
-			Value: func(r *model.YABSRun) float64 { return netSend[r.ID] }},
+			Value: func(r *model.YABSRun) float64 { return yabsNetMedian(r, true) },
+			Group: func(r *model.YABSRun) string { return yabsNetSet(r, true) }},
 		{Key: "net_recv", Label: "Network receive (median)", Short: "Net recv", Unit: "Mbit/s",
-			Value: func(r *model.YABSRun) float64 { return netRecv[r.ID] }},
+			Value: func(r *model.YABSRun) float64 { return yabsNetMedian(r, false) },
+			Group: func(r *model.YABSRun) string { return yabsNetSet(r, false) }},
 	}
 }
 
 // yabsPoint is one measurement: Run indexes the time-ordered run slice.
 type yabsPoint struct {
-	Run int
-	V   float64
+	Run   int
+	V     float64
+	Group string // what it was measured over; "" when the metric has no groups
 }
 
 // yabsSeries is a metric's measurements over a history, oldest first, with
@@ -247,20 +242,32 @@ type yabsSeries struct {
 	Median, Min, Max float64
 }
 
-// newYabsSeries collects the runs that measured value.
-func newYabsSeries(runs []model.YABSRun, value func(r *model.YABSRun) float64) yabsSeries {
-	var s yabsSeries
-	var vals []float64
+// newYabsSeries collects the runs that measured value. group may be nil.
+func newYabsSeries(runs []model.YABSRun, value func(r *model.YABSRun) float64, group func(r *model.YABSRun) string) yabsSeries {
+	var points []yabsPoint
 	for i := range runs {
 		v := value(&runs[i])
 		if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 			continue
 		}
-		s.Points = append(s.Points, yabsPoint{Run: i, V: v})
-		vals = append(vals, v)
+		p := yabsPoint{Run: i, V: v}
+		if group != nil {
+			p.Group = group(&runs[i])
+		}
+		points = append(points, p)
 	}
-	if len(vals) == 0 {
+	return seriesOf(points)
+}
+
+// seriesOf summarises a set of points.
+func seriesOf(points []yabsPoint) yabsSeries {
+	s := yabsSeries{Points: points}
+	if len(points) == 0 {
 		return s
+	}
+	vals := make([]float64, len(points))
+	for i, p := range points {
+		vals[i] = p.V
 	}
 	s.Median, s.Min, s.Max = median(vals), vals[0], vals[0]
 	for _, v := range vals {
@@ -286,6 +293,36 @@ func (s yabsSeries) at(run int) int {
 // low reports whether v sits yabsLowPct or more below the baseline.
 func (s yabsSeries) low(v float64) bool {
 	return s.hasBaseline() && v > 0 && v <= s.Median*(1-yabsLowPct/100)
+}
+
+// peers is the part of the series the measurement at pos can be compared
+// with: every point measured over the same group, itself included. For a
+// metric without groups that is the whole series.
+func (s yabsSeries) peers(pos int) yabsSeries {
+	group := s.Points[pos].Group
+	var points []yabsPoint
+	for _, p := range s.Points {
+		if p.Group == group {
+			points = append(points, p)
+		}
+	}
+	return seriesOf(points)
+}
+
+// deltaPrev compares the measurement at pos with the one before it; nil for
+// the first measurement, or when the two were not measured over the same
+// group and so say nothing about each other.
+func (s yabsSeries) deltaPrev(pos int) *yabsDelta {
+	if pos <= 0 || s.Points[pos-1].Group != s.Points[pos].Group {
+		return nil
+	}
+	return newYabsDelta(s.Points[pos].V, s.Points[pos-1].V, false)
+}
+
+// lowAt reports whether the measurement at pos is low against the baseline
+// of the measurements it is comparable with.
+func (s yabsSeries) lowAt(pos int) bool {
+	return s.peers(pos).low(s.Points[pos].V)
 }
 
 // median of vals (0 for none). vals is not modified.

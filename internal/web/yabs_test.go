@@ -538,3 +538,48 @@ func TestYABSRealPayloadEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// Two distinct --no-upload runs on one server must both be stored. yabs.sh
+// reports their geekbench url as the placeholder "Local (--no-upload)";
+// stored verbatim it collided on the (server_id, gb_url) unique index, so the
+// second run came back "duplicate" and was dropped.
+func TestYABSNoUploadRunsNotDeduplicated(t *testing.T) {
+	ts, database, srv := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "no-upload-host")
+
+	now := time.Now().Unix()
+	for i, single := range []int{1102, 1150} {
+		runTS := now - int64(i) // each ingest URL is single-use
+		body := fmt.Sprintf(`{"cpu": {"model": "X"}, "geekbench": [
+			{"version": 6, "single": %d, "multi": 2981, "url": "Local (--no-upload)"}]}`, single)
+		resp, err := http.Post(
+			fmt.Sprintf("%s/api/yabs/1?sig=%s&ts=%d", ts.URL, signYABSTest(srv.secret, 1, runTS), runTS),
+			"application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := readBody(t, resp)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.Contains(out, `"ok"`) {
+			t.Fatalf("run %d: status %d body %s, want 200 ok", i+1, resp.StatusCode, out)
+		}
+	}
+
+	var runs, withURL int
+	database.QueryRow("SELECT COUNT(*), COUNT(gb_url) FROM yabs WHERE server_id = 1").Scan(&runs, &withURL)
+	if runs != 2 || withURL != 0 {
+		t.Fatalf("runs=%d with gb_url=%d, want 2 and 0", runs, withURL)
+	}
+
+	// No result link is rendered for a run that has no result page.
+	resp, err := client.Get(ts.URL + "/servers/1/yabs/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := readBody(t, resp)
+	resp.Body.Close()
+	if strings.Contains(page, "no-upload)") || strings.Contains(page, "view ↗") {
+		t.Errorf("detail page should not link a placeholder geekbench url")
+	}
+}

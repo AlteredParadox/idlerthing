@@ -167,3 +167,54 @@ func TestNormTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// A backup taken before migration 0014 can carry yabs.sh's placeholder as
+// gb_url. Restoring it must not bring the placeholder back; real links stay.
+func TestImportYABSPlaceholderGbURLDropped(t *testing.T) {
+	database := testDB(t)
+	doc := `{"format":1,
+	  "servers":[{"server":{"id":1,"hostname":"yabs-restore"}}],
+	  "yabs":[
+	    {"server_id":1,"gb_single":1102,"gb_url":"Local (--no-upload)","payload_hash":"aa"},
+	    {"server_id":1,"gb_single":1150,"gb_url":"Local (--no-upload)","payload_hash":"bb"},
+	    {"server_id":1,"gb_single":1200,"gb_url":"https://browser.geekbench.com/v6/cpu/1","payload_hash":"cc"}]}`
+	if _, err := Import(context.Background(), database, strings.NewReader(doc), false); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var runs, withURL int
+	database.QueryRow("SELECT COUNT(*), COUNT(gb_url) FROM yabs").Scan(&runs, &withURL)
+	if runs != 3 || withURL != 1 {
+		t.Fatalf("runs=%d with gb_url=%d, want 3 and 1", runs, withURL)
+	}
+}
+
+// The old ingest stored gb_url untrimmed, so a pre-0014 backup can hold two
+// distinct runs on one server whose links differ only by padding. Restore
+// must keep both runs and their child rows: the link is kept exactly or
+// dropped, never trimmed into a value that collides with the other run on
+// the unique index (INSERT OR IGNORE would then skip the whole run). This is
+// the same outcome migration 0014 gives the same two rows on upgrade.
+func TestImportYABSPaddedGbURLKeepsBothRuns(t *testing.T) {
+	database := testDB(t)
+	doc := `{"format":1,
+	  "servers":[{"server":{"id":1,"hostname":"yabs-padded"}}],
+	  "yabs":[
+	    {"server_id":1,"gb_single":1200,"gb_url":"https://browser.geekbench.com/v6/cpu/1","payload_hash":"aa",
+	     "disk_speed":[{"block_size":"4k","read_mbps":10,"write_mbps":11}]},
+	    {"server_id":1,"gb_single":1250,"gb_url":" https://browser.geekbench.com/v6/cpu/1","payload_hash":"bb",
+	     "disk_speed":[{"block_size":"4k","read_mbps":20,"write_mbps":21}]}]}`
+	if _, err := Import(context.Background(), database, strings.NewReader(doc), false); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var runs, withURL, disks int
+	database.QueryRow("SELECT COUNT(*), COUNT(gb_url) FROM yabs").Scan(&runs, &withURL)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_disk_speed").Scan(&disks)
+	if runs != 2 || withURL != 1 || disks != 2 {
+		t.Fatalf("runs=%d with gb_url=%d disk rows=%d, want 2/1/2", runs, withURL, disks)
+	}
+	var link string
+	database.QueryRow("SELECT gb_url FROM yabs WHERE gb_url IS NOT NULL").Scan(&link)
+	if link != "https://browser.geekbench.com/v6/cpu/1" {
+		t.Errorf("kept link = %q", link)
+	}
+}

@@ -26,6 +26,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   </div>
   <div class="head-actions">
     <a class="btn" href="/servers/{{$v.ServerID}}/yabs">All runs</a>
+    {{if $v.HasPayload}}<a class="btn" href="/servers/{{$v.ServerID}}/yabs/{{$y.ID}}/raw">Raw JSON</a>{{end}}
     <form method="post" action="/servers/{{$v.ServerID}}/yabs/{{$y.ID}}/delete"
           hx-post="/servers/{{$v.ServerID}}/yabs/{{$y.ID}}/delete" hx-confirm="Delete this run?">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">

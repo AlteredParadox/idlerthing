@@ -322,3 +322,74 @@ func TestYABSDeleteRecomputesHasYabs(t *testing.T) {
 		t.Fatal("has_yabs should clear after the last run is deleted")
 	}
 }
+
+// A run's raw payload is stored with it, read back scoped to its server, and
+// its unmeasured speeds come back as 0 from NULL columns.
+func TestYABSPayloadAndUnmeasuredSpeeds(t *testing.T) {
+	database := testDB(t)
+	ctx := context.Background()
+	srv := &ServerStore{DB: database}
+	a, err := srv.Create(ctx, &Server{Hostname: "p-01", ServerType: TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := srv.Create(ctx, &Server{Hostname: "p-02", ServerType: TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &YABSStore{DB: database}
+
+	withPayload, err := st.CreateWithPayload(ctx, &YABS{ServerID: a},
+		[]YABSDiskSpeed{{BlockSize: "4k", ReadMbps: 99.5}},
+		[]YABSNetworkSpeed{{Location: "busy", LatencyMs: 190}, {Location: "ok", SendMbps: 683, RecvMbps: 343, LatencyMs: 12}},
+		`{"raw":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	without, err := st.Create(ctx, &YABS{ServerID: a}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if body, err := st.Payload(ctx, a, withPayload); err != nil || body != `{"raw":true}` {
+		t.Fatalf("Payload = %q, %v", body, err)
+	}
+	if _, err := st.Payload(ctx, b, withPayload); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Payload through another server: %v, want sql.ErrNoRows", err)
+	}
+	if _, err := st.Payload(ctx, a, without); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Payload of a run without one: %v, want sql.ErrNoRows", err)
+	}
+	for id, want := range map[int64]bool{withPayload: true, without: false} {
+		if got, err := st.HasPayload(ctx, id); err != nil || got != want {
+			t.Errorf("HasPayload(%d) = %v, %v, want %v", id, got, err, want)
+		}
+	}
+
+	_, disks, network, err := st.Get(ctx, withPayload)
+	if err != nil {
+		t.Fatalf("Get a run with NULL speeds: %v", err)
+	}
+	if len(disks) != 1 || disks[0].ReadMbps != 99.5 || disks[0].WriteMbps != 0 {
+		t.Errorf("disks = %+v", disks)
+	}
+	if len(network) != 2 || network[0].SendMbps != 0 || network[0].LatencyMs != 190 || network[1].SendMbps != 683 {
+		t.Errorf("network = %+v", network)
+	}
+	var nulls int
+	database.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM yabs_network_speed WHERE send_mbps IS NULL AND recv_mbps IS NULL) +
+		(SELECT COUNT(*) FROM yabs_disk_speed WHERE write_mbps IS NULL)`).Scan(&nulls)
+	if nulls != 2 {
+		t.Errorf("unmeasured values stored as NULL = %d, want 2", nulls)
+	}
+
+	if err := st.Delete(ctx, a, withPayload); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	database.QueryRow("SELECT COUNT(*) FROM yabs_payload").Scan(&left)
+	if left != 0 {
+		t.Errorf("payload rows after Delete = %d, want 0", left)
+	}
+}

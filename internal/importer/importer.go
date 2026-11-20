@@ -24,7 +24,9 @@ package importer
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -289,22 +291,29 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 			continue // duplicate payload_hash/gb_url — already restored
 		}
 		yabsID, _ := res.LastInsertId()
+		// Speed rows go through the same writer ingest uses, so an
+		// unmeasured value (0 in the export) lands as NULL here too.
+		var disks []model.YABSDiskSpeed
 		for _, d := range arr(y, "disk_speed") {
 			dm, _ := d.(map[string]any)
-			if _, err := imp.tx.ExecContext(ctx,
-				"INSERT INTO yabs_disk_speed (yabs_id, block_size, read_mbps, write_mbps) VALUES (?, ?, ?, ?)",
-				yabsID, sget(dm, "block_size"), fget(dm, "read_mbps"), fget(dm, "write_mbps")); err != nil {
-				return err
-			}
+			disks = append(disks, model.YABSDiskSpeed{
+				BlockSize: sget(dm, "block_size"),
+				ReadMbps:  fget(dm, "read_mbps"), WriteMbps: fget(dm, "write_mbps"),
+			})
 		}
+		var network []model.YABSNetworkSpeed
 		for _, n := range arr(y, "network_speed") {
 			nm, _ := n.(map[string]any)
-			if _, err := imp.tx.ExecContext(ctx,
-				"INSERT INTO yabs_network_speed (yabs_id, location, provider, mode, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				yabsID, sget(nm, "location"), sget(nm, "provider"), sget(nm, "mode"),
-				fget(nm, "send_mbps"), fget(nm, "recv_mbps"), fget(nm, "latency_ms")); err != nil {
-				return err
-			}
+			network = append(network, model.YABSNetworkSpeed{
+				Location: sget(nm, "location"), Provider: sget(nm, "provider"), Mode: sget(nm, "mode"),
+				SendMbps: fget(nm, "send_mbps"), RecvMbps: fget(nm, "recv_mbps"), LatencyMs: fget(nm, "latency_ms"),
+			})
+		}
+		if err := model.InsertYABSSpeeds(ctx, imp.tx, yabsID, disks, network); err != nil {
+			return err
+		}
+		if err := imp.yabsPayload(ctx, yabsID, oldServer, y); err != nil {
+			return err
 		}
 		imp.sum.YABS++
 		if err := imp.fixTimestamps(ctx, "yabs", yabsID, y); err != nil {
@@ -316,6 +325,39 @@ func (imp *importer) yabs(ctx context.Context, doc map[string]any) error {
 			UPDATE servers SET has_yabs = (SELECT COUNT(*) > 0 FROM yabs WHERE server_id = servers.id)`); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// yabsPayload restores the raw yabs.sh body kept for a run. It is stored only
+// when it is the payload the run was parsed from: valid JSON, within the
+// ingest size limit, and hashing to the run's payload_hash. Anything else is
+// dropped with a warning and the run itself is kept — a payload that does not
+// match its run would be worse than none, since later features re-read it as
+// the run's source of truth.
+func (imp *importer) yabsPayload(ctx context.Context, yabsID, oldServer int64, y map[string]any) error {
+	body := sget(y, "payload")
+	if body == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(body))
+	reason := ""
+	switch {
+	case len(body) > model.YABSPayloadMax:
+		reason = "larger than the ingest limit"
+	case !json.Valid([]byte(body)):
+		reason = "not valid JSON"
+	case sget(y, "payload_hash") != hex.EncodeToString(sum[:]):
+		reason = "does not match the run's payload_hash"
+	}
+	if reason != "" {
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"yabs run for server %d: raw payload dropped (%s)", oldServer, reason))
+		return nil
+	}
+	if _, err := imp.tx.ExecContext(ctx,
+		"INSERT INTO yabs_payload (yabs_id, body) VALUES (?, ?)", yabsID, body); err != nil {
+		return fmt.Errorf("import yabs payload for server %d: %w", oldServer, err)
 	}
 	return nil
 }

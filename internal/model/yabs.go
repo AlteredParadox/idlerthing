@@ -45,7 +45,8 @@ type YABS struct {
 	UpdatedAt        string
 }
 
-// YABSDiskSpeed mirrors yabs_disk_speed.
+// YABSDiskSpeed mirrors yabs_disk_speed. A speed of 0 means "not measured":
+// it is stored as NULL (see InsertYABSSpeeds) so SQL aggregates skip it.
 type YABSDiskSpeed struct {
 	ID        int64
 	YabsID    int64
@@ -54,7 +55,9 @@ type YABSDiskSpeed struct {
 	WriteMbps float64
 }
 
-// YABSNetworkSpeed mirrors yabs_network_speed.
+// YABSNetworkSpeed mirrors yabs_network_speed. A speed or latency of 0 means
+// "not measured" — yabs.sh reports "busy" when an iperf endpoint refuses the
+// run — and is stored as NULL (see InsertYABSSpeeds) so SQL aggregates skip it.
 type YABSNetworkSpeed struct {
 	ID       int64
 	YabsID   int64
@@ -126,11 +129,72 @@ func (st *YABSStore) ConsumeCap(ctx context.Context, serverID, ts int64) (bool, 
 	return n > 0, nil
 }
 
-// Create inserts a run with its speed rows in one transaction, and flips
+// YABSDiskSpeedColumns and YABSNetworkSpeedColumns are the SELECT lists every
+// reader of the speed tables uses. Unmeasured values are NULL in the database
+// and 0 in the structs, so a reader that selected the bare columns would fail
+// to scan the first "busy" row it met.
+const (
+	YABSDiskSpeedColumns = `id, yabs_id, block_size,
+	COALESCE(read_mbps, 0), COALESCE(write_mbps, 0)`
+	YABSNetworkSpeedColumns = `id, yabs_id, location, provider, COALESCE(mode, ''),
+	COALESCE(send_mbps, 0), COALESCE(recv_mbps, 0), COALESCE(latency_ms, 0)`
+)
+
+// ScanYABSDiskSpeed scans one YABSDiskSpeedColumns row.
+func ScanYABSDiskSpeed(row interface{ Scan(...any) error }) (YABSDiskSpeed, error) {
+	var d YABSDiskSpeed
+	err := row.Scan(&d.ID, &d.YabsID, &d.BlockSize, &d.ReadMbps, &d.WriteMbps)
+	return d, err
+}
+
+// ScanYABSNetworkSpeed scans one YABSNetworkSpeedColumns row.
+func ScanYABSNetworkSpeed(row interface{ Scan(...any) error }) (YABSNetworkSpeed, error) {
+	var n YABSNetworkSpeed
+	err := row.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.Mode,
+		&n.SendMbps, &n.RecvMbps, &n.LatencyMs)
+	return n, err
+}
+
+// InsertYABSSpeeds writes a run's speed rows. A value of 0 is stored as NULL:
+// it means the test produced no result, and NULL keeps it out of AVG()/MIN()
+// where a literal 0 would count as a measurement. Shared by ingest and backup
+// restore so both write the same shape.
+func InsertYABSSpeeds(ctx context.Context, q Querier, yabsID int64, disks []YABSDiskSpeed, network []YABSNetworkSpeed) error {
+	for _, d := range disks {
+		if _, err := q.ExecContext(ctx, `
+			INSERT INTO yabs_disk_speed (yabs_id, block_size, read_mbps, write_mbps)
+			VALUES (?, ?, NULLIF(?, 0), NULLIF(?, 0))`,
+			yabsID, d.BlockSize, d.ReadMbps, d.WriteMbps); err != nil {
+			return fmt.Errorf("insert disk speed: %w", err)
+		}
+	}
+	for _, n := range network {
+		if _, err := q.ExecContext(ctx, `
+			INSERT INTO yabs_network_speed (yabs_id, location, provider, mode, send_mbps, recv_mbps, latency_ms)
+			VALUES (?, ?, ?, ?, NULLIF(?, 0), NULLIF(?, 0), NULLIF(?, 0))`,
+			yabsID, n.Location, n.Provider, n.Mode, n.SendMbps, n.RecvMbps, n.LatencyMs); err != nil {
+			return fmt.Errorf("insert network speed: %w", err)
+		}
+	}
+	return nil
+}
+
+// YABSPayloadMax is the largest raw payload kept for a run. It equals the
+// ingest body limit, so nothing ingest accepts is ever too large to keep.
+const YABSPayloadMax = 64 << 10
+
+// Create inserts a run with its speed rows and no raw payload. See
+// CreateWithPayload.
+func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed) (int64, error) {
+	return st.CreateWithPayload(ctx, y, disks, network, "")
+}
+
+// CreateWithPayload inserts a run with its speed rows in one transaction,
+// keeps the raw payload it was parsed from (when non-empty), and flips
 // servers.has_yabs on. A payload-hash/gb_url unique-index violation maps to
 // ErrDuplicatePayload. Capability consumption is the caller's job (see
 // ConsumeCap) so a rollback here can never un-consume it.
-func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed) (int64, error) {
+func (st *YABSStore) CreateWithPayload(ctx context.Context, y *YABS, disks []YABSDiskSpeed, network []YABSNetworkSpeed, payload string) (int64, error) {
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -154,18 +218,13 @@ func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed,
 		return 0, err
 	}
 
-	for _, d := range disks {
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO yabs_disk_speed (yabs_id, block_size, read_mbps, write_mbps) VALUES (?, ?, ?, ?)",
-			id, d.BlockSize, d.ReadMbps, d.WriteMbps); err != nil {
-			return 0, fmt.Errorf("insert disk speed: %w", err)
-		}
+	if err := InsertYABSSpeeds(ctx, tx, id, disks, network); err != nil {
+		return 0, err
 	}
-	for _, n := range network {
+	if payload != "" {
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO yabs_network_speed (yabs_id, location, provider, mode, send_mbps, recv_mbps, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			id, n.Location, n.Provider, n.Mode, n.SendMbps, n.RecvMbps, n.LatencyMs); err != nil {
-			return 0, fmt.Errorf("insert network speed: %w", err)
+			"INSERT INTO yabs_payload (yabs_id, body) VALUES (?, ?)", id, payload); err != nil {
+			return 0, fmt.Errorf("insert yabs payload: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -221,15 +280,15 @@ func (st *YABSStore) Get(ctx context.Context, id int64) (*YABS, []YABSDiskSpeed,
 
 func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSpeed, error) {
 	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
-		"SELECT id, yabs_id, block_size, read_mbps, write_mbps FROM yabs_disk_speed WHERE yabs_id = ? ORDER BY id", yabsID)
+		"SELECT "+YABSDiskSpeedColumns+" FROM yabs_disk_speed WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []YABSDiskSpeed
 	for rows.Next() {
-		var d YABSDiskSpeed
-		if err := rows.Scan(&d.ID, &d.YabsID, &d.BlockSize, &d.ReadMbps, &d.WriteMbps); err != nil {
+		d, err := ScanYABSDiskSpeed(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -239,20 +298,39 @@ func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSp
 
 func (st *YABSStore) networkSpeeds(ctx context.Context, yabsID int64) ([]YABSNetworkSpeed, error) {
 	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
-		"SELECT id, yabs_id, location, provider, COALESCE(mode, ''), send_mbps, recv_mbps, latency_ms FROM yabs_network_speed WHERE yabs_id = ? ORDER BY id", yabsID)
+		"SELECT "+YABSNetworkSpeedColumns+" FROM yabs_network_speed WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []YABSNetworkSpeed
 	for rows.Next() {
-		var n YABSNetworkSpeed
-		if err := rows.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.Mode, &n.SendMbps, &n.RecvMbps, &n.LatencyMs); err != nil {
+		n, err := ScanYABSNetworkSpeed(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+// Payload returns the raw yabs.sh JSON kept for a run, scoped to its server.
+// sql.ErrNoRows means the run does not exist under that server or has no
+// payload (it was stored before payloads were kept).
+func (st *YABSStore) Payload(ctx context.Context, serverID, id int64) (string, error) {
+	var body string
+	err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx, `
+		SELECT p.body FROM yabs_payload p JOIN yabs y ON y.id = p.yabs_id
+		WHERE y.id = ? AND y.server_id = ?`, id, serverID).Scan(&body)
+	return body, err
+}
+
+// HasPayload reports whether a raw payload is kept for the run.
+func (st *YABSStore) HasPayload(ctx context.Context, id int64) (bool, error) {
+	var n int
+	err := QuerierFrom(ctx, st.DB).QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM yabs_payload WHERE yabs_id = ?", id).Scan(&n)
+	return n > 0, err
 }
 
 // ListFor returns runs for one server, newest first.

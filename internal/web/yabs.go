@@ -17,6 +17,7 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -149,7 +150,7 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, model.YABSPayloadMax))
 	if err != nil {
 		writeAPIError(w, http.StatusRequestEntityTooLarge, "body too large")
 		return
@@ -192,10 +193,32 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 	// (c) Only now parse + insert. gb_url duplicates surface as a
 	// unique-index violation at insert time (migration 0010) and map to
 	// duplicate inside Create; the cap stays consumed either way.
+	id, err := s.storeYABSRun(r.Context(), serverID, body)
+	switch {
+	case errors.Is(err, errYABSInvalid):
+		writeAPIError(w, http.StatusBadRequest, "invalid yabs JSON")
+	case errors.Is(err, model.ErrDuplicatePayload):
+		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
+	case err != nil:
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "yabs_id": id})
+	}
+}
+
+// errYABSInvalid means a body could not be parsed as yabs.sh output.
+var errYABSInvalid = errors.New("invalid yabs JSON")
+
+// storeYABSRun parses a raw yabs.sh body and stores it as a run of serverID,
+// keeping the body itself alongside. It is the one write path for a run:
+// signed ingest and the authenticated add-run form both end here, so both
+// apply the same bounds and store the same shape. Returns errYABSInvalid for
+// an unparseable body and model.ErrDuplicatePayload when the run is already
+// stored; authorisation and replay protection are the caller's job.
+func (s *Server) storeYABSRun(ctx context.Context, serverID int64, body []byte) (int64, error) {
 	result, err := yabs.Parse(body)
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid yabs JSON")
-		return
+		return 0, errYABSInvalid
 	}
 
 	run := &model.YABS{
@@ -238,17 +261,12 @@ func (s *Server) handleYABSIngest(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	id, err := st.Create(r.Context(), run, disks, network)
+	id, err := (&model.YABSStore{DB: s.db}).CreateWithPayload(ctx, run, disks, network, string(body))
 	if err != nil {
-		if errors.Is(err, model.ErrDuplicatePayload) {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate"})
-		} else {
-			writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
-		}
-		return
+		return 0, err
 	}
 	s.touchDashboard()
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "yabs_id": id})
+	return id, nil
 }
 
 // ---------- Views ----------
@@ -261,7 +279,7 @@ func (s *Server) handleYABSIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := s.newPageData(w, r, "YABS", "yabs")
-	data.Data = yabsIndexView{Rows: yabsRows(items)}
+	data.Data = yabsIndexView{Rows: yabsRows(items), AddURL: routeYABSNew}
 	s.render(w, r, "yabs", data)
 }
 
@@ -290,6 +308,7 @@ func (s *Server) handleServerYABS(w http.ResponseWriter, r *http.Request) {
 	data.Data = yabsIndexView{
 		Rows:       yabsRows(items),
 		ServerName: srv.Hostname,
+		AddURL:     serverYABSURL(serverID) + "/new",
 	}
 	s.render(w, r, "yabs", data)
 }
@@ -298,6 +317,180 @@ func (s *Server) handleServerYABS(w http.ResponseWriter, r *http.Request) {
 type yabsIndexView struct {
 	Rows       []yabsRow
 	ServerName string // set on per-server pages
+	AddURL     string // the add-run page for this list's scope
+}
+
+// routeYABSNew is the add-run entry point that asks which server.
+const routeYABSNew = "/yabs/new"
+
+// serverYABSURL is the run list of one server; run and add-run URLs hang
+// off it.
+func serverYABSURL(serverID int64) string {
+	return routeServers + "/" + strconv.FormatInt(serverID, 10) + "/yabs"
+}
+
+// handleYABSNew renders GET /yabs/new: the add-run page reached from the
+// all-servers list, where the server is not known yet. It only asks which
+// server; ?server=ID (the picker's own submit) forwards to that server's
+// add-run page, which is where a missing server turns into a 404.
+func (s *Server) handleYABSNew(w http.ResponseWriter, r *http.Request) {
+	if id, err := strconv.ParseInt(r.URL.Query().Get("server"), 10, 64); err == nil && id > 0 {
+		http.Redirect(w, r, serverYABSURL(id)+"/new", http.StatusSeeOther)
+		return
+	}
+	servers, err := s.serverOptions(r)
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return
+	}
+	data := s.newPageData(w, r, "Add YABS run", "yabs")
+	data.Data = yabsNewView{Servers: servers, BackURL: "/yabs"}
+	s.render(w, r, "yabs_new", data)
+}
+
+// yabsNewView is the payload for the add-run page. ServerID is 0 while the
+// server is still to be picked.
+type yabsNewView struct {
+	Servers    []model.CatalogItem // picker options (ServerID == 0)
+	ServerID   int64
+	ServerName string
+	Command    string // signed ingest command; "" when withheld (see yabsCommand)
+	Payload    string // pasted text, echoed back after a rejected submit
+	Error      string
+	BackURL    string
+}
+
+// yabsServer resolves the {id} path value to a server, answering 404/500
+// itself when it cannot.
+func (s *Server) yabsServer(w http.ResponseWriter, r *http.Request) (*model.Server, bool) {
+	serverID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return nil, false
+	}
+	srv, _, _, err := s.servers.Get(r.Context(), serverID)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return nil, false
+	}
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return nil, false
+	}
+	return srv, true
+}
+
+// renderYABSNew renders the add-run page for one server. A rejected submit
+// passes the pasted text and the reason back with a 422.
+func (s *Server) renderYABSNew(w http.ResponseWriter, r *http.Request, srv *model.Server, payload, errMsg string) {
+	data := s.newPageData(w, r, "Add YABS run · "+srv.Hostname, "yabs")
+	data.Data = yabsNewView{
+		ServerID:   srv.ID,
+		ServerName: srv.Hostname,
+		Command:    s.yabsCommand(r, srv.ID),
+		Payload:    payload,
+		Error:      errMsg,
+		BackURL:    serverYABSURL(srv.ID),
+	}
+	if errMsg != "" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}
+	s.render(w, r, "yabs_new", data)
+}
+
+// handleServerYABSNew renders GET /servers/{id}/yabs/new.
+func (s *Server) handleServerYABSNew(w http.ResponseWriter, r *http.Request) {
+	srv, ok := s.yabsServer(w, r)
+	if !ok {
+		return
+	}
+	s.renderYABSNew(w, r, srv, "", "")
+}
+
+// pastedYABS normalises text pasted into the add-run form to the bytes
+// yabs.sh would have sent: a browser submits a textarea with CRLF line
+// breaks and the paste usually carries a trailing newline, and either would
+// change the payload hash, so the same run added once by paste and once by
+// the signed URL would not be recognised as a duplicate.
+func pastedYABS(s string) string {
+	return strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+}
+
+// handleServerYABSCreate handles POST /servers/{id}/yabs: a run pasted into
+// the add-run form by the signed-in user (session + CSRF, via protect). It
+// stores through storeYABSRun, exactly like signed ingest.
+func (s *Server) handleServerYABSCreate(w http.ResponseWriter, r *http.Request) {
+	srv, ok := s.yabsServer(w, r)
+	if !ok {
+		return
+	}
+	raw := r.PostFormValue("payload")
+	body := pastedYABS(raw)
+	switch {
+	case body == "":
+		s.renderYABSNew(w, r, srv, "", "Paste the JSON that yabs.sh printed.")
+		return
+	case len(body) > model.YABSPayloadMax:
+		// Not echoed back: there is no point re-sending 64 KB+ of rejected text.
+		s.renderYABSNew(w, r, srv, "", "That is larger than a yabs.sh result can be (64 KB).")
+		return
+	}
+
+	listURL := serverYABSURL(srv.ID)
+	duplicate := func() {
+		s.setFlash(w, r, "ok", "That run is already recorded.")
+		http.Redirect(w, r, listURL, http.StatusSeeOther)
+	}
+	sum := sha256.Sum256([]byte(body))
+	dup, err := (&model.YABSStore{DB: s.db}).IsDuplicate(r.Context(), srv.ID, "", hex.EncodeToString(sum[:]))
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return
+	}
+	if dup {
+		duplicate()
+		return
+	}
+
+	id, err := s.storeYABSRun(r.Context(), srv.ID, []byte(body))
+	switch {
+	case errors.Is(err, errYABSInvalid):
+		s.renderYABSNew(w, r, srv, raw, "That is not a yabs.sh JSON result. Paste the whole output of yabs.sh -j, from the first { to the last }.")
+	case errors.Is(err, model.ErrDuplicatePayload):
+		duplicate()
+	case err != nil:
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+	default:
+		s.setFlash(w, r, "ok", "YABS run added.")
+		http.Redirect(w, r, listURL+"/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	}
+}
+
+// handleServerYABSRaw serves GET /servers/{id}/yabs/{yid}/raw: the yabs.sh
+// JSON a run was parsed from, byte for byte. 404 when the run is not this
+// server's or has no payload (it predates payloads being kept).
+func (s *Server) handleServerYABSRaw(w http.ResponseWriter, r *http.Request) {
+	serverID, err1 := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	yabsID, err2 := strconv.ParseInt(r.PathValue("yid"), 10, 64)
+	if err1 != nil || err2 != nil {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := (&model.YABSStore{DB: s.db}).Payload(r.Context(), serverID, yabsID)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return
+	}
+	// Stored text that arrived from outside: served as JSON (never HTML —
+	// nosniff is set globally) and offered as a download rather than a page.
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="yabs-run-`+strconv.FormatInt(yabsID, 10)+`.json"`)
+	io.WriteString(w, body)
 }
 
 // yabsRow is one run row.
@@ -359,6 +552,11 @@ func (s *Server) handleServerYABSDetail(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
+	hasPayload, err := (&model.YABSStore{DB: s.db}).HasPayload(r.Context(), yabsID)
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return
+	}
 	data := s.newPageData(w, r, "YABS · "+srv.Hostname, "yabs")
 	data.Data = yabsDetailView{
 		ServerID:   serverID,
@@ -366,6 +564,7 @@ func (s *Server) handleServerYABSDetail(w http.ResponseWriter, r *http.Request) 
 		Run:        y,
 		Disks:      disks,
 		Network:    network,
+		HasPayload: hasPayload,
 	}
 	s.render(w, r, "yabs_detail", data)
 }
@@ -377,6 +576,7 @@ type yabsDetailView struct {
 	Run        *model.YABS
 	Disks      []model.YABSDiskSpeed
 	Network    []model.YABSNetworkSpeed
+	HasPayload bool // the raw yabs.sh JSON is kept and can be downloaded
 }
 
 // handleServerYABSDelete handles POST /servers/{id}/yabs/{yid}/delete.

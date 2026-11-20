@@ -23,6 +23,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <h1>YABS{{if $v.ServerName}} · <span class="mono">{{$v.ServerName}}</span>{{end}}</h1>
     <div class="page-sub">{{len $v.Rows}} runs</div>
   </div>
+  <div class="head-actions">
+    <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
+  </div>
 </header>
 
 {{if $v.Rows}}
@@ -49,7 +52,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 {{else}}
 <div class="empty-state">
   <div class="empty-title">No YABS runs yet</div>
-  <div class="empty-sub">Run the ingest command from a server's detail page.</div>
+  <div class="empty-sub">Run the benchmark on a server, or paste a result you already have.</div>
+  <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
 </div>
 {{end}}
 {{end}}

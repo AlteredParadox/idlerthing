@@ -18,6 +18,9 @@ package importer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -216,5 +219,90 @@ func TestImportYABSPaddedGbURLKeepsBothRuns(t *testing.T) {
 	database.QueryRow("SELECT gb_url FROM yabs WHERE gb_url IS NOT NULL").Scan(&link)
 	if link != "https://browser.geekbench.com/v6/cpu/1" {
 		t.Errorf("kept link = %q", link)
+	}
+}
+
+// A restored raw payload is kept only when it is the body its run was parsed
+// from. Anything else is dropped with a warning; the run always survives.
+func TestImportYABSPayloadValidated(t *testing.T) {
+	database := testDB(t)
+	good := `{"cpu":{"model":"X"}}`
+	sum := sha256.Sum256([]byte(good))
+	goodHash := hex.EncodeToString(sum[:])
+	huge := `{"cpu":{"model":"` + strings.Repeat("x", 64<<10) + `"}}`
+	hugeSum := sha256.Sum256([]byte(huge))
+	notJSON := `{"cpu":`
+	notJSONSum := sha256.Sum256([]byte(notJSON))
+
+	type run struct {
+		Server  int    `json:"server_id"`
+		Single  int    `json:"gb_single"`
+		Hash    string `json:"payload_hash,omitempty"`
+		Payload string `json:"payload,omitempty"`
+	}
+	doc, err := json.Marshal(map[string]any{
+		"format":  1,
+		"servers": []any{map[string]any{"server": map[string]any{"id": 1, "hostname": "payload-restore"}}},
+		"yabs": []run{
+			{1, 1, goodHash, good},                             // kept
+			{1, 2, "0000", good},                               // hash mismatch
+			{1, 3, "", good},                                   // no hash to match
+			{1, 4, hex.EncodeToString(hugeSum[:]), huge},       // over the ingest limit
+			{1, 5, hex.EncodeToString(notJSONSum[:]), notJSON}, // not JSON
+			{1, 6, "ffff", ""},                                 // no payload: nothing to do
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Import(context.Background(), database, strings.NewReader(string(doc)), false)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var runs, payloads int
+	database.QueryRow("SELECT COUNT(*) FROM yabs").Scan(&runs)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_payload").Scan(&payloads)
+	if runs != 6 || payloads != 1 {
+		t.Fatalf("runs=%d payloads=%d, want 6 and 1", runs, payloads)
+	}
+	var body string
+	var single int
+	database.QueryRow("SELECT p.body, y.gb_single FROM yabs_payload p JOIN yabs y ON y.id = p.yabs_id").Scan(&body, &single)
+	if body != good || single != 1 {
+		t.Errorf("kept payload belongs to run single=%d, body equal=%v", single, body == good)
+	}
+	dropped := 0
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "raw payload dropped") {
+			dropped++
+		}
+	}
+	if dropped != 4 {
+		t.Errorf("payload warnings = %d, want 4: %v", dropped, res.Warnings)
+	}
+}
+
+// Restored speed rows use the same shape as ingested ones: 0 → NULL.
+func TestImportYABSUnmeasuredAsNull(t *testing.T) {
+	database := testDB(t)
+	doc := `{"format":1,
+	  "servers":[{"server":{"id":1,"hostname":"null-restore"}}],
+	  "yabs":[{"server_id":1,"gb_single":1,"payload_hash":"aa",
+	    "disk_speed":[{"block_size":"4k","read_mbps":99.5,"write_mbps":0}],
+	    "network_speed":[{"location":"busy","send_mbps":0,"recv_mbps":0,"latency_ms":190},
+	                     {"location":"ok","send_mbps":683,"recv_mbps":343}]}]}`
+	if _, err := Import(context.Background(), database, strings.NewReader(doc), false); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var zeros, nulls int
+	database.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM yabs_network_speed WHERE send_mbps = 0 OR recv_mbps = 0 OR latency_ms = 0) +
+		(SELECT COUNT(*) FROM yabs_disk_speed WHERE read_mbps = 0 OR write_mbps = 0)`).Scan(&zeros)
+	database.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM yabs_network_speed WHERE send_mbps IS NULL) +
+		(SELECT COUNT(*) FROM yabs_network_speed WHERE latency_ms IS NULL) +
+		(SELECT COUNT(*) FROM yabs_disk_speed WHERE write_mbps IS NULL)`).Scan(&nulls)
+	if zeros != 0 || nulls != 3 {
+		t.Fatalf("zeros=%d nulls=%d, want 0 and 3", zeros, nulls)
 	}
 }

@@ -1,0 +1,108 @@
+{{/*
+idlerthing — a lightweight, self-hosted inventory for hosting services.
+Copyright (C) 2026 AlteredParadox
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/}}
+
+
+{{define "delta"}}{{with .}}<span class="ybs-delta {{.Class}}">{{.Text}}</span>{{else}}<span class="col-muted">—</span>{{end}}{{end}}
+
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>Compare YABS · <span class="mono">{{$v.ServerName}}</span></h1>
+    <div class="page-sub mono">{{$v.A.Date}} → {{$v.B.Date}}</div>
+  </div>
+  <div class="head-actions">
+    <a class="btn" href="{{$v.BackURL}}">All runs</a>
+  </div>
+</header>
+
+<section class="panel ybs-section">
+  <h2 class="section-title">System</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr><th></th><th><a href="{{$v.A.URL}}">{{$v.A.Date}}</a></th><th><a href="{{$v.B.URL}}">{{$v.B.Date}}</a></th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range $v.System}}
+      <tr>
+        <td>{{.Label}}</td>
+        <td class="wrap">{{.A}}</td>
+        <td class="wrap">{{.B}}</td>
+        <td>{{if .Changed}}<span class="badge badge-warn">changed</span>{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+
+{{if $v.Scores}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Geekbench</h2>
+  <table class="tbl mini">
+    <thead><tr><th></th><th>{{$v.A.Date}}</th><th>{{$v.B.Date}}</th><th>Change</th></tr></thead>
+    <tbody>
+      {{range $v.Scores}}
+      <tr><td>{{.Label}}</td><td class="mono">{{.A}}</td><td class="mono">{{.B}}</td><td>{{template "delta" .Delta}}</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+{{if $v.Disk}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Disk speed (fio) <span class="unit">MB/s</span></h2>
+  <table class="tbl mini">
+    <thead><tr><th></th><th>{{$v.A.Date}}</th><th>{{$v.B.Date}}</th><th>Change</th></tr></thead>
+    <tbody>
+      {{range $v.Disk}}
+      <tr><td class="mono">{{.Label}}</td><td class="mono">{{.A}}</td><td class="mono">{{.B}}</td><td>{{template "delta" .Delta}}</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+{{if $v.Network}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Network speed (iperf) · older → newer</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr>
+        <th>Location</th><th>Provider</th><th>Mode</th>
+        <th>Send <span class="unit">Mbit/s</span></th><th>Change</th>
+        <th>Recv <span class="unit">Mbit/s</span></th><th>Change</th>
+        <th>Latency <span class="unit">ms</span></th><th>Change</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range $v.Network}}
+      <tr>
+        <td>{{.Location}}</td>
+        <td>{{.Provider}}</td>
+        <td class="mono">{{if .Mode}}{{.Mode}}{{else}}—{{end}}</td>
+        <td class="mono">{{.Send.A}} → {{.Send.B}}</td><td>{{template "delta" .Send.Delta}}</td>
+        <td class="mono">{{.Recv.A}} → {{.Recv.B}}</td><td>{{template "delta" .Recv.Delta}}</td>
+        <td class="mono">{{.Latency.A}} → {{.Latency.B}}</td><td>{{template "delta" .Latency.Delta}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+{{end}}

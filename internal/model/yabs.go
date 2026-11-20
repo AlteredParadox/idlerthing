@@ -347,6 +347,80 @@ func (st *YABSStore) HasPayload(ctx context.Context, id int64) (bool, error) {
 	return n > 0, err
 }
 
+// YABSRun is one run with its speed rows, as the history views need it.
+type YABSRun struct {
+	YABS
+	Disks   []YABSDiskSpeed
+	Network []YABSNetworkSpeed
+}
+
+// History returns every run of one server with its speed rows, in id order
+// (callers order by run time). Three queries regardless of the run count:
+// the per-host views read a server's whole history at once.
+func (st *YABSStore) History(ctx context.Context, serverID int64) ([]YABSRun, error) {
+	q := QuerierFrom(ctx, st.DB)
+	rows, err := q.QueryContext(ctx,
+		"SELECT "+yabsColumns+" FROM yabs WHERE server_id = ? ORDER BY id", serverID)
+	if err != nil {
+		return nil, err
+	}
+	var runs []YABSRun
+	index := map[int64]int{}
+	for rows.Next() {
+		y, err := scanYABS(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		index[y.ID] = len(runs)
+		runs = append(runs, YABSRun{YABS: *y})
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(runs) == 0 {
+		return nil, nil
+	}
+
+	const ofServer = " WHERE yabs_id IN (SELECT id FROM yabs WHERE server_id = ?) ORDER BY yabs_id, id"
+	disks, err := q.QueryContext(ctx, YABSDiskSpeedSelect+ofServer, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer disks.Close()
+	for disks.Next() {
+		d, err := ScanYABSDiskSpeed(disks)
+		if err != nil {
+			return nil, err
+		}
+		if i, ok := index[d.YabsID]; ok {
+			runs[i].Disks = append(runs[i].Disks, d)
+		}
+	}
+	if err := disks.Err(); err != nil {
+		return nil, err
+	}
+
+	network, err := q.QueryContext(ctx, YABSNetworkSpeedSelect+ofServer, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer network.Close()
+	for network.Next() {
+		n, err := ScanYABSNetworkSpeed(network)
+		if err != nil {
+			return nil, err
+		}
+		if i, ok := index[n.YabsID]; ok {
+			runs[i].Network = append(runs[i].Network, n)
+		}
+	}
+	return runs, network.Err()
+}
+
 // ListFor returns runs for one server, newest first.
 func (st *YABSStore) ListFor(ctx context.Context, serverID int64) ([]YABSListItem, error) {
 	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx, `

@@ -1,0 +1,168 @@
+{{/*
+idlerthing — a lightweight, self-hosted inventory for hosting services.
+Copyright (C) 2026 AlteredParadox
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License
+for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+*/}}
+
+
+{{define "content"}}
+{{$v := .Data}}
+<header class="page-head">
+  <div>
+    <h1>YABS · <a class="mono" href="{{$v.ServerURL}}">{{$v.ServerName}}</a></h1>
+    <div class="page-sub">{{if not $v.RunCount}}No runs yet{{else if eq $v.RunCount 1}}1 run · {{$v.LatestDate}}{{else}}{{$v.RunCount}} runs · {{$v.FirstDate}} to {{$v.LatestDate}}{{end}}</div>
+  </div>
+  <div class="head-actions">
+    {{if $v.RunCount}}<a class="btn" href="{{$v.LatestURL}}">Latest run</a>{{end}}
+    <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
+  </div>
+</header>
+
+{{if not $v.RunCount}}
+<div class="empty-state">
+  <div class="empty-title">No YABS runs yet</div>
+  <div class="empty-sub">Run the benchmark on this server, or paste a result you already have.</div>
+  <a class="btn btn-primary" href="{{$v.AddURL}}">＋ Add run</a>
+</div>
+{{else}}
+
+{{range $v.Notices}}
+<div class="ybs-notice ybs-notice-{{.Kind}}" role="status">{{.Text}}</div>
+{{end}}
+
+<div class="card-grid ybs-tiles">
+  {{range $v.Tiles}}
+  <section class="panel metric-card ybs-tile">
+    <h2 class="metric-name">{{.Label}}</h2>
+    <div class="ybs-value"><span class="ybs-num">{{.Value}}</span>{{if .Unit}} <span class="ybs-unit">{{.Unit}}</span>{{end}}{{if .Low}} <span class="badge badge-warn">low</span>{{end}}</div>
+    {{if .Note}}<div class="metric-stats">{{.Note}}</div>{{end}}
+    <div class="ybs-deltas">
+      {{with .VsPrev}}<span><span class="ybs-delta {{.Class}}">{{.Text}}</span> <span class="ybs-delta-ref">vs previous</span></span>{{end}}
+      {{with .VsMedian}}<span><span class="ybs-delta {{.Class}}">{{.Text}}</span> <span class="ybs-delta-ref">vs median</span></span>{{end}}
+    </div>
+    {{with .Spark}}
+    <svg class="ybs-spark" viewBox="0 0 200 40" preserveAspectRatio="none" role="img" aria-label="{{.Label}}">
+      {{if .MedianY}}<line class="ybs-spark-median" x1="0" x2="200" y1="{{.MedianY}}" y2="{{.MedianY}}" />{{end}}
+      <polyline class="ybs-spark-line" points="{{.Points}}" />
+      <path class="ybs-spark-ring" d="M{{.EndX}},{{.EndY}}h0.01" />
+      <path class="ybs-spark-dot" d="M{{.EndX}},{{.EndY}}h0.01" />
+    </svg>
+    {{end}}
+    <div class="metric-stats">{{.Stats}}</div>
+  </section>
+  {{end}}
+</div>
+
+<section class="panel ybs-section">
+  <h2 class="section-title">History</h2>
+  <form method="get" action="{{$v.CompareURL}}">
+    <table class="tbl">
+      <thead>
+        <tr>
+          {{if gt $v.RunCount 1}}<th class="ybs-pick"><span class="sr-only">Compare</span></th>{{end}}
+          <th>Run</th>
+          {{range $v.Columns}}<th>{{.}}</th>{{end}}
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range $v.Rows}}
+        <tr class="row-link" data-href="{{.URL}}">
+          {{if gt $v.RunCount 1}}<td class="ybs-pick"><input type="checkbox" name="run" value="{{.ID}}" aria-label="Compare the run of {{.Date}}"></td>{{end}}
+          <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Date}}</a></td>
+          {{range .Cells}}
+          <td class="mono{{if .Low}} ybs-low{{end}}">{{.Value}}{{with .Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>
+          {{end}}
+          <td class="wrap">
+            {{if .Low}}<span class="badge badge-warn">low</span>{{end}}
+            {{range .Hardware}}<span class="badge badge-warn" title="{{.From}} → {{.To}}">{{.Field}} changed</span> {{end}}
+            {{range .Software}}<span class="badge" title="{{.From}} → {{.To}}">{{.Field}} changed</span> {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{if gt $v.RunCount 1}}
+    <div class="form-actions ybs-compare-actions">
+      <button class="btn" type="submit">Compare selected</button>
+      <span class="field-hint">Tick two runs. Changes are against the previous run; “low” is 15% or more below this host's median.</span>
+    </div>
+    {{end}}
+  </form>
+</section>
+
+{{if $v.Disk}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Disk by block size · latest run{{if $v.DiskBaseline}} against this host's median{{end}}</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr>
+        <th>Block size</th>
+        <th>Read <span class="unit">MB/s</span></th>
+        {{if $v.DiskBaseline}}<th>Median read</th>{{end}}
+        <th>Write <span class="unit">MB/s</span></th>
+        {{if $v.DiskBaseline}}<th>Median write</th>{{end}}
+      </tr>
+    </thead>
+    <tbody>
+      {{range $v.Disk}}
+      <tr>
+        <td class="mono">{{.BlockSize}}</td>
+        <td class="mono{{if .Read.Low}} ybs-low{{end}}">{{.Read.Value}}{{with .Read.Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>
+        {{if $v.DiskBaseline}}<td class="mono col-muted">{{.MedianRead}}</td>{{end}}
+        <td class="mono{{if .Write.Low}} ybs-low{{end}}">{{.Write.Value}}{{with .Write.Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>
+        {{if $v.DiskBaseline}}<td class="mono col-muted">{{.MedianWrite}}</td>{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+{{if $v.Network}}
+<section class="panel ybs-section">
+  <h2 class="section-title">Network by location · latest run{{if $v.NetBaseline}} against this host's median{{end}}</h2>
+  <table class="tbl mini">
+    <thead>
+      <tr>
+        <th>Location</th><th>Provider</th><th>Mode</th>
+        <th>Send <span class="unit">Mbit/s</span></th>
+        {{if $v.NetBaseline}}<th>Median send</th>{{end}}
+        <th>Recv <span class="unit">Mbit/s</span></th>
+        {{if $v.NetBaseline}}<th>Median recv</th>{{end}}
+        <th>Latency <span class="unit">ms</span></th>
+        {{if $v.NetBaseline}}<th>Median latency</th>{{end}}
+      </tr>
+    </thead>
+    <tbody>
+      {{range $v.Network}}
+      <tr>
+        <td>{{.Location}}</td>
+        <td>{{.Provider}}</td>
+        <td class="mono">{{if .Mode}}{{.Mode}}{{else}}—{{end}}</td>
+        <td class="mono{{if .Send.Low}} ybs-low{{end}}">{{.Send.Value}}{{with .Send.Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>
+        {{if $v.NetBaseline}}<td class="mono col-muted">{{.MedianSend}}</td>{{end}}
+        <td class="mono{{if .Recv.Low}} ybs-low{{end}}">{{.Recv.Value}}{{with .Recv.Delta}} <span class="ybs-delta {{.Class}}">{{.Text}}</span>{{end}}</td>
+        {{if $v.NetBaseline}}<td class="mono col-muted">{{.MedianRecv}}</td>{{end}}
+        <td class="mono">{{.Latency}}</td>
+        {{if $v.NetBaseline}}<td class="mono col-muted">{{.MedianLatency}}</td>{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+{{end}}
+{{end}}

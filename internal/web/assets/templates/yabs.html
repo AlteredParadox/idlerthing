@@ -20,7 +20,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 {{$v := .Data}}
 <header class="page-head">
   <div>
-    <h1>YABS{{if $v.ServerName}} · <span class="mono">{{$v.ServerName}}</span>{{end}}</h1>
+    <h1>YABS</h1>
     <div class="page-sub">{{len $v.Rows}} runs</div>
   </div>
   <div class="head-actions">
@@ -32,14 +32,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <table class="tbl">
   <thead>
     <tr>
-      {{if not $v.ServerName}}<th>Server</th>{{end}}
+      <th>Server</th>
       <th>Date</th><th>CPU</th><th>GB Single</th><th>GB Multi</th>
     </tr>
   </thead>
   <tbody>
     {{range $v.Rows}}
     <tr class="row-link" data-href="{{.URL}}">
-      {{if not $v.ServerName}}<td><a class="cell-title mono" href="{{.ServerURL}}">{{.ServerName}}</a></td>{{end}}
+      <td><a class="cell-title mono" href="{{.ServerURL}}">{{.ServerName}}</a></td>
       <td class="mono"><a class="cell-title" href="{{.URL}}">{{.Date}}</a></td>
       <td>{{if .CPU}}{{.CPU}}{{else}}—{{end}}</td>
       <td class="mono">{{.GbSingle}}</td>

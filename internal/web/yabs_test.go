@@ -131,8 +131,8 @@ func TestYABSIngestFlow(t *testing.T) {
 	}
 	bodyB := readBody(t, resp)
 	resp.Body.Close()
-	if !strings.Contains(bodyB, "1686") {
-		t.Fatal("runs list should show gb single")
+	if !strings.Contains(bodyB, "1,686") {
+		t.Fatal("the server's YABS dashboard should show gb single")
 	}
 
 	resp, err = client.Get(ts.URL + "/servers/1/yabs/1")

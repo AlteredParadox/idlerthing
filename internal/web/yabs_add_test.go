@@ -44,7 +44,7 @@ const busyYABS = `{"time":"20261119-185420","cpu":{"model":"Test CPU","cores":4}
 
 // ingestSigned posts body to the signed ingest URL of serverID with a fresh,
 // distinct capability (tsOffset keeps single-use caps apart within a test).
-func ingestSigned(t *testing.T, ts *httptest.Server, srv *Server, serverID int64, tsOffset int64, body string) (int, string) {
+func ingestSigned(t *testing.T, ts *httptest.Server, srv *Server, serverID, tsOffset int64, body string) (int, string) {
 	t.Helper()
 	stamp := time.Now().Unix() - tsOffset
 	resp, err := http.Post(
@@ -404,5 +404,61 @@ func TestYABSAddRunCommandWithheld(t *testing.T) {
 	_, page := getPage(t, client, ts.URL+"/servers/1/yabs/new")
 	if strings.Contains(page, "/api/yabs/1?sig=") || !strings.Contains(page, "IDLER_BASE_URL") || !strings.Contains(page, `name="payload"`) {
 		t.Fatalf("withheld command: page should show the hint and the paste form only")
+	}
+}
+
+// A body json.Unmarshal accepts but that is not valid UTF-8 cannot be kept
+// byte for byte: the JSON backup would rewrite the invalid bytes, the
+// restored copy would no longer match payload_hash, and the raw payload would
+// silently vanish after a backup round trip. Such a run is stored without a
+// raw copy from the start, so what is kept always survives export + import.
+func TestYABSNonUTF8PayloadNotRetained(t *testing.T) {
+	ts, database, srv := newTestServerFull(t)
+	client := authedClient(t, ts)
+	createServer(t, client, ts, "latin1-host")
+
+	// 0xE9 is "é" in Latin-1 and an invalid sequence in UTF-8.
+	body := "{\"cpu\":{\"model\":\"Caf\xe9 CPU\",\"cores\":2},\"geekbench\":[{\"version\":6,\"single\":900,\"multi\":1700}]}"
+	if code, out := ingestSigned(t, ts, srv, 1, 0, body); code != http.StatusOK || !strings.Contains(out, `"ok"`) {
+		t.Fatalf("ingest: %d %s", code, out)
+	}
+	var runs, payloads int
+	database.QueryRow("SELECT COUNT(*) FROM yabs").Scan(&runs)
+	database.QueryRow("SELECT COUNT(*) FROM yabs_payload").Scan(&payloads)
+	if runs != 1 || payloads != 0 {
+		t.Fatalf("runs=%d payloads=%d, want the run stored and no raw copy", runs, payloads)
+	}
+	if code, page := getPage(t, client, ts.URL+"/servers/1/yabs/1"); code != http.StatusOK || strings.Contains(page, "/raw") {
+		t.Fatalf("run page (%d) must not offer a raw copy that was not kept", code)
+	}
+	// A retained payload (valid UTF-8, here with non-ASCII text) and the
+	// unretained one both come through a backup round trip with nothing lost
+	// and nothing dropped on the way.
+	utf8Body := `{"cpu":{"model":"Café CPU ✓","cores":2},"geekbench":[{"version":6,"single":901,"multi":1701}]}`
+	if code, out := ingestSigned(t, ts, srv, 1, 1, utf8Body); code != http.StatusOK || !strings.Contains(out, `"ok"`) {
+		t.Fatalf("ingest utf8: %d %s", code, out)
+	}
+	resp, err := client.Get(ts.URL + "/export/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportJSON, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	dbB := freshDB(t)
+	sum, err := importer.Import(context.Background(), dbB, bytes.NewReader(exportJSON), false)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	for _, w := range sum.Warnings {
+		if strings.Contains(w, "payload") {
+			t.Errorf("a retained payload was dropped on restore: %s", w)
+		}
+	}
+	var restored string
+	dbB.QueryRow("SELECT COUNT(*) FROM yabs").Scan(&runs)
+	dbB.QueryRow("SELECT COUNT(*) FROM yabs_payload").Scan(&payloads)
+	dbB.QueryRow("SELECT body FROM yabs_payload").Scan(&restored)
+	if runs != 2 || payloads != 1 || restored != utf8Body {
+		t.Fatalf("after restore: runs=%d payloads=%d exact=%v, want 2/1/true", runs, payloads, restored == utf8Body)
 	}
 }

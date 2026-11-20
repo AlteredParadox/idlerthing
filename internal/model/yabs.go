@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // YABS mirrors the yabs table.
@@ -129,25 +130,26 @@ func (st *YABSStore) ConsumeCap(ctx context.Context, serverID, ts int64) (bool, 
 	return n > 0, nil
 }
 
-// YABSDiskSpeedColumns and YABSNetworkSpeedColumns are the SELECT lists every
-// reader of the speed tables uses. Unmeasured values are NULL in the database
-// and 0 in the structs, so a reader that selected the bare columns would fail
-// to scan the first "busy" row it met.
+// YABSDiskSpeedSelect and YABSNetworkSpeedSelect are the SELECT ... FROM
+// clauses every reader of the speed tables uses (append a WHERE / ORDER BY).
+// Unmeasured values are NULL in the database and 0 in the structs, so a
+// reader that selected the bare columns would fail to scan the first "busy"
+// row it met.
 const (
-	YABSDiskSpeedColumns = `id, yabs_id, block_size,
-	COALESCE(read_mbps, 0), COALESCE(write_mbps, 0)`
-	YABSNetworkSpeedColumns = `id, yabs_id, location, provider, COALESCE(mode, ''),
-	COALESCE(send_mbps, 0), COALESCE(recv_mbps, 0), COALESCE(latency_ms, 0)`
+	YABSDiskSpeedSelect = `SELECT id, yabs_id, block_size,
+	COALESCE(read_mbps, 0), COALESCE(write_mbps, 0) FROM yabs_disk_speed`
+	YABSNetworkSpeedSelect = `SELECT id, yabs_id, location, provider, COALESCE(mode, ''),
+	COALESCE(send_mbps, 0), COALESCE(recv_mbps, 0), COALESCE(latency_ms, 0) FROM yabs_network_speed`
 )
 
-// ScanYABSDiskSpeed scans one YABSDiskSpeedColumns row.
+// ScanYABSDiskSpeed scans one YABSDiskSpeedSelect row.
 func ScanYABSDiskSpeed(row interface{ Scan(...any) error }) (YABSDiskSpeed, error) {
 	var d YABSDiskSpeed
 	err := row.Scan(&d.ID, &d.YabsID, &d.BlockSize, &d.ReadMbps, &d.WriteMbps)
 	return d, err
 }
 
-// ScanYABSNetworkSpeed scans one YABSNetworkSpeedColumns row.
+// ScanYABSNetworkSpeed scans one YABSNetworkSpeedSelect row.
 func ScanYABSNetworkSpeed(row interface{ Scan(...any) error }) (YABSNetworkSpeed, error) {
 	var n YABSNetworkSpeed
 	err := row.Scan(&n.ID, &n.YabsID, &n.Location, &n.Provider, &n.Mode,
@@ -179,6 +181,17 @@ func InsertYABSSpeeds(ctx context.Context, q Querier, yabsID int64, disks []YABS
 	return nil
 }
 
+// RetainableYABSPayload reports whether a raw body can be kept byte for byte.
+// The payload lives in a TEXT column and travels through the JSON backup as a
+// string, and both are exact only for valid UTF-8: encoding/json accepts
+// invalid UTF-8 inside a quoted string when parsing, but replaces it with
+// U+FFFD when writing, so such a body would come back from a backup different
+// from the bytes that were hashed. A body that fails this is still parsed and
+// stored as a run; only its raw copy is not kept.
+func RetainableYABSPayload(body []byte) bool {
+	return len(body) > 0 && len(body) <= YABSPayloadMax && utf8.Valid(body)
+}
+
 // YABSPayloadMax is the largest raw payload kept for a run. It equals the
 // ingest body limit, so nothing ingest accepts is ever too large to keep.
 const YABSPayloadMax = 64 << 10
@@ -190,7 +203,8 @@ func (st *YABSStore) Create(ctx context.Context, y *YABS, disks []YABSDiskSpeed,
 }
 
 // CreateWithPayload inserts a run with its speed rows in one transaction,
-// keeps the raw payload it was parsed from (when non-empty), and flips
+// keeps the raw payload it was parsed from (when non-empty; callers pass only
+// valid UTF-8 — see RetainableYABSPayload), and flips
 // servers.has_yabs on. A payload-hash/gb_url unique-index violation maps to
 // ErrDuplicatePayload. Capability consumption is the caller's job (see
 // ConsumeCap) so a rollback here can never un-consume it.
@@ -280,7 +294,7 @@ func (st *YABSStore) Get(ctx context.Context, id int64) (*YABS, []YABSDiskSpeed,
 
 func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSpeed, error) {
 	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
-		"SELECT "+YABSDiskSpeedColumns+" FROM yabs_disk_speed WHERE yabs_id = ? ORDER BY id", yabsID)
+		YABSDiskSpeedSelect+" WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +312,7 @@ func (st *YABSStore) diskSpeeds(ctx context.Context, yabsID int64) ([]YABSDiskSp
 
 func (st *YABSStore) networkSpeeds(ctx context.Context, yabsID int64) ([]YABSNetworkSpeed, error) {
 	rows, err := QuerierFrom(ctx, st.DB).QueryContext(ctx,
-		"SELECT "+YABSNetworkSpeedColumns+" FROM yabs_network_speed WHERE yabs_id = ? ORDER BY id", yabsID)
+		YABSNetworkSpeedSelect+" WHERE yabs_id = ? ORDER BY id", yabsID)
 	if err != nil {
 		return nil, err
 	}

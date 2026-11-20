@@ -261,7 +261,13 @@ func (s *Server) storeYABSRun(ctx context.Context, serverID int64, body []byte) 
 		})
 	}
 
-	id, err := (&model.YABSStore{DB: s.db}).CreateWithPayload(ctx, run, disks, network, string(body))
+	// Keep the raw body only when it can be kept exactly (valid UTF-8); the
+	// parsed run is stored either way.
+	payload := ""
+	if model.RetainableYABSPayload(body) {
+		payload = string(body)
+	}
+	id, err := (&model.YABSStore{DB: s.db}).CreateWithPayload(ctx, run, disks, network, payload)
 	if err != nil {
 		return 0, err
 	}

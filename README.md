@@ -214,7 +214,8 @@ paths store a run the same way.
 
 The raw JSON of each run is kept next to the parsed values (**Raw JSON** on
 the run's page, and in the JSON backup), so fields idlerthing does not read
-yet are not lost. Runs ingested before this was added have no raw copy. A
+yet are not lost. Runs ingested before this was added have no raw copy, nor
+does a result that is not valid UTF-8 (it is still parsed and stored). A
 result yabs.sh could not measure — an iperf endpoint reporting `busy` — is
 stored as missing rather than as 0.
 

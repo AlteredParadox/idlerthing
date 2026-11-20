@@ -723,7 +723,7 @@ func (s *Server) yabsDisksByRun(r *http.Request, ids []int64) (map[int64][]model
 	out := map[int64][]model.YABSDiskSpeed{}
 	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
 		rows, err := q.QueryContext(r.Context(),
-			"SELECT "+model.YABSDiskSpeedColumns+" FROM yabs_disk_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+			model.YABSDiskSpeedSelect+" WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
 		if err != nil {
 			return err
 		}
@@ -745,7 +745,7 @@ func (s *Server) yabsNetworkByRun(r *http.Request, ids []int64) (map[int64][]mod
 	out := map[int64][]model.YABSNetworkSpeed{}
 	err := s.queryIDChunks(r, ids, func(q model.Querier, clause string, args []any) error {
 		rows, err := q.QueryContext(r.Context(),
-			"SELECT "+model.YABSNetworkSpeedColumns+" FROM yabs_network_speed WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
+			model.YABSNetworkSpeedSelect+" WHERE yabs_id "+clause+" ORDER BY yabs_id, id", args...)
 		if err != nil {
 			return err
 		}

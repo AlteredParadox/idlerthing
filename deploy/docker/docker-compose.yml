@@ -9,9 +9,12 @@
 # terminates TLS and forwards to 127.0.0.1:8080. That is why
 # IDLER_BEHIND_TLS_PROXY is on — the proxy's connections arrive from the
 # Docker gateway address, so its X-Forwarded-For is the only way idlerthing
-# learns the real client, and binding to loopback (nothing else can connect)
-# is what makes trusting that header safe. See the README's Docker section for running
-# without a proxy.
+# learns the real client. Trusting that header is safe only while the host
+# proxy is the sole client of port 8080: Docker Engine 28+ (older engines
+# expose loopback-published ports to the local L2 segment), no untrusted
+# containers on this project's network, and a proxy that appends the final
+# X-Forwarded-For entry. See the README's Docker section for the details and
+# for running without a proxy.
 
 services:
   idlerthing:

@@ -112,12 +112,25 @@ Notes:
 - **Behind a proxy is the supported shape.** The compose file sets
   `IDLER_BEHIND_TLS_PROXY=1`. The host proxy's connections to
   `127.0.0.1:8080` arrive from the Docker gateway address, so the proxy's
-  `X-Forwarded-For` is the only source of the real client address. Binding to
-  loopback is what makes trusting that header safe, because nothing else can
-  connect. To serve plain HTTP on a LAN without a proxy, publish the port on
-  the LAN address and **remove** `IDLER_BEHIND_TLS_PROXY`. Otherwise any
-  client could forge the header, and session cookies would be `Secure`-only
-  over HTTP.
+  `X-Forwarded-For` is the only source of the real client address. In this
+  mode idlerthing trusts the header's **last** address for login rate limiting
+  and fail2ban. That is safe only while the host proxy is the only thing that
+  can reach port 8080. That holds when all three of these are true:
+  - **Docker Engine 28.0 or newer.** Older engines let other hosts on the same
+    L2 segment reach loopback-published ports
+    ([Docker docs](https://docs.docker.com/engine/network/port-publishing/#publishing-ports)).
+    Check with `docker version`, or firewall the port yourself.
+  - **No untrusted containers on idlerthing's network.** Containers on the same
+    network bypass the published port. The compose file's network holds only
+    idlerthing; keep it that way.
+  - **The proxy appends or replaces the final `X-Forwarded-For` entry** with
+    the address it saw. Caddy's `reverse_proxy` does this by default, and so
+    does nginx with
+    `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`.
+
+  To serve plain HTTP on a LAN without a proxy, publish the port on the LAN
+  address and **remove** `IDLER_BEHIND_TLS_PROXY`. Otherwise any client could
+  forge the header, and session cookies would be `Secure`-only over HTTP.
 - **The ping tool works** without `CAP_NET_RAW`. Docker allows unprivileged
   ICMP sockets by default (`net.ipv4.ping_group_range`), unlike the hardened
   systemd unit.

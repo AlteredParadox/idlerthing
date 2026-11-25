@@ -15,7 +15,10 @@
 #     journalmatch below finds the container's lines;
 #   * IDLER_BEHIND_TLS_PROXY=1 with a reverse proxy ON THE HOST, so the logged
 #     address is the real client from X-Forwarded-For, not the Docker gateway
-#     address the proxy's own connections arrive from.
+#     address the proxy's own connections arrive from. Bans are only as good
+#     as that header: the README's Docker section lists what keeps it
+#     trustworthy (Docker Engine 28+, no untrusted containers on the network,
+#     a proxy that appends the final entry).
 #
 # Ban action: the same native nftables action as the systemd jail. That is
 # correct ONLY because clients connect to the host's reverse proxy (ports

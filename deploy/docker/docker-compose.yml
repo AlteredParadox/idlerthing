@@ -1,0 +1,61 @@
+# idlerthing as a container, behind your existing HTTPS reverse proxy.
+#
+# Quick start (from this directory):
+#   docker compose up -d
+#   docker compose logs idlerthing | grep 'admin password'   # first run only
+#
+# The port is published on 127.0.0.1 ONLY, exactly like the systemd unit's
+# default listen address: a reverse proxy on the host (Caddy, nginx, …)
+# terminates TLS and forwards to 127.0.0.1:8080. That is why
+# IDLER_BEHIND_TLS_PROXY is on — the proxy's X-Forwarded-For is the only way
+# idlerthing learns the real client address (a published port otherwise shows
+# every client as the Docker gateway), and binding to loopback is what makes
+# trusting that header safe. See the README's Docker section for running
+# without a proxy.
+
+services:
+  idlerthing:
+    # Pin a release (e.g. :0.6.0) for controlled upgrades. To run a local
+    # build instead: `make docker`, then IDLERTHING_IMAGE=idlerthing:local.
+    image: ${IDLERTHING_IMAGE:-ghcr.io/alteredparadox/idlerthing:latest}
+    container_name: idlerthing
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      IDLER_BEHIND_TLS_PROXY: "1"
+      # The external URL shown in the YABS ingest command. Set it so the
+      # command never depends on the request's Host header.
+      # IDLER_BASE_URL: https://idlers.example.com
+    # Optional secrets (IDLER_ADMIN_PASSWORD for first-run seeding,
+    # IDLER_SECRET) go in idlerthing.env beside this file, mode 0600.
+    env_file:
+      - path: ./idlerthing.env
+        required: false
+    # Stable identity in the host journal, so host fail2ban can match on it
+    # (SYSLOG_IDENTIFIER=idlerthing is what the shared filter expects).
+    logging:
+      driver: journald
+      options:
+        tag: idlerthing
+    # Hardening: the app runs as uid 10001, needs no Linux capabilities (the
+    # ping tool uses unprivileged ICMP sockets, which Docker permits by
+    # default) and never escalates. Read-only root + tmpfs /tmp leave only the
+    # data volume writable.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    # Parity with the systemd unit: the image sets GOMEMLIMIT=64MiB (soft);
+    # this is the hard ceiling that contains a runaway. Raise both together.
+    mem_limit: 128m
+    pids_limit: 256
+    volumes:
+      # SQLite database (+ -wal/-shm) and the generated YABS secret.
+      - idlerthing_data:/var/lib/idlerthing
+
+volumes:
+  idlerthing_data:

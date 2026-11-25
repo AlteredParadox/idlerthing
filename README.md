@@ -74,6 +74,60 @@ relative to the unit's `WorkingDirectory`). See the comments in the unit file
 for memory limits, hardening notes, and the `CAP_NET_RAW` caveat for the
 in-app ping tool.
 
+## Docker
+
+Each release also publishes a multi-arch (`linux/amd64`, `linux/arm64`) image
+to `ghcr.io/alteredparadox/idlerthing`, tagged `X.Y.Z`, `X.Y` and `latest`. It
+is the same static binary on Alpine. It runs as uid 10001 and keeps the
+database and the generated YABS secret in the `/var/lib/idlerthing` volume.
+
+[`deploy/docker/docker-compose.yml`](deploy/docker/docker-compose.yml) runs it
+hardened: a read-only root, no capabilities and `no-new-privileges`. The port is
+published on `127.0.0.1:8080` only, for a reverse proxy on the host to front:
+
+```sh
+cd deploy/docker
+docker compose up -d
+docker compose logs idlerthing | grep 'admin password'   # first run only
+```
+
+The image sets `IDLER_ADDR=0.0.0.0:8080` (inside the container) and
+`IDLER_DB=/var/lib/idlerthing/data/idlerthing.db`. Other variables from
+[Configuration](#configuration) go in the compose `environment:` block, or in
+an optional `deploy/docker/idlerthing.env` (mode 0600) for secrets such as
+`IDLER_ADMIN_PASSWORD`. The subcommands work through `exec`:
+
+```sh
+docker compose exec idlerthing idlerthing version
+echo 'new-password' | docker compose exec -T idlerthing idlerthing passwd
+docker compose cp backup.json idlerthing:/tmp/backup.json
+docker compose exec idlerthing idlerthing import /tmp/backup.json
+```
+
+Notes:
+
+- **Behind a proxy is the supported shape.** The compose file sets
+  `IDLER_BEHIND_TLS_PROXY=1`. A published port shows every client as the
+  Docker gateway, so the proxy's `X-Forwarded-For` is the only source of the
+  real address. Binding to loopback is what makes trusting that header safe.
+  To serve plain HTTP on a LAN without a proxy, publish the port on the LAN
+  address and remove `IDLER_BEHIND_TLS_PROXY`. Login rate limiting then sees
+  every client as one source, so don't expose that setup to the internet.
+- **The ping tool works** without `CAP_NET_RAW`. Docker allows unprivileged
+  ICMP sockets by default (`net.ipv4.ping_group_range`), unlike the hardened
+  systemd unit.
+- **fail2ban** stays on the host. The compose file logs to journald with
+  `tag: idlerthing`, which the shared filter matches unchanged. Install
+  [`deploy/docker/fail2ban-jail.local`](deploy/docker/fail2ban-jail.local) in
+  place of the systemd jail (`sudo fail2ban-regex -m CONTAINER_NAME=idlerthing
+  systemd-journal /etc/fail2ban/filter.d/idlerthing.conf` checks it). Its
+  comments cover the `DOCKER-USER` case for a publicly published port.
+- **Backups:** the `idlerthing_data` volume holds the whole state. Use the
+  export/import below, or stop the container and copy the volume.
+- **Build locally:** `make docker` builds `idlerthing:local`, stamped with
+  `git describe`. Run it with
+  `IDLERTHING_IMAGE=idlerthing:local docker compose up -d`.
+
 ## Banning brute-force logins (fail2ban)
 
 idlerthing logs authentication events to stderr — the systemd journal — in a

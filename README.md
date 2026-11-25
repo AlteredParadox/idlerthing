@@ -99,7 +99,8 @@ an optional `deploy/docker/idlerthing.env` (mode 0600) for secrets such as
 
 ```sh
 docker compose exec idlerthing idlerthing version
-echo 'new-password' | docker compose exec -T idlerthing idlerthing passwd
+docker compose exec idlerthing idlerthing passwd     # generates and prints a new password
+docker compose exec -T idlerthing idlerthing passwd < password.txt   # or supply your own
 docker compose exec -T idlerthing idlerthing import /dev/stdin < backup.json
 ```
 
@@ -109,12 +110,14 @@ container fails, because the root filesystem is read-only.
 Notes:
 
 - **Behind a proxy is the supported shape.** The compose file sets
-  `IDLER_BEHIND_TLS_PROXY=1`. A published port shows every client as the
-  Docker gateway, so the proxy's `X-Forwarded-For` is the only source of the
-  real address. Binding to loopback is what makes trusting that header safe.
-  To serve plain HTTP on a LAN without a proxy, publish the port on the LAN
-  address and remove `IDLER_BEHIND_TLS_PROXY`. Login rate limiting then sees
-  every client as one source, so don't expose that setup to the internet.
+  `IDLER_BEHIND_TLS_PROXY=1`. The host proxy's connections to
+  `127.0.0.1:8080` arrive from the Docker gateway address, so the proxy's
+  `X-Forwarded-For` is the only source of the real client address. Binding to
+  loopback is what makes trusting that header safe, because nothing else can
+  connect. To serve plain HTTP on a LAN without a proxy, publish the port on
+  the LAN address and **remove** `IDLER_BEHIND_TLS_PROXY`. Otherwise any
+  client could forge the header, and session cookies would be `Secure`-only
+  over HTTP.
 - **The ping tool works** without `CAP_NET_RAW`. Docker allows unprivileged
   ICMP sockets by default (`net.ipv4.ping_group_range`), unlike the hardened
   systemd unit.
@@ -124,6 +127,8 @@ Notes:
   place of the systemd jail (`sudo fail2ban-regex -m CONTAINER_NAME=idlerthing
   systemd-journal /etc/fail2ban/filter.d/idlerthing.conf` checks it). Its
   comments cover the `DOCKER-USER` case for a publicly published port.
+  On a host without journald (Docker Desktop, non-systemd distros), delete the
+  compose `logging:` block, because the container won't start with it.
 - **Backups:** the `idlerthing_data` volume holds the whole state. Use the
   export/import below, or stop the container and copy the volume.
 - **Package visibility:** the release workflow checks that each image tag is

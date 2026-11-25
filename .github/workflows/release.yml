@@ -153,8 +153,9 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       # VERSION is the tag (vX.Y.Z), the same string the release binaries
-      # report. Taken from the metadata output rather than interpolating the
-      # ref into a shell, so a crafted ref name cannot inject commands.
+      # report and the ref /source pins to. It is passed as a build-arg value,
+      # never interpolated into a shell, so a crafted ref cannot inject
+      # commands.
       - name: Build and push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -184,12 +185,12 @@ jobs:
           TAG: ${{ steps.meta.outputs.version }}
         run: |
           for attempt in 1 2 3 4 5; do
-            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token)
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token) || token=
             code=$(curl -sS -o /dev/null -w '%{http_code}' \
               -H "Authorization: Bearer ${token}" \
               -H 'Accept: application/vnd.oci.image.index.v1+json' \
               -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-              "https://ghcr.io/v2/${REPO}/manifests/${TAG}")
+              "https://ghcr.io/v2/${REPO}/manifests/${TAG}") || code=000
             if [ "$code" = 200 ]; then
               echo "ghcr.io/${REPO}:${TAG} is publicly pullable"
               exit 0

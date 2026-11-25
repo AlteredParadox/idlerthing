@@ -35,9 +35,10 @@ RUN go mod download
 COPY main.go notices.go LICENSE THIRD_PARTY_LICENSES.md ./
 COPY internal/ ./internal/
 # TARGETOS/TARGETARCH are set by buildx (and default to the host on a plain
-# `docker build`). VERSION is what `idlerthing version` reports; an unstamped
-# build says "docker" so it is never mistaken for a release.
-ARG TARGETOS TARGETARCH VERSION=docker
+# `docker build`). VERSION is what `idlerthing version` reports, and /source
+# pins its AGPL offer to /tree/<VERSION> for anything but "dev" — so an
+# unstamped build must stay "dev" rather than claim a tag that doesn't exist.
+ARG TARGETOS TARGETARCH VERSION=dev
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/idlerthing .

@@ -100,9 +100,11 @@ an optional `deploy/docker/idlerthing.env` (mode 0600) for secrets such as
 ```sh
 docker compose exec idlerthing idlerthing version
 echo 'new-password' | docker compose exec -T idlerthing idlerthing passwd
-docker compose cp backup.json idlerthing:/tmp/backup.json
-docker compose exec idlerthing idlerthing import /tmp/backup.json
+docker compose exec -T idlerthing idlerthing import /dev/stdin < backup.json
 ```
+
+`import` reads the backup from standard input. `docker compose cp` into the
+container fails, because the root filesystem is read-only.
 
 Notes:
 
@@ -124,6 +126,11 @@ Notes:
   comments cover the `DOCKER-USER` case for a publicly published port.
 - **Backups:** the `idlerthing_data` volume holds the whole state. Use the
   export/import below, or stop the container and copy the volume.
+- **Package visibility:** the release workflow checks that each image tag is
+  anonymously pullable before it cuts the Release. If GHCR ever creates the
+  package as private, the run stops there. Set the package to public once
+  (package settings → Change visibility), then re-run the failed jobs. The
+  re-push is idempotent.
 - **Build locally:** `make docker` builds `idlerthing:local`, stamped with
   `git describe`. Run it with
   `IDLERTHING_IMAGE=idlerthing:local docker compose up -d`.

@@ -171,6 +171,35 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The README and the Release notes promise an anonymous `docker pull`,
+      # and GitHub documents new packages as private by default. Linking via
+      # the OCI source label has made sibling packages public, but nothing
+      # here can set visibility, so verify it: fetch the exact tag's manifest
+      # with an anonymous token. On failure the Release is not cut. Make the
+      # package public (package settings -> Change visibility), then re-run
+      # the failed jobs; the push above is idempotent.
+      - name: Verify the image is anonymously pullable
+        env:
+          REPO: alteredparadox/idlerthing
+          TAG: ${{ steps.meta.outputs.version }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token)
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/${REPO}/manifests/${TAG}")
+            if [ "$code" = 200 ]; then
+              echo "ghcr.io/${REPO}:${TAG} is publicly pullable"
+              exit 0
+            fi
+            echo "attempt ${attempt}: anonymous manifest fetch returned HTTP ${code}"
+            sleep 10
+          done
+          echo "::error::ghcr.io/${REPO}:${TAG} is not anonymously pullable. Make the package public, then re-run the failed jobs."
+          exit 1
+
   # Tag PUSH only: this is the ONLY job granted contents: write. Requiring
   # event_name == 'push' keeps a manual dispatch — which can target a tag —
   # out of the publishing path entirely.

@@ -243,3 +243,27 @@ func TestAPIServerKeepDefaultsAndInitialValidation(t *testing.T) {
 		t.Fatal("initial price without pricing must be rejected")
 	}
 }
+
+// A descending sort on a COALESCE expression must keep the function's
+// argument comma intact (it used to render COALESCE(a DESC, b) DESC → 500).
+func TestServerInitialPriceSortDesc(t *testing.T) {
+	ts, _ := newTestServer(t)
+	client := authedClient(t, ts)
+	createFullServer(t, client, ts, "desc-free", url.Values{"initial_free": {"on"}})
+	createFullServer(t, client, ts, "desc-own", url.Values{"initial_price": {"30"}})
+	for _, dir := range []string{"desc", "asc"} {
+		resp, err := client.Get(ts.URL + "/servers?sort=initial_price&dir=" + dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := readBody(t, resp)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d", dir, resp.StatusCode)
+		}
+		own, free := strings.Index(body, "desc-own"), strings.Index(body, "desc-free")
+		if (dir == "desc") != (own < free) {
+			t.Fatalf("%s: wrong order own=%d free=%d", dir, own, free)
+		}
+	}
+}

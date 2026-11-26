@@ -149,11 +149,45 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	if err := imp.run(ctx, doc); err != nil {
 		return nil, err
 	}
+	if err := imp.clearOrphanInitialPrices(ctx); err != nil {
+		return nil, err
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return nil, err
 	}
 	committed = true
 	return &imp.sum, nil
+}
+
+// clearOrphanInitialPrices drops a positive initial price (and its term) from
+// imported servers that ended up with no active pricing: the amount takes its
+// currency from that row, so without one it would display as an invented
+// USD price. The form and API reject the same state. Runs after every
+// pricing source (inline and top-level) is in, and only touches servers this
+// import created. A free (0) initial price needs no currency and is kept.
+func (imp *importer) clearOrphanInitialPrices(ctx context.Context) error {
+	for _, newID := range imp.newServers {
+		var host string
+		err := imp.tx.QueryRowContext(ctx, `
+			SELECT hostname FROM servers s
+			WHERE s.id = ? AND s.initial_price > 0 AND NOT EXISTS (
+				SELECT 1 FROM pricings p
+				WHERE p.service_type = ? AND p.service_id = s.id AND p.active = 1)`,
+			newID, model.ServiceServer).Scan(&host)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := imp.tx.ExecContext(ctx,
+			"UPDATE servers SET initial_price = NULL, initial_term = NULL WHERE id = ?", newID); err != nil {
+			return err
+		}
+		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
+			"server %q: initial price dropped — it has no pricing to take a currency from", host))
+	}
+	return nil
 }
 
 // dbtx is satisfied by *sql.Conn (manual BEGIN IMMEDIATE) and *sql.Tx.
@@ -172,6 +206,8 @@ type importer struct {
 	idMaps  [7]map[int64]int64
 	catMaps map[string]map[int64]int64 // catalog kind → old id → new id
 	seenIPs map[string]bool
+	// newServers lists every server row this import created, in order.
+	newServers []int64
 }
 
 func (imp *importer) run(ctx context.Context, doc map[string]any) error {
@@ -801,6 +837,7 @@ func (imp *importer) importServer(ctx context.Context, it, s map[string]any) err
 	if old := oldID(s); old > 0 {
 		imp.idMaps[1][old] = newID
 	}
+	imp.newServers = append(imp.newServers, newID)
 	imp.sum.Servers++
 	if err := imp.fixTimestamps(ctx, "servers", newID, s); err != nil {
 		return err

@@ -325,11 +325,33 @@ func orderClause(expr, dir string) string {
 	if dir != "desc" {
 		return expr
 	}
-	parts := strings.Split(expr, ", ")
+	parts := splitTopLevel(expr)
 	for i, p := range parts {
 		parts[i] = p + " DESC"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// splitTopLevel splits a sort expression on the ", " between its
+// components, leaving commas inside parentheses (function arguments such as
+// COALESCE(a, b)) alone.
+func splitTopLevel(expr string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(expr[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, strings.TrimSpace(expr[start:]))
 }
 
 // List returns filtered/sorted servers with joined catalog names, disk

@@ -116,6 +116,17 @@ func TestUpdateFieldsPartial(t *testing.T) {
 		t.Fatalf("failed update must roll back: %+v", s)
 	}
 
+	// An unlisted currency is accepted only as the stored value.
+	if err := st.UpdateFields(ctx, &Server{ID: id, Hostname: "pf2", ServerType: TypeKVM, InitialCurrency: ns("CHF")}, nil, usd,
+		ServerFieldsSet{InitialCurrency: true, InitialCurrencyStoredOnly: true}); err != nil {
+		t.Fatalf("stored CHF back: %v", err)
+	}
+	err = st.UpdateFields(ctx, &Server{ID: id, Hostname: "pf2", ServerType: TypeKVM, InitialCurrency: ns("SEK")}, nil, usd,
+		ServerFieldsSet{InitialCurrency: true, InitialCurrencyStoredOnly: true})
+	if !errors.Is(err, ErrInitialCurrencyUnlisted) {
+		t.Fatalf("new unlisted currency: %v", err)
+	}
+
 	// Missing server.
 	if err := st.UpdateFields(ctx, &Server{ID: 999, Hostname: "x", ServerType: TypeKVM}, nil, nil, ServerFieldsSet{}); err != sql.ErrNoRows {
 		t.Fatalf("missing server: %v", err)

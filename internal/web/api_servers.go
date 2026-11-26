@@ -62,6 +62,9 @@ type serverJSON struct {
 	// present records which top-level keys the body carried (null counts),
 	// so an update can tell "omitted" from "cleared".
 	present map[string]bool
+	// unlistedCurrency marks a well-formed initial_currency outside the
+	// supported list, acceptable only as the server's stored value.
+	unlistedCurrency bool
 }
 
 // fieldsSet reports which of keep / initial_price / initial_term /
@@ -74,7 +77,24 @@ func (j *serverJSON) fieldsSet() model.ServerFieldsSet {
 		InitialPrice:    j.present["initial_price"],
 		InitialTerm:     j.present["initial_term"],
 		InitialCurrency: j.present["initial_currency"],
+		// Only the stored value may come back unlisted.
+		InitialCurrencyStoredOnly: j.unlistedCurrency,
 	}
+}
+
+var unlistedCurrencyMsg = "initial_currency must be one of " + strings.Join(currencies, ", ")
+
+// wellFormedCurrency reports a three-letter uppercase code.
+func wellFormedCurrency(c string) bool {
+	if len(c) != 3 {
+		return false
+	}
+	for _, r := range c {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 type diskJSON struct {
@@ -145,8 +165,17 @@ func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
 		}
 	}
 	if j.InitialCurrency != nil {
-		if srv.InitialCurrency = knownCurrency(*j.InitialCurrency); !srv.InitialCurrency.Valid {
-			errs["initial_currency"] = "initial_currency must be one of " + strings.Join(currencies, ", ")
+		srv.InitialCurrency = knownCurrency(*j.InitialCurrency)
+		if !srv.InitialCurrency.Valid {
+			if !wellFormedCurrency(*j.InitialCurrency) {
+				errs["initial_currency"] = unlistedCurrencyMsg
+			} else {
+				// Possibly the stored value (e.g. an imported CHF) sent back
+				// by a read-modify-write client: the store accepts it only
+				// if it matches, checked inside its write transaction.
+				srv.InitialCurrency = sql.NullString{String: *j.InitialCurrency, Valid: true}
+				j.unlistedCurrency = true
+			}
 		}
 	}
 	if j.InitialPrice != nil {
@@ -393,6 +422,9 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv, disks, pricing, errs := j.toModel()
+	if j.unlistedCurrency { // a new server has no stored value to match
+		errs["initial_currency"] = unlistedCurrencyMsg
+	}
 	if err := s.checkCatalogRefs(r.Context(), srv, errs); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
@@ -445,6 +477,10 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if errors.Is(err, model.ErrInitialNoCurrency) {
 		writeInitialCurrencyError(w)
+		return
+	} else if errors.Is(err, model.ErrInitialCurrencyUnlisted) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "validation failed",
+			"fields": map[string]string{"initial_currency": unlistedCurrencyMsg}})
 		return
 	} else if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)

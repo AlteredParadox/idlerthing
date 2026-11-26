@@ -280,14 +280,19 @@ func TestAPIServerKeepDefaultsAndInitialValidation(t *testing.T) {
 		t.Fatal("negative initial price must be rejected")
 	}
 	five := 5.0
-	eur, bad := "EUR", "XYZ"
+	eur, unlisted, malformed := "EUR", "XYZ", "eu"
 	j = &serverJSON{Hostname: "api-04", InitialPrice: &five, InitialCurrency: &eur}
-	if srv, _, _, errs := j.toModel(); len(errs) != 0 || srv.InitialCurrency.String != "EUR" {
+	if srv, _, _, errs := j.toModel(); len(errs) != 0 || srv.InitialCurrency.String != "EUR" || j.unlistedCurrency {
 		t.Fatalf("initial price with its own currency should pass: %v", errs)
 	}
-	j = &serverJSON{Hostname: "api-05", InitialPrice: &five, InitialCurrency: &bad}
+	// A well-formed unlisted code is deferred to the store (stored-only).
+	j = &serverJSON{Hostname: "api-05", InitialPrice: &five, InitialCurrency: &unlisted}
+	if _, _, _, errs := j.toModel(); len(errs) != 0 || !j.unlistedCurrency || !j.fieldsSet().InitialCurrencyStoredOnly {
+		t.Fatalf("unlisted code should be marked stored-only: %v", errs)
+	}
+	j = &serverJSON{Hostname: "api-06", InitialPrice: &five, InitialCurrency: &malformed}
 	if _, _, _, errs := j.toModel(); errs["initial_currency"] == "" {
-		t.Fatal("unknown initial currency must be rejected")
+		t.Fatal("malformed initial currency must be rejected")
 	}
 }
 
@@ -421,6 +426,46 @@ func TestAPIServerPutKeepsImportedCurrency(t *testing.T) {
 	}
 	if got := serverByHost(t, st, "chf-01"); got.InitialCurrency.String != "CHF" || got.InitialPrice.Float64 != 40 {
 		t.Fatalf("imported initial price changed: %+v", got)
+	}
+
+	put := func(body string) int {
+		t.Helper()
+		req, _ := http.NewRequest("PUT", ts.URL+"/api/servers/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	// Read-modify-write: the stored CHF sent back unchanged is accepted.
+	if c := put(`{"hostname": "chf-02", "server_type": 1, "initial_price": 40, "initial_term": 4, "initial_currency": "CHF"}`); c != http.StatusOK {
+		t.Fatalf("round-tripped CHF: %d", c)
+	}
+	if got := serverByHost(t, st, "chf-02"); got.InitialCurrency.String != "CHF" {
+		t.Fatalf("CHF lost on round trip: %+v", got)
+	}
+	// A different unlisted code, or a malformed one, is not.
+	for _, cur := range []string{"SEK", "chf"} {
+		if c := put(`{"hostname": "chf-02", "server_type": 1, "initial_price": 40, "initial_currency": "` + cur + `"}`); c != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: %d", cur, c)
+		}
+	}
+	if got := serverByHost(t, st, "chf-02"); got.InitialCurrency.String != "CHF" {
+		t.Fatalf("rejected PUT changed the currency: %+v", got)
+	}
+	// A new server can't start with an unlisted code.
+	req, _ = http.NewRequest("POST", ts.URL+"/api/servers",
+		strings.NewReader(`{"hostname": "chf-new", "initial_price": 1, "initial_currency": "CHF"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("POST unlisted currency: %d", resp.StatusCode)
 	}
 }
 

@@ -175,7 +175,15 @@ func normalizeInitial(s *Server, p *Pricing) error {
 // overwritten with a stale copy.
 type ServerFieldsSet struct {
 	Keep, InitialPrice, InitialTerm, InitialCurrency bool
+	// InitialCurrencyStoredOnly accepts the supplied initial currency only
+	// if it equals the stored one (a code outside the supported list, e.g.
+	// from an import, sent back unchanged by a read-modify-write client).
+	InitialCurrencyStoredOnly bool
 }
+
+// ErrInitialCurrencyUnlisted rejects a new initial currency outside the
+// supported list (see ServerFieldsSet.InitialCurrencyStoredOnly).
+var ErrInitialCurrencyUnlisted = errors.New("initial currency not supported")
 
 // AllServerFields marks every field as supplied (a full replacement).
 var AllServerFields = ServerFieldsSet{Keep: true, InitialPrice: true, InitialTerm: true, InitialCurrency: true}
@@ -288,7 +296,7 @@ func (st *ServerStore) UpdateFields(ctx context.Context, s *Server, disks []Serv
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
 	}
-	if set != AllServerFields {
+	if set != AllServerFields || set.InitialCurrencyStoredOnly {
 		var keep int
 		var cur Server
 		if err := tx.QueryRowContext(ctx,
@@ -307,6 +315,9 @@ func (st *ServerStore) UpdateFields(ctx context.Context, s *Server, disks []Serv
 		}
 		if !set.InitialCurrency {
 			s.InitialCurrency = cur.InitialCurrency
+		}
+		if set.InitialCurrencyStoredOnly && s.InitialCurrency != cur.InitialCurrency {
+			return ErrInitialCurrencyUnlisted
 		}
 	}
 	if err := normalizeInitial(s, pricing); err != nil {

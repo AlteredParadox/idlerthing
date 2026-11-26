@@ -182,8 +182,8 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	dueSoon := s.dueSoonDays(r)
 	metrics := s.liveMetrics(r)
 	rates, _ := s.rates.Get(r.Context())
-	if opts.Sort == "price_yr" {
-		sortByPriceYr(items, rates, opts.Dir)
+	if key, ok := costSortKeys[opts.Sort]; ok {
+		sortByCost(items, rates, opts.Dir, key)
 	}
 	for _, it := range items {
 		row := makeServerRow(it, dueSoon)
@@ -316,30 +316,106 @@ func priceYrDisplay(p *model.Pricing, rates map[string]float64) string {
 	return fmt.Sprintf("$%.2f/yr", monthly*12)
 }
 
-// sortByPriceYr orders servers by yearly USD cost. The value needs exchange
-// rates, so the store returns hostname order and this re-sorts stably; rows
-// without a yearly cost ("—": no pricing, one-time, unknown currency) stay
-// last in both directions.
-func sortByPriceYr(items []model.ServerListItem, rates map[string]float64, dir string) {
-	yearly := make(map[int64]float64, len(items))
-	for _, it := range items {
-		if it.Pricing == nil {
-			continue
+// Cost-sort tiers. Each tier keeps its place in both directions; only the
+// order inside a tier follows the chosen direction.
+const (
+	tierRecurring = iota // ordered by per-month USD; free counts as $0
+	tierOneTime          // ordered by the one-time USD amount
+	tierUnknown          // no price, or no exchange rate: always last
+)
+
+// costKey is where a row lands in a cost sort.
+type costKey struct {
+	tier int
+	usd  float64
+}
+
+// priceCostKey converts an amount in currency, billed every term, into a
+// sort key. rates may be nil (rates not fetched yet): then only USD and
+// free amounts can be placed, and the rest go to tierUnknown.
+func priceCostKey(price float64, term int, currency string, rates map[string]float64) costKey {
+	if price == 0 {
+		return costKey{tierRecurring, 0}
+	}
+	usd := price
+	if currency != "USD" {
+		rate, ok := rates[currency]
+		if !ok || rate <= 0 {
+			return costKey{tier: tierUnknown}
 		}
-		if m, ok := pricing.MonthlyUSDRaw(it.Pricing, rates); ok {
-			yearly[it.ID] = m * 12
-		}
+		usd = price / rate
+	}
+	months := model.TermMonths(term)
+	if months == 0 {
+		return costKey{tierOneTime, usd}
+	}
+	return costKey{tierRecurring, usd / float64(months)}
+}
+
+// pricingCostKey is the Price column's sort key.
+func pricingCostKey(it *model.ServerListItem, rates map[string]float64) costKey {
+	if it.Pricing == nil {
+		return costKey{tier: tierUnknown}
+	}
+	return priceCostKey(it.Pricing.Price, it.Pricing.Term, it.Pricing.Currency, rates)
+}
+
+// initialCostKey is the Initial Price column's sort key. It reads the same
+// fields, with the same defaults, as initialPriceDisplay, so a "—" cell
+// sorts last and "Free" sorts as $0.
+func initialCostKey(it *model.ServerListItem, rates map[string]float64) costKey {
+	if !it.InitialPrice.Valid {
+		return costKey{tier: tierUnknown}
+	}
+	currency := "USD"
+	if it.InitialCurrency.Valid {
+		currency = it.InitialCurrency.String
+	}
+	term := model.TermMonthly
+	if it.InitialTerm.Valid {
+		term = int(it.InitialTerm.Int64)
+	}
+	return priceCostKey(it.InitialPrice.Float64, term, currency, rates)
+}
+
+// priceYrCostKey is the Price/YR column's sort key: rows whose cell shows
+// "—" (no pricing, one-time, unknown currency) sort last.
+func priceYrCostKey(it *model.ServerListItem, rates map[string]float64) costKey {
+	if it.Pricing == nil {
+		return costKey{tier: tierUnknown}
+	}
+	m, ok := pricing.MonthlyUSDRaw(it.Pricing, rates)
+	if !ok {
+		return costKey{tier: tierUnknown}
+	}
+	return costKey{tierRecurring, m * 12}
+}
+
+// costSortKeys maps the list's cost columns to their sort keys. These
+// need exchange rates, which live in memory, so the store's SQL order is
+// re-sorted here.
+var costSortKeys = map[string]func(*model.ServerListItem, map[string]float64) costKey{
+	"price":         pricingCostKey,
+	"initial_price": initialCostKey,
+	"price_yr":      priceYrCostKey,
+}
+
+// sortByCost re-sorts items stably by key, normalized to USD.
+func sortByCost(items []model.ServerListItem, rates map[string]float64, dir string,
+	key func(*model.ServerListItem, map[string]float64) costKey) {
+	keys := make(map[int64]costKey, len(items))
+	for i := range items {
+		keys[items[i].ID] = key(&items[i], rates)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
-		a, aok := yearly[items[i].ID]
-		b, bok := yearly[items[j].ID]
-		if aok != bok {
-			return aok
+		a, b := keys[items[i].ID], keys[items[j].ID]
+		if a.tier != b.tier {
+			return a.tier < b.tier
 		}
 		if dir == "desc" {
-			return a > b
+			return a.usd > b.usd
 		}
-		return a < b
+		return a.usd < b.usd
 	})
 }
 

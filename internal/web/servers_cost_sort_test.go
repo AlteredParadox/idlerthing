@@ -18,6 +18,7 @@ package web
 
 import (
 	"database/sql"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
@@ -50,8 +51,8 @@ func TestSortByCostPrice(t *testing.T) {
 			costItem(2, "yearly-60", &model.Pricing{Currency: "USD", Price: 60, Term: model.TermAnnual}), // $5/mo
 			costItem(3, "monthly-10", &model.Pricing{Currency: "USD", Price: 10, Term: model.TermMonthly}),
 			costItem(4, "eur-3", &model.Pricing{Currency: "EUR", Price: 3, Term: model.TermMonthly}), // $6/mo
-			costItem(5, "once-100", &model.Pricing{Currency: "USD", Price: 100, Term: 99}),
-			costItem(6, "once-eur-20", &model.Pricing{Currency: "EUR", Price: 20, Term: 99}), // $40
+			costItem(5, "once-100", &model.Pricing{Currency: "USD", Price: 100, Term: model.TermOneTime}),
+			costItem(6, "once-eur-20", &model.Pricing{Currency: "EUR", Price: 20, Term: model.TermOneTime}), // $40
 			costItem(7, "chf-1", &model.Pricing{Currency: "CHF", Price: 1, Term: model.TermMonthly}),
 		}
 	}
@@ -96,7 +97,7 @@ func TestSortByCostInitialPrice(t *testing.T) {
 		withInitial(2, "monthly-10", 10, model.TermMonthly, "USD"),
 		withInitial(3, "free", 0, 0, ""),
 		withInitial(4, "yearly-eur-30", 30, model.TermAnnual, "EUR"), // $60/yr = $5/mo
-		withInitial(5, "once-50", 50, 99, "USD"),
+		withInitial(5, "once-50", 50, model.TermOneTime, "USD"),
 		withInitial(6, "defaults-7", 7, 0, ""), // shown as $7.00/mo
 	}
 	sortByCost(items, rates, "asc", initialCostKey)
@@ -127,7 +128,16 @@ func TestServerPriceSortByCost(t *testing.T) {
 		}
 		body := readBody(t, resp)
 		resp.Body.Close()
-		return []int{strings.Index(body, "pc-yearly"), strings.Index(body, "pc-monthly"), strings.Index(body, "pc-none")}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("sort=%s&dir=%s: status %d", sortKey, dir, resp.StatusCode)
+		}
+		pos := []int{strings.Index(body, "pc-yearly"), strings.Index(body, "pc-monthly"), strings.Index(body, "pc-none")}
+		for i, p := range pos {
+			if p < 0 {
+				t.Fatalf("sort=%s&dir=%s: row %d missing from the list", sortKey, dir, i)
+			}
+		}
+		return pos
 	}
 	for _, key := range []string{"price", "initial_price"} {
 		if o := order(key, "asc"); !(o[0] < o[1] && o[1] < o[2]) {

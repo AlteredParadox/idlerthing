@@ -19,6 +19,7 @@ package model
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -78,9 +79,18 @@ type Server struct {
 	HasYabs       bool
 	WasPromo      bool
 	Transferrable bool
-	OwnedSince    sql.NullString
-	CreatedAt     string
-	UpdatedAt     string
+	Keep          bool
+	// InitialPrice / InitialTerm / InitialCurrency record the first-purchase
+	// price; a 0 amount is free and carries no term or currency. Saving
+	// fills any blank part from the current pricing (normalizeInitial)
+	// so it stays frozen through later pricing changes. NULL amount remains
+	// only while the server has never had pricing.
+	InitialPrice    sql.NullFloat64
+	InitialTerm     sql.NullInt64
+	InitialCurrency sql.NullString
+	OwnedSince      sql.NullString
+	CreatedAt       string
+	UpdatedAt       string
 }
 
 // ServerDisk mirrors the server_disks table.
@@ -99,7 +109,8 @@ type ServerStore struct {
 const serverColumns = `id, hostname, server_type, os_id, provider_id, location_id,
 	ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
 	ssh_port, active, show_public, has_yabs, was_promo, transferrable,
-	owned_since, created_at, updated_at`
+	keep, initial_price, initial_term, initial_currency, owned_since,
+	created_at, updated_at`
 
 // listColumns is serverColumns with each column prefixed "s." for the
 // joined list query, where bare names would be ambiguous.
@@ -107,11 +118,12 @@ var listColumns = prefixedColumns("s", serverColumns)
 
 func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	var s Server
-	var active, showPublic, hasYabs, wasPromo, transferrable int
+	var active, showPublic, hasYabs, wasPromo, transferrable, keep int
 	err := row.Scan(&s.ID, &s.Hostname, &s.ServerType, &s.OsID, &s.ProviderID,
 		&s.LocationID, &s.RamAsMB, &s.CPU, &s.CPUModel, &s.BandwidthAsMB, &s.LinkSpeed,
 		&s.NetworkType, &s.Ns1, &s.Ns2, &s.SSHPort, &active, &showPublic, &hasYabs,
-		&wasPromo, &transferrable, &s.OwnedSince, &s.CreatedAt, &s.UpdatedAt)
+		&wasPromo, &transferrable, &keep, &s.InitialPrice, &s.InitialTerm,
+		&s.InitialCurrency, &s.OwnedSince, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -120,11 +132,67 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	s.HasYabs = hasYabs != 0
 	s.WasPromo = wasPromo != 0
 	s.Transferrable = transferrable != 0
+	s.Keep = keep != 0
 	return &s, nil
 }
 
+// ErrInitialNoCurrency rejects a positive initial price that has no
+// currency of its own and no pricing to copy one from.
+var ErrInitialNoCurrency = errors.New("initial price has no currency")
+
+// normalizeInitial settles the initial price before a write. A free (0) one
+// carries no term or currency; a blank amount drops any term or currency so
+// the whole current price is copied; each remaining blank part is filled
+// from the current pricing, freezing what the server cost when first priced.
+func normalizeInitial(s *Server, p *Pricing) error {
+	switch {
+	case s.InitialPrice.Valid && s.InitialPrice.Float64 == 0:
+		s.InitialTerm, s.InitialCurrency = sql.NullInt64{}, sql.NullString{}
+		return nil
+	case !s.InitialPrice.Valid:
+		s.InitialTerm, s.InitialCurrency = sql.NullInt64{}, sql.NullString{}
+	}
+	if p != nil && p.Currency != "" {
+		if !s.InitialPrice.Valid {
+			s.InitialPrice = sql.NullFloat64{Float64: p.Price, Valid: true}
+		}
+		if !s.InitialTerm.Valid {
+			s.InitialTerm = sql.NullInt64{Int64: int64(p.Term), Valid: true}
+		}
+		if !s.InitialCurrency.Valid {
+			s.InitialCurrency = sql.NullString{String: p.Currency, Valid: true}
+		}
+	}
+	if s.InitialPrice.Valid && s.InitialPrice.Float64 > 0 && !s.InitialCurrency.Valid {
+		return ErrInitialNoCurrency
+	}
+	return nil
+}
+
+// ServerFieldsSet says which of the fields added after the API's first
+// release a write supplied. An unset field keeps its stored value; the
+// merge happens inside the write transaction so a concurrent edit can't be
+// overwritten with a stale copy.
+type ServerFieldsSet struct {
+	Keep, InitialPrice, InitialTerm, InitialCurrency bool
+	// InitialCurrencyStoredOnly accepts the supplied initial currency only
+	// if it equals the stored one (a code outside the supported list, e.g.
+	// from an import, sent back unchanged by a read-modify-write client).
+	InitialCurrencyStoredOnly bool
+}
+
+// ErrInitialCurrencyUnlisted rejects a new initial currency outside the
+// supported list (see ServerFieldsSet.InitialCurrencyStoredOnly).
+var ErrInitialCurrencyUnlisted = errors.New("initial currency not supported")
+
+// AllServerFields marks every field as supplied (a full replacement).
+var AllServerFields = ServerFieldsSet{Keep: true, InitialPrice: true, InitialTerm: true, InitialCurrency: true}
+
 // Create inserts a server plus its disks and optional pricing in one transaction.
 func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing) (int64, error) {
+	if err := normalizeInitial(s, pricing); err != nil {
+		return 0, err
+	}
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -134,12 +202,14 @@ func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
 			ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
-			ssh_port, active, show_public, was_promo, transferrable, owned_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_port, active, show_public, was_promo, transferrable, keep,
+			initial_price, initial_term, initial_currency, owned_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.Hostname, s.ServerType, s.OsID, s.ProviderID, s.LocationID,
 		s.RamAsMB, s.CPU, s.CPUModel, s.BandwidthAsMB, s.LinkSpeed, s.NetworkType,
 		s.Ns1, s.Ns2, s.SSHPort, boolToInt(s.Active), boolToInt(s.ShowPublic),
-		boolToInt(s.WasPromo), boolToInt(s.Transferrable), s.OwnedSince)
+		boolToInt(s.WasPromo), boolToInt(s.Transferrable), boolToInt(s.Keep),
+		s.InitialPrice, s.InitialTerm, s.InitialCurrency, s.OwnedSince)
 	if err != nil {
 		return 0, fmt.Errorf("insert server: %w", err)
 	}
@@ -196,6 +266,13 @@ func (st *ServerStore) Disks(ctx context.Context, serverID int64) ([]ServerDisk,
 
 // Update replaces a server's fields, disks, and pricing in one transaction.
 func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing) error {
+	return st.UpdateFields(ctx, s, disks, pricing, AllServerFields)
+}
+
+// UpdateFields is Update where the fields not marked in set keep their
+// stored values. The base UPDATE runs first so the transaction holds the
+// write lock before the stored values are read and merged.
+func (st *ServerStore) UpdateFields(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing, set ServerFieldsSet) error {
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -218,6 +295,39 @@ func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
+	}
+	if set != AllServerFields || set.InitialCurrencyStoredOnly {
+		var keep int
+		var cur Server
+		if err := tx.QueryRowContext(ctx,
+			"SELECT keep, initial_price, initial_term, initial_currency FROM servers WHERE id = ?", s.ID).
+			Scan(&keep, &cur.InitialPrice, &cur.InitialTerm, &cur.InitialCurrency); err != nil {
+			return err
+		}
+		if !set.Keep {
+			s.Keep = keep != 0
+		}
+		if !set.InitialPrice {
+			s.InitialPrice = cur.InitialPrice
+		}
+		if !set.InitialTerm {
+			s.InitialTerm = cur.InitialTerm
+		}
+		if !set.InitialCurrency {
+			s.InitialCurrency = cur.InitialCurrency
+		}
+		if set.InitialCurrencyStoredOnly && s.InitialCurrency != cur.InitialCurrency {
+			return ErrInitialCurrencyUnlisted
+		}
+	}
+	if err := normalizeInitial(s, pricing); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE servers SET keep = ?, initial_price = ?, initial_term = ?, initial_currency = ?
+		WHERE id = ?`,
+		boolToInt(s.Keep), s.InitialPrice, s.InitialTerm, s.InitialCurrency, s.ID); err != nil {
+		return fmt.Errorf("update server: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM server_disks WHERE server_id = ?", s.ID); err != nil {
@@ -297,6 +407,11 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	"provider": "prov_name COLLATE NOCASE",
 	"price":    "pr.price",
 	"due":      "pr.next_due_date",
+	// An initial price is NULL only on a never-priced server; free sorts as 0.
+	"initial_price": "COALESCE(s.initial_price, pr.price)",
+	"keep":          "s.keep",
+	// price_yr is absent on purpose: it needs exchange rates, so the web
+	// layer sorts it in Go (see SortByPriceYr there).
 }
 
 // orderClause applies dir to EVERY component of a whitelisted sort
@@ -308,11 +423,33 @@ func orderClause(expr, dir string) string {
 	if dir != "desc" {
 		return expr
 	}
-	parts := strings.Split(expr, ", ")
+	parts := splitTopLevel(expr)
 	for i, p := range parts {
 		parts[i] = p + " DESC"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// splitTopLevel splits a sort expression on the ", " between its
+// components, leaving commas inside parentheses (function arguments such as
+// COALESCE(a, b)) alone.
+func splitTopLevel(expr string) []string {
+	var parts []string
+	depth, start := 0, 0
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(expr[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, strings.TrimSpace(expr[start:]))
 }
 
 // List returns filtered/sorted servers with joined catalog names, disk
@@ -370,7 +507,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 	var out []ServerListItem
 	for rows.Next() {
 		var it ServerListItem
-		var active, showPublic, hasYabs, wasPromo, transferrable int
+		var active, showPublic, hasYabs, wasPromo, transferrable, keep int
 		var currency sql.NullString
 		var price sql.NullFloat64
 		var term sql.NullInt64
@@ -378,7 +515,8 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 		err := rows.Scan(&it.ID, &it.Hostname, &it.ServerType, &it.OsID, &it.ProviderID,
 			&it.LocationID, &it.RamAsMB, &it.CPU, &it.CPUModel, &it.BandwidthAsMB, &it.LinkSpeed,
 			&it.NetworkType, &it.Ns1, &it.Ns2, &it.SSHPort, &active, &showPublic, &hasYabs,
-			&wasPromo, &transferrable, &it.OwnedSince, &it.CreatedAt, &it.UpdatedAt,
+			&wasPromo, &transferrable, &keep, &it.InitialPrice, &it.InitialTerm,
+			&it.InitialCurrency, &it.OwnedSince, &it.CreatedAt, &it.UpdatedAt,
 			&it.OSName, &it.ProviderName, &it.LocationName, &it.DiskMB, &it.DiskMedia,
 			&currency, &price, &term, &due)
 		if err != nil {
@@ -389,6 +527,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 		it.HasYabs = hasYabs != 0
 		it.WasPromo = wasPromo != 0
 		it.Transferrable = transferrable != 0
+		it.Keep = keep != 0
 		if currency.Valid {
 			it.Pricing = &Pricing{
 				ServiceID:   it.ID,

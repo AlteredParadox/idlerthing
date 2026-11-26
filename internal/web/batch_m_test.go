@@ -99,6 +99,9 @@ func TestImportedInactivePricingHidden(t *testing.T) {
 	resp := postForm(t, client, ts, "/servers", url.Values{
 		"hostname": {"inactive-priced"}, "server_type": {"1"}, "active": {"on"},
 		"price": {"5"}, "currency": {"USD"}, "term": {"1"},
+		// Free, so the frozen initial price (which rightly outlives the
+		// pricing row) doesn't put "$5.00" on the page by itself.
+		"initial_free": {"on"},
 	})
 	resp.Body.Close()
 	resp, err = client.Get(ts.URL + "/servers/1")

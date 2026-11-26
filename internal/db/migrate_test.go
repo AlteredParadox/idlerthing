@@ -694,3 +694,59 @@ func TestMigration0016UnmeasuredNull(t *testing.T) {
 		t.Fatalf("averages over measured values: send=%v latency=%v read=%v write=%v", avgSend, avgLatency, avgRead, avgWrite)
 	}
 }
+
+// 0017 adds keep (on for existing servers) and backfills the initial price
+// from each server's ACTIVE pricing; unpriced servers and inactive (import
+// history) pricing leave it NULL.
+func TestMigration0017KeepAndInitialPriceBackfill(t *testing.T) {
+	db, err := Open(openTemp(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	migrateTo(t, db, 16)
+
+	for _, q := range []string{
+		"INSERT INTO servers (hostname, server_type, active) VALUES ('priced', 1, 1)",
+		"INSERT INTO servers (hostname, server_type, active) VALUES ('unpriced', 1, 1)",
+		"INSERT INTO servers (hostname, server_type, active) VALUES ('history', 1, 1)",
+		"INSERT INTO pricings (service_id, service_type, currency, price, term) VALUES (1, 1, 'EUR', 7.5, 4)",
+		"INSERT INTO pricings (service_id, service_type, currency, price, term, active) VALUES (3, 1, 'USD', 9, 1, 0)",
+		// A shared-hosting pricing with the same id must not leak in.
+		"INSERT INTO pricings (service_id, service_type, currency, price, term) VALUES (2, 2, 'GBP', 3, 1)",
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	applied, err := Migrate(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := appliedDiff(t, applied, 16); diff != "" {
+		t.Fatal(diff)
+	}
+
+	type row struct {
+		keep  int
+		price sql.NullFloat64
+		term  sql.NullInt64
+		cur   sql.NullString
+	}
+	get := func(host string) row {
+		var r row
+		if err := db.QueryRow("SELECT keep, initial_price, initial_term, initial_currency FROM servers WHERE hostname = ?", host).
+			Scan(&r.keep, &r.price, &r.term, &r.cur); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := get("priced"); r.keep != 1 || r.price.Float64 != 7.5 || r.term.Int64 != 4 || r.cur.String != "EUR" {
+		t.Fatalf("priced: %+v", r)
+	}
+	for _, host := range []string{"unpriced", "history"} {
+		if r := get(host); r.keep != 1 || r.price.Valid || r.term.Valid || r.cur.Valid {
+			t.Fatalf("%s: %+v", host, r)
+		}
+	}
+}

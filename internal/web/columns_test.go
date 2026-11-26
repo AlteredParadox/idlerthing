@@ -96,11 +96,11 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 
 	// Default: the five optional hardware/date columns are hidden.
 	body := get()
-	if !strings.Contains(body, "Columns 18/23") {
-		t.Fatal("chooser should read 18/23 by default")
+	if !strings.Contains(body, "Columns 20/25") {
+		t.Fatal("chooser should read 20/25 by default")
 	}
 	if strings.Contains(body, ">CPU Model<") || strings.Contains(body, ">Link Speed<") ||
-		strings.Contains(body, ">Price/YR (USD)<") || strings.Contains(body, ">Since<") ||
+		strings.Contains(body, "sort=price_yr") || strings.Contains(body, ">Since<") ||
 		strings.Contains(body, ">Uptime<") {
 		t.Fatal("new columns must be hidden by default")
 	}
@@ -122,8 +122,8 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 	if !strings.Contains(body, ">Link Speed<") || !strings.Contains(body, "1 Gbps") {
 		t.Fatal("link_speed column should appear with 1 Gbps")
 	}
-	if !strings.Contains(body, "Columns 14/23") {
-		t.Fatal("chooser count should update to 14/23")
+	if !strings.Contains(body, "Columns 14/25") {
+		t.Fatal("chooser count should update to 14/25")
 	}
 
 	// Persisted across requests (fresh GET already proved it; also hide os now).
@@ -138,10 +138,10 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 	// Unhide everything sticks.
 	applyCols(t, client, ts, allColKeys())
 	body = get()
-	if !strings.Contains(body, "Columns 23/23") {
-		t.Fatal("unhide-all should stick (23/23)")
+	if !strings.Contains(body, "Columns 25/25") {
+		t.Fatal("unhide-all should stick (25/25)")
 	}
-	for _, h := range []string{">Since<", ">Uptime<", ">Price/YR (USD)<"} {
+	for _, h := range []string{">Since<", ">Uptime<", "sort=price_yr", "sort=initial_price", "sort=keep"} {
 		if !strings.Contains(body, h) {
 			t.Fatalf("all columns enabled: missing %s", h)
 		}

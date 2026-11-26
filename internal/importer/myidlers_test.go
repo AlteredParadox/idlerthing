@@ -155,6 +155,18 @@ func TestMyJSONImport(t *testing.T) {
 		t.Fatalf("relations: %+v", sum)
 	}
 
+	// Every imported price is frozen as the initial price, as saving does.
+	var unfrozen int
+	if err := database.QueryRow(`
+		SELECT COUNT(*) FROM servers s JOIN pricings p ON p.service_type = 1 AND p.service_id = s.id
+		WHERE s.initial_price IS NOT p.price OR s.initial_term IS NOT p.term
+			OR s.initial_currency IS NOT p.currency`).Scan(&unfrozen); err != nil {
+		t.Fatal(err)
+	}
+	if unfrozen != 0 {
+		t.Fatalf("%d imported servers lack a frozen initial price", unfrozen)
+	}
+
 	// Full record spot-checks.
 	var ssh int64
 	var ram, bw any

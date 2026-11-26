@@ -27,6 +27,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $s.Active}}<span class="badge badge-ok">Active</span>{{else}}<span class="badge badge-off">Inactive</span>{{end}}
       {{if $s.WasPromo}}<span class="badge badge-warn">Promo</span>{{end}}
       {{if $s.Transferrable}}<span class="badge">Transferrable</span>{{end}}
+      {{if $s.Keep}}<span class="badge badge-ok">Keep</span>{{else}}<span class="badge badge-err">Not keeping</span>{{end}}
       {{if $s.ShowPublic}}<span class="badge">Public</span>{{end}}
     </div>
   </div>
@@ -78,6 +79,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <dt>Price</dt><dd class="mono">{{priceFmt $v.Pricing.Currency $v.Pricing.Price $v.Pricing.Term}}</dd>
       <dt>Term</dt><dd>{{termLabel $v.Pricing.Term}}</dd>
       <dt>Next due</dt><dd class="mono">{{if $v.Pricing.NextDueDate.Valid}}{{$v.Pricing.NextDueDate.String}}{{else}}—{{end}}</dd>
+      <dt>Initial price</dt><dd class="mono">{{$v.InitialPrice}}</dd>
+    </dl>
+    {{else if $s.InitialPrice.Valid}}
+    <dl class="kv">
+      <dt>Initial price</dt><dd class="mono">{{$v.InitialPrice}}</dd>
     </dl>
     {{else}}
     <div class="empty-sub">No pricing attached.</div>

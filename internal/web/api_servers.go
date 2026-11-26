@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,27 +33,68 @@ import (
 
 // serverJSON is the API DTO for servers (mirrors the web form fields).
 type serverJSON struct {
-	Hostname      string       `json:"hostname"`
-	ServerType    int          `json:"server_type"`
-	OsID          *int64       `json:"os_id"`
-	ProviderID    *int64       `json:"provider_id"`
-	LocationID    *int64       `json:"location_id"`
-	RamAsMB       *int64       `json:"ram_as_mb"`
-	CPU           *int64       `json:"cpu"`
-	CPUModel      string       `json:"cpu_model"`
-	BandwidthAsMB *int64       `json:"bandwidth_as_mb"`
-	LinkSpeed     *int64       `json:"link_speed"`
-	NetworkType   string       `json:"network_type"`
-	Ns1           string       `json:"ns1"`
-	Ns2           string       `json:"ns2"`
-	SSHPort       *int64       `json:"ssh_port"`
-	Active        *bool        `json:"active"`
-	ShowPublic    *bool        `json:"show_public"`
-	WasPromo      *bool        `json:"was_promo"`
-	Transferrable *bool        `json:"transferrable"`
-	OwnedSince    string       `json:"owned_since"`
-	Disks         []diskJSON   `json:"disks"`
-	Pricing       *pricingJSON `json:"pricing"`
+	Hostname        string       `json:"hostname"`
+	ServerType      int          `json:"server_type"`
+	OsID            *int64       `json:"os_id"`
+	ProviderID      *int64       `json:"provider_id"`
+	LocationID      *int64       `json:"location_id"`
+	RamAsMB         *int64       `json:"ram_as_mb"`
+	CPU             *int64       `json:"cpu"`
+	CPUModel        string       `json:"cpu_model"`
+	BandwidthAsMB   *int64       `json:"bandwidth_as_mb"`
+	LinkSpeed       *int64       `json:"link_speed"`
+	NetworkType     string       `json:"network_type"`
+	Ns1             string       `json:"ns1"`
+	Ns2             string       `json:"ns2"`
+	SSHPort         *int64       `json:"ssh_port"`
+	Active          *bool        `json:"active"`
+	ShowPublic      *bool        `json:"show_public"`
+	WasPromo        *bool        `json:"was_promo"`
+	Transferrable   *bool        `json:"transferrable"`
+	Keep            *bool        `json:"keep"`
+	InitialPrice    *float64     `json:"initial_price"`    // null = copy the price on save, 0 = free
+	InitialTerm     *int         `json:"initial_term"`     // null = copy the price's term
+	InitialCurrency *string      `json:"initial_currency"` // null = copy the price's currency
+	OwnedSince      string       `json:"owned_since"`
+	Disks           []diskJSON   `json:"disks"`
+	Pricing         *pricingJSON `json:"pricing"`
+
+	// present records which top-level keys the body carried (null counts),
+	// so an update can tell "omitted" from "cleared".
+	present map[string]bool
+	// unlistedCurrency marks a well-formed initial_currency outside the
+	// supported list, acceptable only as the server's stored value.
+	unlistedCurrency bool
+}
+
+// fieldsSet reports which of keep / initial_price / initial_term /
+// initial_currency the request carried (null counts as carried). On PUT the
+// store keeps the stored value of every other one, merged inside its write
+// transaction, so a client that predates them can't reset them.
+func (j *serverJSON) fieldsSet() model.ServerFieldsSet {
+	return model.ServerFieldsSet{
+		Keep:            j.present["keep"],
+		InitialPrice:    j.present["initial_price"],
+		InitialTerm:     j.present["initial_term"],
+		InitialCurrency: j.present["initial_currency"],
+		// Only the stored value may come back unlisted.
+		InitialCurrencyStoredOnly: j.unlistedCurrency,
+	}
+}
+
+var unlistedCurrencyMsg = "initial_currency must be one of " + strings.Join(currencies, ", ")
+
+// wellFormedCurrency reports a three-letter uppercase code.
+func wellFormedCurrency(c string) bool {
+	if len(c) != 3 {
+		return false
+	}
+	for _, r := range c {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 type diskJSON struct {
@@ -72,6 +114,7 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 	errs := map[string]string{}
 	srv := j.serverFields(errs)
 	j.checkBounds(errs)
+	j.initialToModel(srv, errs)
 	return srv, j.disksToModel(), j.pricingToModel(errs), errs
 }
 
@@ -92,6 +135,7 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 		ShowPublic:    j.ShowPublic != nil && *j.ShowPublic,
 		WasPromo:      j.WasPromo != nil && *j.WasPromo,
 		Transferrable: j.Transferrable != nil && *j.Transferrable,
+		Keep:          j.Keep == nil || *j.Keep, // default true
 	}
 	if srv.Hostname == "" {
 		errs["hostname"] = "hostname is required"
@@ -105,6 +149,49 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 	srv.Ns2 = nullStrIf(j.Ns2)
 	srv.OwnedSince = jsonDate(errs, "owned_since", j.OwnedSince)
 	return srv
+}
+
+// initialToModel maps and validates the initial-price fields the request
+// carried. Only explicit input is validated: a stored value merged in on PUT
+// (possibly an imported currency outside the dropdown) is history, kept as
+// is. Normalizing (free → no term or currency, blank → copy the price) and
+// the currency rule happen in the store, after that merge.
+func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
+	if j.InitialTerm != nil {
+		if *j.InitialTerm < model.TermMonthly || *j.InitialTerm > model.TermOneTime {
+			errs["initial_term"] = "initial_term must be between 1 and 7"
+		} else {
+			srv.InitialTerm = sql.NullInt64{Int64: int64(*j.InitialTerm), Valid: true}
+		}
+	}
+	if j.InitialCurrency != nil {
+		srv.InitialCurrency = knownCurrency(*j.InitialCurrency)
+		if !srv.InitialCurrency.Valid {
+			if !wellFormedCurrency(*j.InitialCurrency) {
+				errs["initial_currency"] = unlistedCurrencyMsg
+			} else {
+				// Possibly the stored value (e.g. an imported CHF) sent back
+				// by a read-modify-write client: the store accepts it only
+				// if it matches, checked inside its write transaction.
+				srv.InitialCurrency = sql.NullString{String: *j.InitialCurrency, Valid: true}
+				j.unlistedCurrency = true
+			}
+		}
+	}
+	if j.InitialPrice != nil {
+		if !validInitialPrice(*j.InitialPrice) {
+			errs["initial_price"] = "initial_price must be 0 (free) or a positive number"
+			return
+		}
+		srv.InitialPrice = sql.NullFloat64{Float64: *j.InitialPrice, Valid: true}
+	}
+}
+
+// writeInitialCurrencyError reports model.ErrInitialNoCurrency as a field
+// validation failure.
+func writeInitialCurrencyError(w http.ResponseWriter) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "validation failed",
+		"fields": map[string]string{"initial_price": "initial_price needs initial_currency, or pricing to copy it from"}})
 }
 
 // nullStrIf wraps a non-blank string as a valid NullString (trimmed, like
@@ -250,7 +337,7 @@ func ptrToRef(p *int64) sql.NullInt64 {
 // decodeServerJSON reads the request body as a serverJSON (1 MB cap).
 func decodeServerJSON(w http.ResponseWriter, r *http.Request) (*serverJSON, bool) {
 	var j serverJSON
-	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&j)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
@@ -259,6 +346,18 @@ func decodeServerJSON(w http.ResponseWriter, r *http.Request) (*serverJSON, bool
 			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
 		}
 		return nil, false
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(body, &j); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
+		return nil, false
+	}
+	// A body that decodes into the struct is an object (or null, which
+	// leaves keys nil and every field omitted).
+	_ = json.Unmarshal(body, &keys)
+	j.present = make(map[string]bool, len(keys))
+	for k := range keys {
+		j.present[k] = true
 	}
 	return &j, true
 }
@@ -323,6 +422,9 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv, disks, pricing, errs := j.toModel()
+	if j.unlistedCurrency { // a new server has no stored value to match
+		errs["initial_currency"] = unlistedCurrencyMsg
+	}
 	if err := s.checkCatalogRefs(r.Context(), srv, errs); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
@@ -332,6 +434,10 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.servers.Create(r.Context(), srv, disks, pricing)
+	if errors.Is(err, model.ErrInitialNoCurrency) {
+		writeInitialCurrencyError(w)
+		return
+	}
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
@@ -366,8 +472,15 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv.ID = id
-	if err := s.servers.Update(r.Context(), srv, disks, pricing); err == sql.ErrNoRows {
+	if err := s.servers.UpdateFields(r.Context(), srv, disks, pricing, j.fieldsSet()); err == sql.ErrNoRows {
 		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
+		return
+	} else if errors.Is(err, model.ErrInitialNoCurrency) {
+		writeInitialCurrencyError(w)
+		return
+	} else if errors.Is(err, model.ErrInitialCurrencyUnlisted) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "validation failed",
+			"fields": map[string]string{"initial_currency": unlistedCurrencyMsg}})
 		return
 	} else if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)

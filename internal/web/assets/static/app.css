@@ -438,6 +438,7 @@ input:focus {
 .badge-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
 .badge-off { color: var(--mut); }
 .badge-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.badge-err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
 .badge-net { color: var(--acc); border-color: color-mix(in srgb, var(--acc) 40%, transparent); }
 .badge-row {
   display: flex;

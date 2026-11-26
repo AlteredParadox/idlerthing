@@ -117,7 +117,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "location"}}<th class="{{$v.SortClass "location"}}"><a href="{{$v.SortLink "location"}}" hx-get="{{$v.SortLink "location"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Location <span class="arrow">{{$v.SortArrow "location"}}</span></a></th>{{end}}
       {{if $v.Col "provider"}}<th class="{{$v.SortClass "provider"}}"><a href="{{$v.SortLink "provider"}}" hx-get="{{$v.SortLink "provider"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Provider <span class="arrow">{{$v.SortArrow "provider"}}</span></a></th>{{end}}
       {{if $v.Col "price"}}<th class="{{$v.SortClass "price"}}"><a href="{{$v.SortLink "price"}}" hx-get="{{$v.SortLink "price"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Price <span class="arrow">{{$v.SortArrow "price"}}</span></a></th>{{end}}
-      {{if $v.Col "price_yr"}}<th>Price/YR (USD)</th>{{end}}
+      {{if $v.Col "price_yr"}}<th class="{{$v.SortClass "price_yr"}}"><a href="{{$v.SortLink "price_yr"}}" hx-get="{{$v.SortLink "price_yr"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Price/YR (USD) <span class="arrow">{{$v.SortArrow "price_yr"}}</span></a></th>{{end}}
+      {{if $v.Col "initial_price"}}<th class="{{$v.SortClass "initial_price"}}"><a href="{{$v.SortLink "initial_price"}}" hx-get="{{$v.SortLink "initial_price"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Initial Price <span class="arrow">{{$v.SortArrow "initial_price"}}</span></a></th>{{end}}
       {{if $v.Col "due"}}<th class="{{$v.SortClass "due"}}"><a href="{{$v.SortLink "due"}}" hx-get="{{$v.SortLink "due"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Due <span class="arrow">{{$v.SortArrow "due"}}</span></a></th>{{end}}
       {{if $v.Col "since"}}<th>Since</th>{{end}}
       {{if $v.Col "uptime"}}<th>Uptime</th>{{end}}
@@ -125,6 +126,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "promo"}}<th>Promo</th>{{end}}
       {{if $v.Col "public"}}<th>Public</th>{{end}}
       {{if $v.Col "transferable"}}<th>Transferable</th>{{end}}
+      {{if $v.Col "keep"}}<th class="{{$v.SortClass "keep"}}"><a href="{{$v.SortLink "keep"}}" hx-get="{{$v.SortLink "keep"}}" hx-target="#server-table-wrap" hx-swap="innerHTML" hx-push-url="true">Keep <span class="arrow">{{$v.SortArrow "keep"}}</span></a></th>{{end}}
       {{if $v.Col "labels"}}<th>Labels</th>{{end}}
       {{if $v.Col "notes"}}<th>Notes</th>{{end}}
       <th class="col-actions">Actions</th>
@@ -186,6 +188,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "price_yr"}}
       <td class="mono">{{.PriceYr}}</td>
       {{end}}
+{{if $v.Col "initial_price"}}      <td class="mono">{{.InitialPrice}}</td>{{end}}
 {{if $v.Col "due"}}      <td class="mono {{.DueClass}}">{{.Due}}</td>{{end}}
       {{if $v.Col "since"}}
       <td class="mono">{{.Since}}</td>
@@ -197,6 +200,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {{if $v.Col "promo"}}<td>{{template "server_flag" .Promo}}</td>{{end}}
       {{if $v.Col "public"}}<td>{{template "server_flag" .Public}}</td>{{end}}
       {{if $v.Col "transferable"}}<td>{{template "server_flag" .Transferable}}</td>{{end}}
+      {{if $v.Col "keep"}}<td>{{template "keep_flag" .Keep}}</td>{{end}}
       {{if $v.Col "labels"}}
       <td class="server-labels">{{range .Labels}}<span class="badge">{{.Name}}</span> {{else}}—{{end}}</td>
       {{end}}
@@ -238,5 +242,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </div>
 {{end}}
 {{end}}
+
+{{define "keep_flag"}}{{if .}}<span class="badge badge-ok">Yes</span>{{else}}<span class="badge badge-err">No</span>{{end}}{{end}}
 
 {{define "server_flag"}}{{if .}}<span class="badge badge-ok">Yes</span>{{else}}<span class="badge badge-off">No</span>{{end}}{{end}}

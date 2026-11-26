@@ -31,7 +31,8 @@ type colDef struct {
 // serverColumns lists all choosable columns in display order (Actions is
 // always last and not choosable). Order per spec:
 // Hostname, Type, OS, CPU, CPU Model, RAM, Disk, BW, Link Speed, Net,
-// Location, Provider, Price, Price/YR, Due, Since, Uptime, flags, Labels, Notes.
+// Location, Provider, Price, Price/YR, Initial Price, Due, Since, Uptime, flags
+// (Active, Promo, Public, Transferable, Keep), Labels, Notes.
 var serverColumns = []colDef{
 	{"hostname", "Hostname"},
 	{"type", "Type"},
@@ -47,6 +48,7 @@ var serverColumns = []colDef{
 	{"provider", "Provider"},
 	{"price", "Price"},
 	{"price_yr", "Price/YR (USD)"},
+	{"initial_price", "Initial Price"},
 	{"due", "Due"},
 	{"since", "Since"},
 	{"uptime", "Uptime"},
@@ -54,6 +56,7 @@ var serverColumns = []colDef{
 	{"promo", "Promo"},
 	{"public", "Public"},
 	{"transferable", "Transferable"},
+	{"keep", "Keep"},
 	{"labels", "Labels"},
 	{"notes", "Notes"},
 }

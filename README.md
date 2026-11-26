@@ -273,6 +273,10 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/servers
   (lists paginate with `?page=&per=`).
 - Write (servers only): `POST /api/servers`, `PUT /api/servers/{id}`,
   `DELETE /api/servers/{id}`.
+  `PUT` replaces the server, except `keep`, `initial_price`, `initial_term`
+  and `initial_currency`: when left out they keep their stored values, so
+  older clients don't reset them. A blank (`null`) initial price is filled
+  with the current price, term and currency on save, like the web form does.
 
 ## YABS ingest
 

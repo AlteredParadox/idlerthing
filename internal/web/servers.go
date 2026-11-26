@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +57,7 @@ type serverRow struct {
 	Promo         bool
 	Public        bool
 	Transferable  bool
+	Keep          bool
 	Labels        []model.CatalogItem
 	Notes         []string
 	NotesPreview  string
@@ -71,6 +73,7 @@ type serverRow struct {
 	Location      string
 	Provider      string
 	Price         string
+	InitialPrice  string
 	Due           string
 	DueClass      string // "", "due-warn", "due-over"
 	// Live prometheus data (nil/"" when unmatched or disabled).
@@ -179,6 +182,9 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	dueSoon := s.dueSoonDays(r)
 	metrics := s.liveMetrics(r)
 	rates, _ := s.rates.Get(r.Context())
+	if opts.Sort == "price_yr" {
+		sortByPriceYr(items, rates, opts.Dir)
+	}
 	for _, it := range items {
 		row := makeServerRow(it, dueSoon)
 		row.Labels = labels[it.ID]
@@ -253,6 +259,7 @@ func makeServerRow(it model.ServerListItem, dueSoonDays int) serverRow {
 		Promo:        it.WasPromo,
 		Public:       it.ShowPublic,
 		Transferable: it.Transferrable,
+		Keep:         it.Keep,
 		Type:         model.ServerTypeLabel(it.ServerType),
 		OS:           dash(it.OSName),
 		Provider:     dash(it.ProviderName),
@@ -293,6 +300,7 @@ func makeServerRow(it model.ServerListItem, dueSoonDays int) serverRow {
 		row.Price = "—"
 		row.Due = "—"
 	}
+	row.InitialPrice = initialPriceDisplay(&it.Server)
 	return row
 }
 
@@ -306,6 +314,33 @@ func priceYrDisplay(p *model.Pricing, rates map[string]float64) string {
 		return "—"
 	}
 	return fmt.Sprintf("$%.2f/yr", monthly*12)
+}
+
+// sortByPriceYr orders servers by yearly USD cost. The value needs exchange
+// rates, so the store returns hostname order and this re-sorts stably; rows
+// without a yearly cost ("—": no pricing, one-time, unknown currency) stay
+// last in both directions.
+func sortByPriceYr(items []model.ServerListItem, rates map[string]float64, dir string) {
+	yearly := make(map[int64]float64, len(items))
+	for _, it := range items {
+		if it.Pricing == nil {
+			continue
+		}
+		if m, ok := pricing.MonthlyUSDRaw(it.Pricing, rates); ok {
+			yearly[it.ID] = m * 12
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, aok := yearly[items[i].ID]
+		b, bok := yearly[items[j].ID]
+		if aok != bok {
+			return aok
+		}
+		if dir == "desc" {
+			return a > b
+		}
+		return a < b
+	})
 }
 
 func dash(s string) string {
@@ -384,16 +419,17 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 	// One live-metrics fetch for both the Live card and the LiveMon section.
 	metrics := s.liveMetrics(r)
 	view := serverDetailView{
-		Server:      srv,
-		Disks:       disks,
-		Pricing:     pricing,
-		OS:          names[0],
-		Provider:    names[1],
-		Location:    names[2],
-		TypeLabel:   model.ServerTypeLabel(srv.ServerType),
-		Extras:      extras,
-		Live:        s.buildLive(r, metrics, srv.Hostname),
-		YABSCommand: s.yabsCommand(r, srv.ID),
+		Server:       srv,
+		Disks:        disks,
+		Pricing:      pricing,
+		OS:           names[0],
+		Provider:     names[1],
+		Location:     names[2],
+		TypeLabel:    model.ServerTypeLabel(srv.ServerType),
+		Extras:       extras,
+		Live:         s.buildLive(r, metrics, srv.Hostname),
+		YABSCommand:  s.yabsCommand(r, srv.ID),
+		InitialPrice: initialPriceDisplay(srv),
 	}
 	if h := matchLive(metrics, srv.Hostname); h != nil {
 		view.LiveMon = s.liveMonEntry(r, h.Instance)
@@ -426,6 +462,7 @@ type serverDetailView struct {
 	Live         *liveView
 	LiveMon      *liveMonView
 	YABSCommand  string
+	InitialPrice string
 	YABSRuns     []yabsRow
 	LatestSingle string
 	LatestMulti  string
@@ -468,13 +505,16 @@ type serverFormView struct {
 	NetworkTypes []string
 	DiskMedia    []string
 	Errors       map[string]string
+	// ExtraCurrency is a stored initial currency outside Currencies (from
+	// an import), offered on the form so saving doesn't drop it.
+	ExtraCurrency string
 }
 
 // handleServerNew renders GET /servers/new.
 func (s *Server) handleServerNew(w http.ResponseWriter, r *http.Request) {
 	s.renderServerForm(w, r, serverFormView{
 		Action: routeServers,
-		Server: &model.Server{Active: true, ServerType: model.TypeKVM, SSHPort: sql.NullInt64{Int64: 22, Valid: true}},
+		Server: &model.Server{Active: true, Keep: true, ServerType: model.TypeKVM, SSHPort: sql.NullInt64{Int64: 22, Valid: true}},
 	})
 }
 
@@ -511,6 +551,9 @@ func (s *Server) renderServerForm(w http.ResponseWriter, r *http.Request, view s
 		view.OSes, _ = s.catalogs.List(r.Context(), model.Catalogs["os"])
 	}
 	view.Currencies = currencies
+	if c := view.Server.InitialCurrency; c.Valid && !knownCurrency(c.String).Valid {
+		view.ExtraCurrency = c.String
+	}
 	view.NetworkTypes = networkTypes
 	view.DiskMedia = diskMediaTypes
 
@@ -525,7 +568,7 @@ func (s *Server) renderServerForm(w http.ResponseWriter, r *http.Request, view s
 
 // handleServerCreate handles POST /servers.
 func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
-	srv, disks, pricing, errs := parseServerForm(r)
+	srv, disks, pricing, errs := parseServerForm(r, "")
 	if len(errs) > 0 {
 		s.renderServerForm(w, r, serverFormView{
 			Action: routeServers, Server: srv, Disks: disks, Pricing: pricing, Errors: errs,
@@ -549,7 +592,18 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	srv, disks, pricing, errs := parseServerForm(r)
+	// The stored initial currency may be one an import brought in that the
+	// dropdown doesn't list; the form offers it on edit, so accept it back.
+	cur, _, _, err := s.servers.Get(r.Context(), id)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return
+	}
+	srv, disks, pricing, errs := parseServerForm(r, cur.InitialCurrency.String)
 	srv.ID = id
 	if len(errs) > 0 {
 		s.renderServerForm(w, r, serverFormView{
@@ -598,7 +652,9 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 
 // parseServerForm parses + validates the server form. Returned errors are
 // keyed by field name for inline display.
-func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model.Pricing, map[string]string) {
+// storedCurrency is the server's current initial currency (edit only): it is
+// accepted back even when the dropdown wouldn't offer it for a new value.
+func parseServerForm(r *http.Request, storedCurrency string) (*model.Server, []model.ServerDisk, *model.Pricing, map[string]string) {
 	errs := map[string]string{}
 	srv := &model.Server{
 		Hostname:      strings.TrimSpace(r.FormValue("hostname")),
@@ -607,6 +663,7 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 		ShowPublic:    r.FormValue("show_public") != "",
 		WasPromo:      r.FormValue("was_promo") != "",
 		Transferrable: r.FormValue("transferrable") != "",
+		Keep:          r.FormValue("keep") != "",
 	}
 	if srv.Hostname == "" {
 		errs["hostname"] = "Hostname is required."
@@ -649,7 +706,92 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 	}
 
 	pricing := parsePricingForm(r, errs)
+	srv.InitialPrice, srv.InitialTerm, srv.InitialCurrency = parseInitialPriceForm(r, errs, storedCurrency)
+	checkInitialPrice(srv, pricing, errs)
 	return srv, disks, pricing, errs
+}
+
+// parseInitialPriceForm parses the optional initial-price fields. "Free"
+// wins over a typed amount and carries no term or currency. A blank part is
+// filled from the pricing on save (model.normalizeInitial); a blank
+// amount drops any chosen term and currency with it, so the whole price is
+// copied.
+func parseInitialPriceForm(r *http.Request, errs map[string]string, storedCurrency string) (sql.NullFloat64, sql.NullInt64, sql.NullString) {
+	none := func() (sql.NullFloat64, sql.NullInt64, sql.NullString) {
+		return sql.NullFloat64{}, sql.NullInt64{}, sql.NullString{}
+	}
+	if r.FormValue("initial_free") != "" {
+		return sql.NullFloat64{Float64: 0, Valid: true}, sql.NullInt64{}, sql.NullString{}
+	}
+	raw := strings.TrimSpace(r.FormValue("initial_price"))
+	if raw == "" {
+		return none()
+	}
+	price, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !validInitialPrice(price) {
+		errs["initial_price"] = "Initial price must be a number, 0 or more."
+		return none()
+	}
+	if price == 0 {
+		return sql.NullFloat64{Float64: 0, Valid: true}, sql.NullInt64{}, sql.NullString{}
+	}
+	term := sql.NullInt64{}
+	if t := intFormValue(r, "initial_term", 0); t >= model.TermMonthly && t <= model.TermOneTime {
+		term = sql.NullInt64{Int64: int64(t), Valid: true}
+	}
+	currency := knownCurrency(r.FormValue("initial_currency"))
+	if v := r.FormValue("initial_currency"); !currency.Valid && v != "" && v == storedCurrency {
+		currency = sql.NullString{String: v, Valid: true}
+	}
+	return sql.NullFloat64{Float64: price, Valid: true}, term, currency
+}
+
+// knownCurrency returns a supported currency code, or NULL ("same as the
+// price") for anything else.
+func knownCurrency(code string) sql.NullString {
+	for _, c := range currencies {
+		if code == c {
+			return sql.NullString{String: c, Valid: true}
+		}
+	}
+	return sql.NullString{}
+}
+
+// validInitialPrice is validPrice that also accepts 0 (free).
+func validInitialPrice(f float64) bool {
+	return f == 0 || validPrice(f)
+}
+
+// checkInitialPrice is the form's inline version of the store rule
+// (model.ErrInitialNoCurrency), which the API reports instead: a
+// non-free initial amount needs a currency, either its own or the price's
+// (which saving copies in).
+func checkInitialPrice(srv *model.Server, p *model.Pricing, errs map[string]string) {
+	if srv.InitialPrice.Valid && srv.InitialPrice.Float64 > 0 && !srv.InitialCurrency.Valid && p == nil {
+		if _, dup := errs["price"]; !dup {
+			errs["initial_price"] = "Pick an initial currency, or enter a price to copy it from."
+		}
+	}
+}
+
+// initialPriceDisplay renders the frozen initial price ("Free" or amount and
+// term in its own currency). A server that has never been priced has none.
+func initialPriceDisplay(srv *model.Server) string {
+	if !srv.InitialPrice.Valid {
+		return "—"
+	}
+	if srv.InitialPrice.Float64 == 0 {
+		return "Free"
+	}
+	currency := "USD"
+	if srv.InitialCurrency.Valid {
+		currency = srv.InitialCurrency.String
+	}
+	term := model.TermMonthly
+	if srv.InitialTerm.Valid {
+		term = int(srv.InitialTerm.Int64)
+	}
+	return priceDisplay(currency, srv.InitialPrice.Float64, term)
 }
 
 // validPrice reports whether a price is finite and plausible (ParseFloat

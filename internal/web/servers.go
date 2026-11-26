@@ -182,8 +182,8 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	dueSoon := s.dueSoonDays(r)
 	metrics := s.liveMetrics(r)
 	rates, _ := s.rates.Get(r.Context())
-	if key, ok := costSortKeys[opts.Sort]; ok {
-		sortByCost(items, rates, opts.Dir, key)
+	if key, ok := serverCostSortKeys[opts.Sort]; ok {
+		sortByCost(items, opts.Dir, func(it *model.ServerListItem) costKey { return key(it, rates) })
 	}
 	for _, it := range items {
 		row := makeServerRow(it, dueSoon)
@@ -352,12 +352,12 @@ func priceCostKey(price float64, term int, currency string, rates map[string]flo
 	return costKey{tierRecurring, usd / float64(months)}
 }
 
-// pricingCostKey is the Price column's sort key.
-func pricingCostKey(it *model.ServerListItem, rates map[string]float64) costKey {
-	if it.Pricing == nil {
+// pricingCostKey is the Price column's sort key, on every list.
+func pricingCostKey(p *model.Pricing, rates map[string]float64) costKey {
+	if p == nil {
 		return costKey{tier: tierUnknown}
 	}
-	return priceCostKey(it.Pricing.Price, it.Pricing.Term, it.Pricing.Currency, rates)
+	return priceCostKey(p.Price, p.Term, p.Currency, rates)
 }
 
 // initialCostKey is the Initial Price column's sort key. It reads the same
@@ -391,24 +391,29 @@ func priceYrCostKey(it *model.ServerListItem, rates map[string]float64) costKey 
 	return costKey{tierRecurring, m * 12}
 }
 
-// costSortKeys maps the list's cost columns to their sort keys. These
-// need exchange rates, which live in memory, so the store's SQL order is
-// re-sorted here.
-var costSortKeys = map[string]func(*model.ServerListItem, map[string]float64) costKey{
-	"price":         pricingCostKey,
+// serverCostSortKeys maps the servers list's cost columns to their sort
+// keys. These need exchange rates, which live in memory, so the store's
+// SQL order is re-sorted here.
+var serverCostSortKeys = map[string]func(*model.ServerListItem, map[string]float64) costKey{
+	"price": func(it *model.ServerListItem, rates map[string]float64) costKey {
+		return pricingCostKey(it.Pricing, rates)
+	},
 	"initial_price": initialCostKey,
 	"price_yr":      priceYrCostKey,
 }
 
-// sortByCost re-sorts items stably by key, normalized to USD.
-func sortByCost(items []model.ServerListItem, rates map[string]float64, dir string,
-	key func(*model.ServerListItem, map[string]float64) costKey) {
-	keys := make(map[int64]costKey, len(items))
-	for i := range items {
-		keys[items[i].ID] = key(&items[i], rates)
+// sortByCost re-sorts items stably by key (see the cost tiers above).
+func sortByCost[T any](items []T, dir string, key func(*T) costKey) {
+	type keyed struct {
+		k  costKey
+		it T
 	}
-	sort.SliceStable(items, func(i, j int) bool {
-		a, b := keys[items[i].ID], keys[items[j].ID]
+	ks := make([]keyed, len(items))
+	for i := range items {
+		ks[i] = keyed{key(&items[i]), items[i]}
+	}
+	sort.SliceStable(ks, func(i, j int) bool {
+		a, b := ks[i].k, ks[j].k
 		if a.tier != b.tier {
 			return a.tier < b.tier
 		}
@@ -417,6 +422,20 @@ func sortByCost(items []model.ServerListItem, rates map[string]float64, dir stri
 		}
 		return a.usd < b.usd
 	})
+	for i := range ks {
+		items[i] = ks[i].it
+	}
+}
+
+// sortListByPrice applies the real-cost Price sort to a section list (the
+// store has already sorted by the bare number). pricingOf picks the row's
+// active pricing.
+func sortListByPrice[T any](s *Server, r *http.Request, opts model.ListOptions, items []T, pricingOf func(*T) *model.Pricing) {
+	if opts.Sort != "price" {
+		return
+	}
+	rates, _ := s.rates.Get(r.Context())
+	sortByCost(items, opts.Dir, func(it *T) costKey { return pricingCostKey(pricingOf(it), rates) })
 }
 
 func dash(s string) string {

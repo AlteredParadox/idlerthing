@@ -56,6 +56,7 @@ func (s *Server) seedboxSection() *section {
 			if err != nil {
 				return nil, err
 			}
+			sortListByPrice(s, r, opts, items, func(it *model.SeedboxListItem) *model.Pricing { return it.Pricing })
 			dueSoon := s.dueSoonDays(r)
 			var rows []listRow
 			for _, it := range items {

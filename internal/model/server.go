@@ -79,14 +79,17 @@ type Server struct {
 	WasPromo      bool
 	Transferrable bool
 	Keep          bool
-	// InitialPrice is the first-purchase price in the pricing's currency:
-	// NULL = same as the current price, 0 = free. InitialTerm NULL = same
-	// term as the current price.
-	InitialPrice sql.NullFloat64
-	InitialTerm  sql.NullInt64
-	OwnedSince   sql.NullString
-	CreatedAt    string
-	UpdatedAt    string
+	// InitialPrice / InitialTerm / InitialCurrency record the first-purchase
+	// price; a 0 amount is free and carries no term or currency. Saving
+	// fills any blank part from the current pricing (fillInitialFromPricing)
+	// so it stays frozen through later pricing changes. NULL amount remains
+	// only while the server has never had pricing.
+	InitialPrice    sql.NullFloat64
+	InitialTerm     sql.NullInt64
+	InitialCurrency sql.NullString
+	OwnedSince      sql.NullString
+	CreatedAt       string
+	UpdatedAt       string
 }
 
 // ServerDisk mirrors the server_disks table.
@@ -105,7 +108,8 @@ type ServerStore struct {
 const serverColumns = `id, hostname, server_type, os_id, provider_id, location_id,
 	ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
 	ssh_port, active, show_public, has_yabs, was_promo, transferrable,
-	keep, initial_price, initial_term, owned_since, created_at, updated_at`
+	keep, initial_price, initial_term, initial_currency, owned_since,
+	created_at, updated_at`
 
 // listColumns is serverColumns with each column prefixed "s." for the
 // joined list query, where bare names would be ambiguous.
@@ -118,7 +122,7 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 		&s.LocationID, &s.RamAsMB, &s.CPU, &s.CPUModel, &s.BandwidthAsMB, &s.LinkSpeed,
 		&s.NetworkType, &s.Ns1, &s.Ns2, &s.SSHPort, &active, &showPublic, &hasYabs,
 		&wasPromo, &transferrable, &keep, &s.InitialPrice, &s.InitialTerm,
-		&s.OwnedSince, &s.CreatedAt, &s.UpdatedAt)
+		&s.InitialCurrency, &s.OwnedSince, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -131,8 +135,31 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	return &s, nil
 }
 
+// fillInitialFromPricing fills each blank part of the initial price from the
+// current pricing, freezing what the server cost when it was first priced.
+// A free (0) initial price keeps no term or currency.
+func fillInitialFromPricing(s *Server, p *Pricing) {
+	if s.InitialPrice.Valid && s.InitialPrice.Float64 == 0 {
+		s.InitialTerm, s.InitialCurrency = sql.NullInt64{}, sql.NullString{}
+		return
+	}
+	if p == nil || p.Currency == "" {
+		return
+	}
+	if !s.InitialPrice.Valid {
+		s.InitialPrice = sql.NullFloat64{Float64: p.Price, Valid: true}
+	}
+	if !s.InitialTerm.Valid {
+		s.InitialTerm = sql.NullInt64{Int64: int64(p.Term), Valid: true}
+	}
+	if !s.InitialCurrency.Valid {
+		s.InitialCurrency = sql.NullString{String: p.Currency, Valid: true}
+	}
+}
+
 // Create inserts a server plus its disks and optional pricing in one transaction.
 func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing) (int64, error) {
+	fillInitialFromPricing(s, pricing)
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -143,13 +170,13 @@ func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk
 		INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
 			ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
 			ssh_port, active, show_public, was_promo, transferrable, keep,
-			initial_price, initial_term, owned_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			initial_price, initial_term, initial_currency, owned_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.Hostname, s.ServerType, s.OsID, s.ProviderID, s.LocationID,
 		s.RamAsMB, s.CPU, s.CPUModel, s.BandwidthAsMB, s.LinkSpeed, s.NetworkType,
 		s.Ns1, s.Ns2, s.SSHPort, boolToInt(s.Active), boolToInt(s.ShowPublic),
 		boolToInt(s.WasPromo), boolToInt(s.Transferrable), boolToInt(s.Keep),
-		s.InitialPrice, s.InitialTerm, s.OwnedSince)
+		s.InitialPrice, s.InitialTerm, s.InitialCurrency, s.OwnedSince)
 	if err != nil {
 		return 0, fmt.Errorf("insert server: %w", err)
 	}
@@ -206,6 +233,7 @@ func (st *ServerStore) Disks(ctx context.Context, serverID int64) ([]ServerDisk,
 
 // Update replaces a server's fields, disks, and pricing in one transaction.
 func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing) error {
+	fillInitialFromPricing(s, pricing)
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -217,14 +245,14 @@ func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk
 			location_id = ?, ram_as_mb = ?, cpu = ?, cpu_model = ?, bandwidth_as_mb = ?,
 			link_speed = ?, network_type = ?, ns1 = ?, ns2 = ?, ssh_port = ?,
 			active = ?, show_public = ?, was_promo = ?, transferrable = ?, keep = ?,
-			initial_price = ?, initial_term = ?,
+			initial_price = ?, initial_term = ?, initial_currency = ?,
 			owned_since = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
 		s.Hostname, s.ServerType, s.OsID, s.ProviderID, s.LocationID,
 		s.RamAsMB, s.CPU, s.CPUModel, s.BandwidthAsMB, s.LinkSpeed, s.NetworkType,
 		s.Ns1, s.Ns2, s.SSHPort, boolToInt(s.Active), boolToInt(s.ShowPublic),
 		boolToInt(s.WasPromo), boolToInt(s.Transferrable), boolToInt(s.Keep),
-		s.InitialPrice, s.InitialTerm, s.OwnedSince, s.ID)
+		s.InitialPrice, s.InitialTerm, s.InitialCurrency, s.OwnedSince, s.ID)
 	if err != nil {
 		return fmt.Errorf("update server: %w", err)
 	}
@@ -309,7 +337,7 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	"provider": "prov_name COLLATE NOCASE",
 	"price":    "pr.price",
 	"due":      "pr.next_due_date",
-	// Unset initial price follows the current price; free (0) sorts as $0.
+	// An initial price is NULL only on a never-priced server; free sorts as 0.
 	"initial_price": "COALESCE(s.initial_price, pr.price)",
 	"keep":          "s.keep",
 	// price_yr is absent on purpose: it needs exchange rates, so the web
@@ -418,7 +446,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 			&it.LocationID, &it.RamAsMB, &it.CPU, &it.CPUModel, &it.BandwidthAsMB, &it.LinkSpeed,
 			&it.NetworkType, &it.Ns1, &it.Ns2, &it.SSHPort, &active, &showPublic, &hasYabs,
 			&wasPromo, &transferrable, &keep, &it.InitialPrice, &it.InitialTerm,
-			&it.OwnedSince, &it.CreatedAt, &it.UpdatedAt,
+			&it.InitialCurrency, &it.OwnedSince, &it.CreatedAt, &it.UpdatedAt,
 			&it.OSName, &it.ProviderName, &it.LocationName, &it.DiskMB, &it.DiskMedia,
 			&currency, &price, &term, &due)
 		if err != nil {

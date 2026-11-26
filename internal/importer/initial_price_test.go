@@ -23,10 +23,10 @@ import (
 	"testing"
 )
 
-// A positive initial price takes its currency from the server's pricing, so
-// an import that leaves a server without usable pricing drops the amount
-// (with a warning) instead of letting it display as an invented USD price.
-// Free needs no currency and survives; top-level pricings count.
+// Blank parts of an initial price are copied from the active pricing
+// (inline or top-level), as saving does. A positive amount left with no
+// currency is dropped with a warning instead of showing as invented USD.
+// Free needs no currency and survives.
 func TestImportClearsOrphanInitialPrice(t *testing.T) {
 	database := testDB(t)
 	doc := `{"format":1,
@@ -38,7 +38,10 @@ func TestImportClearsOrphanInitialPrice(t *testing.T) {
 		{"server":{"id":3,"hostname":"free","server_type":1,"active":true,"initial_price":0}},
 		{"server":{"id":4,"hostname":"inline","server_type":1,"active":true,"initial_price":20},
 		 "pricing":{"currency":"EUR","price":5,"term":1}},
-		{"server":{"id":5,"hostname":"top-level","server_type":1,"active":true,"initial_price":20}}
+		{"server":{"id":5,"hostname":"top-level","server_type":1,"active":true,"initial_price":20}},
+		{"server":{"id":6,"hostname":"own-currency","server_type":1,"active":true,"initial_price":20,"initial_currency":"CAD"}},
+		{"server":{"id":7,"hostname":"old-backup","server_type":1,"active":true},
+		 "pricing":{"currency":"AUD","price":9,"term":2}}
 	],
 	"pricings":[{"service_id":5,"service_type":1,"currency":"GBP","price":5,"term":1,"active":true}]}`
 	sum, err := Import(context.Background(), database, strings.NewReader(doc), false)
@@ -52,13 +55,20 @@ func TestImportClearsOrphanInitialPrice(t *testing.T) {
 		"free":         {Float64: 0, Valid: true},
 		"inline":       {Float64: 20, Valid: true},
 		"top-level":    {Float64: 20, Valid: true},
+		"own-currency": {Float64: 20, Valid: true},
+		"old-backup":   {Float64: 9, Valid: true},
 	}
+	wantCur := map[string]string{"inline": "EUR", "top-level": "GBP", "own-currency": "CAD", "old-backup": "AUD"}
 	for host, w := range want {
 		var got sql.NullFloat64
 		var term sql.NullInt64
-		if err := database.QueryRow("SELECT initial_price, initial_term FROM servers WHERE hostname = ?", host).
-			Scan(&got, &term); err != nil {
+		var cur sql.NullString
+		if err := database.QueryRow("SELECT initial_price, initial_term, initial_currency FROM servers WHERE hostname = ?", host).
+			Scan(&got, &term, &cur); err != nil {
 			t.Fatalf("%s: %v", host, err)
+		}
+		if cur.String != wantCur[host] {
+			t.Errorf("%s: initial_currency = %q, want %q", host, cur.String, wantCur[host])
 		}
 		if got != w {
 			t.Errorf("%s: initial_price = %+v, want %+v", host, got, w)

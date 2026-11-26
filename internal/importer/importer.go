@@ -149,7 +149,7 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	if err := imp.run(ctx, doc); err != nil {
 		return nil, err
 	}
-	if err := imp.clearOrphanInitialPrices(ctx); err != nil {
+	if err := imp.settleInitialPrices(ctx); err != nil {
 		return nil, err
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -159,21 +159,33 @@ func Import(ctx context.Context, db *sql.DB, r io.Reader, force bool) (*Summary,
 	return &imp.sum, nil
 }
 
-// clearOrphanInitialPrices drops a positive initial price (and its term) from
-// imported servers that ended up with no active pricing: the amount takes its
-// currency from that row, so without one it would display as an invented
-// USD price. The form and API reject the same state. Runs after every
-// pricing source (inline and top-level) is in, and only touches servers this
-// import created. A free (0) initial price needs no currency and is kept.
-func (imp *importer) clearOrphanInitialPrices(ctx context.Context) error {
+// settleInitialPrices runs after every pricing source (inline and
+// top-level) is in, and only touches servers this import created:
+//   - each blank part of the initial price (amount, term, currency) is
+//     copied from the active pricing, as saving through the app does (older
+//     backups predate the fields); a free (0) one keeps no term or currency;
+//   - a positive initial price still without a currency (no usable pricing
+//     to copy from) is dropped with a warning rather than displayed as an
+//     invented USD amount. The form and API reject the same state.
+func (imp *importer) settleInitialPrices(ctx context.Context) error {
+	const active = `FROM pricings p WHERE p.service_type = 1 AND p.service_id = servers.id AND p.active = 1`
 	for _, newID := range imp.newServers {
+		// SET expressions see the row's old values, so initial_price below
+		// is the imported one.
+		if _, err := imp.tx.ExecContext(ctx, `
+			UPDATE servers SET
+				initial_price = COALESCE(initial_price, (SELECT p.price `+active+`)),
+				initial_term = CASE WHEN initial_price = 0 THEN NULL
+					ELSE COALESCE(initial_term, (SELECT p.term `+active+`)) END,
+				initial_currency = CASE WHEN initial_price = 0 THEN NULL
+					ELSE COALESCE(initial_currency, (SELECT p.currency `+active+`)) END
+			WHERE id = ?`, newID); err != nil {
+			return err
+		}
 		var host string
 		err := imp.tx.QueryRowContext(ctx, `
-			SELECT hostname FROM servers s
-			WHERE s.id = ? AND s.initial_price > 0 AND NOT EXISTS (
-				SELECT 1 FROM pricings p
-				WHERE p.service_type = ? AND p.service_id = s.id AND p.active = 1)`,
-			newID, model.ServiceServer).Scan(&host)
+			SELECT hostname FROM servers
+			WHERE id = ? AND initial_price > 0 AND initial_currency IS NULL`, newID).Scan(&host)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -185,7 +197,7 @@ func (imp *importer) clearOrphanInitialPrices(ctx context.Context) error {
 			return err
 		}
 		imp.sum.Warnings = append(imp.sum.Warnings, fmt.Sprintf(
-			"server %q: initial price dropped — it has no pricing to take a currency from", host))
+			"server %q: initial price dropped — it has no currency, and no pricing to copy one from", host))
 	}
 	return nil
 }
@@ -646,6 +658,19 @@ func initialTerm(m map[string]any) sql.NullInt64 {
 	return t
 }
 
+// initialCurrency reads a server's optional initial currency (NULL unless a
+// well-formed code, and always NULL for a free initial price).
+func initialCurrency(m map[string]any) sql.NullString {
+	c, ok := normCurrency(sget(m, "initial_currency"))
+	if !ok {
+		return sql.NullString{}
+	}
+	if p := initialPrice(m); p.Valid && p.Float64 == 0 {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: c, Valid: true}
+}
+
 func bget(m map[string]any, key string) bool {
 	v, _ := m[key].(bool)
 	return v
@@ -871,8 +896,8 @@ func (imp *importer) insertServerRow(ctx context.Context, s map[string]any) (int
 		INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
 			ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
 			ssh_port, active, show_public, was_promo, transferrable, keep,
-			initial_price, initial_term, owned_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			initial_price, initial_term, initial_currency, owned_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sget(s, "hostname"), serverType,
 		imp.remapCatalog("os", nget(s, "os_id")),
 		imp.remapCatalog("providers", nget(s, "provider_id")),
@@ -882,7 +907,7 @@ func (imp *importer) insertServerRow(ctx context.Context, s map[string]any) (int
 		sgetN(s, "ns1"), sgetN(s, "ns2"), imp.boundedInt(nget(s, "ssh_port"), 65535, "ssh_port", sget(s, "hostname")),
 		bint(bget(s, "active")), bint(bget(s, "show_public")),
 		bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
-		bint(bgetDefault(s, "keep", true)), initialPrice(s), initialTerm(s),
+		bint(bgetDefault(s, "keep", true)), initialPrice(s), initialTerm(s), initialCurrency(s),
 		imp.normOwned(sgetN(s, "owned_since"), sget(s, "hostname")))
 	if err != nil {
 		return 0, fmt.Errorf("import server %q: %w", sget(s, "hostname"), err)

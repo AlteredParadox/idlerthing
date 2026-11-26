@@ -300,7 +300,7 @@ func makeServerRow(it model.ServerListItem, dueSoonDays int) serverRow {
 		row.Price = "—"
 		row.Due = "—"
 	}
-	row.InitialPrice = initialPriceDisplay(&it.Server, it.Pricing)
+	row.InitialPrice = initialPriceDisplay(&it.Server)
 	return row
 }
 
@@ -429,7 +429,7 @@ func (s *Server) handleServerDetail(w http.ResponseWriter, r *http.Request) {
 		Extras:       extras,
 		Live:         s.buildLive(r, metrics, srv.Hostname),
 		YABSCommand:  s.yabsCommand(r, srv.ID),
-		InitialPrice: initialPriceDisplay(srv, pricing),
+		InitialPrice: initialPriceDisplay(srv),
 	}
 	if h := matchLive(metrics, srv.Hostname); h != nil {
 		view.LiveMon = s.liveMonEntry(r, h.Instance)
@@ -687,35 +687,51 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 	}
 
 	pricing := parsePricingForm(r, errs)
-	srv.InitialPrice, srv.InitialTerm = parseInitialPriceForm(r, errs)
+	srv.InitialPrice, srv.InitialTerm, srv.InitialCurrency = parseInitialPriceForm(r, errs)
 	checkInitialPrice(srv, pricing, errs)
 	return srv, disks, pricing, errs
 }
 
 // parseInitialPriceForm parses the optional initial-price fields. "Free"
-// wins over a typed amount; a blank amount means "same as the price" (any
-// chosen term is dropped with it) and a blank term "same term as the price".
-func parseInitialPriceForm(r *http.Request, errs map[string]string) (sql.NullFloat64, sql.NullInt64) {
-	term := sql.NullInt64{}
-	if t := intFormValue(r, "initial_term", 0); t >= model.TermMonthly && t <= model.TermOneTime {
-		term = sql.NullInt64{Int64: int64(t), Valid: true}
+// wins over a typed amount and carries no term or currency. A blank part is
+// filled from the pricing on save (model.fillInitialFromPricing); a blank
+// amount drops any chosen term and currency with it, so the whole price is
+// copied.
+func parseInitialPriceForm(r *http.Request, errs map[string]string) (sql.NullFloat64, sql.NullInt64, sql.NullString) {
+	none := func() (sql.NullFloat64, sql.NullInt64, sql.NullString) {
+		return sql.NullFloat64{}, sql.NullInt64{}, sql.NullString{}
 	}
 	if r.FormValue("initial_free") != "" {
-		return sql.NullFloat64{Float64: 0, Valid: true}, sql.NullInt64{}
+		return sql.NullFloat64{Float64: 0, Valid: true}, sql.NullInt64{}, sql.NullString{}
 	}
 	raw := strings.TrimSpace(r.FormValue("initial_price"))
 	if raw == "" {
-		return sql.NullFloat64{}, sql.NullInt64{}
+		return none()
 	}
 	price, err := strconv.ParseFloat(raw, 64)
 	if err != nil || !validInitialPrice(price) {
 		errs["initial_price"] = "Initial price must be a number, 0 or more."
-		return sql.NullFloat64{}, term
+		return none()
 	}
 	if price == 0 {
-		return sql.NullFloat64{Float64: 0, Valid: true}, sql.NullInt64{}
+		return sql.NullFloat64{Float64: 0, Valid: true}, sql.NullInt64{}, sql.NullString{}
 	}
-	return sql.NullFloat64{Float64: price, Valid: true}, term
+	term := sql.NullInt64{}
+	if t := intFormValue(r, "initial_term", 0); t >= model.TermMonthly && t <= model.TermOneTime {
+		term = sql.NullInt64{Int64: int64(t), Valid: true}
+	}
+	return sql.NullFloat64{Float64: price, Valid: true}, term, knownCurrency(r.FormValue("initial_currency"))
+}
+
+// knownCurrency returns a supported currency code, or NULL ("same as the
+// price") for anything else.
+func knownCurrency(code string) sql.NullString {
+	for _, c := range currencies {
+		if code == c {
+			return sql.NullString{String: c, Valid: true}
+		}
+	}
+	return sql.NullString{}
 }
 
 // validInitialPrice is validPrice that also accepts 0 (free).
@@ -723,33 +739,31 @@ func validInitialPrice(f float64) bool {
 	return f == 0 || validPrice(f)
 }
 
-// checkInitialPrice enforces the rules shared by the form and the API: a
-// non-free initial amount takes its currency from the pricing, so it needs
-// one.
+// checkInitialPrice enforces the rule shared by the form and the API: a
+// non-free initial amount needs a currency, either its own or the price's
+// (which saving copies in).
 func checkInitialPrice(srv *model.Server, p *model.Pricing, errs map[string]string) {
-	if srv.InitialPrice.Valid && srv.InitialPrice.Float64 > 0 && p == nil {
+	if srv.InitialPrice.Valid && srv.InitialPrice.Float64 > 0 && !srv.InitialCurrency.Valid && p == nil {
 		if _, dup := errs["price"]; !dup {
-			errs["initial_price"] = "Enter a price too: the initial price uses its currency."
+			errs["initial_price"] = "Pick an initial currency, or enter a price to copy it from."
 		}
 	}
 }
 
-// initialPriceDisplay renders the initial price: "Free", its own amount and
-// term, or — when unset — the current price.
-func initialPriceDisplay(srv *model.Server, p *model.Pricing) string {
+// initialPriceDisplay renders the frozen initial price ("Free" or amount and
+// term in its own currency). A server that has never been priced has none.
+func initialPriceDisplay(srv *model.Server) string {
 	if !srv.InitialPrice.Valid {
-		if p == nil {
-			return "—"
-		}
-		return priceDisplay(p.Currency, p.Price, p.Term)
+		return "—"
 	}
 	if srv.InitialPrice.Float64 == 0 {
 		return "Free"
 	}
-	currency, term := "USD", model.TermMonthly
-	if p != nil {
-		currency, term = p.Currency, p.Term
+	currency := "USD"
+	if srv.InitialCurrency.Valid {
+		currency = srv.InitialCurrency.String
 	}
+	term := model.TermMonthly
 	if srv.InitialTerm.Valid {
 		term = int(srv.InitialTerm.Int64)
 	}

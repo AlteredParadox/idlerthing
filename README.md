@@ -275,7 +275,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/servers
   `DELETE /api/servers/{id}`.
   `PUT` replaces the server, except `keep`, `initial_price` and
   `initial_term`: when left out they keep their stored values, so older
-  clients don't reset them (send `null` to clear an initial price).
+  clients don't reset them. A blank (`null`) initial price is filled with
+  the current price and term on save, like the web form does.
 
 ## YABS ingest
 

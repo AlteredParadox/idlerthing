@@ -33,30 +33,31 @@ import (
 
 // serverJSON is the API DTO for servers (mirrors the web form fields).
 type serverJSON struct {
-	Hostname      string       `json:"hostname"`
-	ServerType    int          `json:"server_type"`
-	OsID          *int64       `json:"os_id"`
-	ProviderID    *int64       `json:"provider_id"`
-	LocationID    *int64       `json:"location_id"`
-	RamAsMB       *int64       `json:"ram_as_mb"`
-	CPU           *int64       `json:"cpu"`
-	CPUModel      string       `json:"cpu_model"`
-	BandwidthAsMB *int64       `json:"bandwidth_as_mb"`
-	LinkSpeed     *int64       `json:"link_speed"`
-	NetworkType   string       `json:"network_type"`
-	Ns1           string       `json:"ns1"`
-	Ns2           string       `json:"ns2"`
-	SSHPort       *int64       `json:"ssh_port"`
-	Active        *bool        `json:"active"`
-	ShowPublic    *bool        `json:"show_public"`
-	WasPromo      *bool        `json:"was_promo"`
-	Transferrable *bool        `json:"transferrable"`
-	Keep          *bool        `json:"keep"`
-	InitialPrice  *float64     `json:"initial_price"` // null = same as price, 0 = free
-	InitialTerm   *int         `json:"initial_term"`  // null = same term as price
-	OwnedSince    string       `json:"owned_since"`
-	Disks         []diskJSON   `json:"disks"`
-	Pricing       *pricingJSON `json:"pricing"`
+	Hostname        string       `json:"hostname"`
+	ServerType      int          `json:"server_type"`
+	OsID            *int64       `json:"os_id"`
+	ProviderID      *int64       `json:"provider_id"`
+	LocationID      *int64       `json:"location_id"`
+	RamAsMB         *int64       `json:"ram_as_mb"`
+	CPU             *int64       `json:"cpu"`
+	CPUModel        string       `json:"cpu_model"`
+	BandwidthAsMB   *int64       `json:"bandwidth_as_mb"`
+	LinkSpeed       *int64       `json:"link_speed"`
+	NetworkType     string       `json:"network_type"`
+	Ns1             string       `json:"ns1"`
+	Ns2             string       `json:"ns2"`
+	SSHPort         *int64       `json:"ssh_port"`
+	Active          *bool        `json:"active"`
+	ShowPublic      *bool        `json:"show_public"`
+	WasPromo        *bool        `json:"was_promo"`
+	Transferrable   *bool        `json:"transferrable"`
+	Keep            *bool        `json:"keep"`
+	InitialPrice    *float64     `json:"initial_price"`    // null = copy the price on save, 0 = free
+	InitialTerm     *int         `json:"initial_term"`     // null = copy the price's term
+	InitialCurrency *string      `json:"initial_currency"` // null = copy the price's currency
+	OwnedSince      string       `json:"owned_since"`
+	Disks           []diskJSON   `json:"disks"`
+	Pricing         *pricingJSON `json:"pricing"`
 
 	// present records which top-level keys the body carried (null counts),
 	// so an update can tell "omitted" from "cleared".
@@ -64,7 +65,7 @@ type serverJSON struct {
 }
 
 // keepOmittedOnUpdate fills the fields added after the API's first release
-// (keep, initial_price, initial_term) from the stored server when the PUT
+// (keep, initial_price, initial_term, initial_currency) from the stored server when the PUT
 // body leaves them out, so a client that predates them can't silently reset
 // Keep or wipe the initial price. An explicit value — including false or
 // null — still replaces the stored one.
@@ -80,6 +81,10 @@ func (j *serverJSON) keepOmittedOnUpdate(cur *model.Server) {
 	if !j.present["initial_term"] && cur.InitialTerm.Valid {
 		t := int(cur.InitialTerm.Int64)
 		j.InitialTerm = &t
+	}
+	if !j.present["initial_currency"] && cur.InitialCurrency.Valid {
+		c := cur.InitialCurrency.String
+		j.InitialCurrency = &c
 	}
 }
 
@@ -140,7 +145,8 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 }
 
 // initialToModel maps and validates the initial-price fields (same rules
-// as parseInitialPriceForm; a free initial price carries no term).
+// as parseInitialPriceForm: a free price carries no term or currency, and a
+// missing amount drops them so the whole price is copied on save).
 func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
 	if j.InitialTerm != nil {
 		if *j.InitialTerm < model.TermMonthly || *j.InitialTerm > model.TermOneTime {
@@ -149,8 +155,13 @@ func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
 			srv.InitialTerm = sql.NullInt64{Int64: int64(*j.InitialTerm), Valid: true}
 		}
 	}
+	if j.InitialCurrency != nil {
+		if srv.InitialCurrency = knownCurrency(*j.InitialCurrency); !srv.InitialCurrency.Valid {
+			errs["initial_currency"] = "initial_currency must be one of " + strings.Join(currencies, ", ")
+		}
+	}
 	if j.InitialPrice == nil {
-		srv.InitialTerm = sql.NullInt64{} // a term alone means nothing
+		srv.InitialTerm, srv.InitialCurrency = sql.NullInt64{}, sql.NullString{}
 		return
 	}
 	if !validInitialPrice(*j.InitialPrice) {
@@ -159,7 +170,7 @@ func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
 	}
 	srv.InitialPrice = sql.NullFloat64{Float64: *j.InitialPrice, Valid: true}
 	if *j.InitialPrice == 0 {
-		srv.InitialTerm = sql.NullInt64{}
+		srv.InitialTerm, srv.InitialCurrency = sql.NullInt64{}, sql.NullString{}
 	}
 }
 

@@ -213,15 +213,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       </label>
       <label class="field">
         <span class="field-label">Initial price</span>
-        <input type="number" name="initial_price" min="0" step="0.01" placeholder="Same as price" value="{{if $s.InitialPrice.Valid}}{{if gt $s.InitialPrice.Float64 0.0}}{{$s.InitialPrice.Float64}}{{end}}{{end}}">
+        <input type="number" name="initial_price" min="0" step="0.01" placeholder="Copy of price" value="{{if $s.InitialPrice.Valid}}{{if gt $s.InitialPrice.Float64 0.0}}{{$s.InitialPrice.Float64}}{{end}}{{end}}">
         {{with index $v.Errors "initial_price"}}<span class="field-err">{{.}}</span>{{end}}
       </label>
       <label class="field">
         <span class="field-label">Initial term</span>
         <select name="initial_term">
-          <option value="" {{if not $s.InitialTerm.Valid}}selected{{end}}>Same as term</option>
+          <option value="" {{if not $s.InitialTerm.Valid}}selected{{end}}>Same as price</option>
           {{range $t := seqTerms}}
           <option value="{{$t}}" {{if $s.InitialTerm.Valid}}{{if eq $s.InitialTerm.Int64 $t}}selected{{end}}{{end}}>{{termLabel $t}}</option>
+          {{end}}
+        </select>
+      </label>
+      <label class="field">
+        <span class="field-label">Initial currency</span>
+        <select name="initial_currency">
+          <option value="" {{if not $s.InitialCurrency.Valid}}selected{{end}}>Same as price</option>
+          {{range $v.Currencies}}
+          <option value="{{.}}" {{if $s.InitialCurrency.Valid}}{{if eq $s.InitialCurrency.String .}}selected{{end}}{{end}}>{{.}}</option>
           {{end}}
         </select>
       </label>
@@ -230,7 +239,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         <label class="check"><input type="checkbox" name="initial_free" {{if $s.InitialPrice.Valid}}{{if eq $s.InitialPrice.Float64 0.0}}checked{{end}}{{end}}> Free</label>
       </div>
     </div>
-    <div class="field-hint">Leave the initial price blank to use the current price and term.</div>
+    <div class="field-hint">The initial price is saved once and doesn't follow later price changes. Leave it blank to copy the current price, term and currency.</div>
   </section>
 
   <div class="form-actions">

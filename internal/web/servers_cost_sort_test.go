@@ -169,7 +169,7 @@ func TestSectionPriceSortByCost(t *testing.T) {
 	ts, _ := newTestServer(t)
 	client := authedClient(t, ts)
 	for _, c := range cases {
-		create := func(name string, price, term string) {
+		create := func(name, price, term string) {
 			t.Helper()
 			vals := url.Values{c.nameField: {name}, "active": {"on"}, "price": {price}, "currency": {"USD"}, "term": {term}}
 			for k, v := range c.extra {

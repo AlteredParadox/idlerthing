@@ -587,6 +587,29 @@ func nget(m map[string]any, key string) sql.NullInt64 {
 	return sql.NullInt64{Int64: int64(v), Valid: true}
 }
 
+// initialPrice reads a server's optional initial price: NULL when absent
+// or implausible, 0 meaning free.
+func initialPrice(m map[string]any) sql.NullFloat64 {
+	v, ok := m["initial_price"].(float64)
+	if !ok || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1e9 {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: v, Valid: true}
+}
+
+// initialTerm reads a server's optional initial term (NULL unless a valid
+// pricing term, and always NULL for a free initial price).
+func initialTerm(m map[string]any) sql.NullInt64 {
+	t := nget(m, "initial_term")
+	if !t.Valid || t.Int64 < model.TermMonthly || t.Int64 > model.TermOneTime {
+		return sql.NullInt64{}
+	}
+	if p := initialPrice(m); p.Valid && p.Float64 == 0 {
+		return sql.NullInt64{}
+	}
+	return t
+}
+
 func bget(m map[string]any, key string) bool {
 	v, _ := m[key].(bool)
 	return v
@@ -810,8 +833,9 @@ func (imp *importer) insertServerRow(ctx context.Context, s map[string]any) (int
 	res, err := imp.tx.ExecContext(ctx, `
 		INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
 			ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
-			ssh_port, active, show_public, was_promo, transferrable, owned_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_port, active, show_public, was_promo, transferrable, keep,
+			initial_price, initial_term, owned_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sget(s, "hostname"), serverType,
 		imp.remapCatalog("os", nget(s, "os_id")),
 		imp.remapCatalog("providers", nget(s, "provider_id")),
@@ -821,6 +845,7 @@ func (imp *importer) insertServerRow(ctx context.Context, s map[string]any) (int
 		sgetN(s, "ns1"), sgetN(s, "ns2"), imp.boundedInt(nget(s, "ssh_port"), 65535, "ssh_port", sget(s, "hostname")),
 		bint(bget(s, "active")), bint(bget(s, "show_public")),
 		bint(bget(s, "was_promo")), bint(bget(s, "transferrable")),
+		bint(bgetDefault(s, "keep", true)), initialPrice(s), initialTerm(s),
 		imp.normOwned(sgetN(s, "owned_since"), sget(s, "hostname")))
 	if err != nil {
 		return 0, fmt.Errorf("import server %q: %w", sget(s, "hostname"), err)

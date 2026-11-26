@@ -50,6 +50,9 @@ type serverJSON struct {
 	ShowPublic    *bool        `json:"show_public"`
 	WasPromo      *bool        `json:"was_promo"`
 	Transferrable *bool        `json:"transferrable"`
+	Keep          *bool        `json:"keep"`
+	InitialPrice  *float64     `json:"initial_price"` // null = same as price, 0 = free
+	InitialTerm   *int         `json:"initial_term"`  // null = same term as price
 	OwnedSince    string       `json:"owned_since"`
 	Disks         []diskJSON   `json:"disks"`
 	Pricing       *pricingJSON `json:"pricing"`
@@ -72,7 +75,10 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 	errs := map[string]string{}
 	srv := j.serverFields(errs)
 	j.checkBounds(errs)
-	return srv, j.disksToModel(), j.pricingToModel(errs), errs
+	j.initialToModel(srv, errs)
+	pricing := j.pricingToModel(errs)
+	checkInitialPrice(srv, pricing, errs)
+	return srv, j.disksToModel(), pricing, errs
 }
 
 // serverFields maps the scalar fields and validates them.
@@ -92,6 +98,7 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 		ShowPublic:    j.ShowPublic != nil && *j.ShowPublic,
 		WasPromo:      j.WasPromo != nil && *j.WasPromo,
 		Transferrable: j.Transferrable != nil && *j.Transferrable,
+		Keep:          j.Keep == nil || *j.Keep, // default true
 	}
 	if srv.Hostname == "" {
 		errs["hostname"] = "hostname is required"
@@ -105,6 +112,30 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 	srv.Ns2 = nullStrIf(j.Ns2)
 	srv.OwnedSince = jsonDate(errs, "owned_since", j.OwnedSince)
 	return srv
+}
+
+// initialToModel maps and validates the initial-price fields (same rules
+// as parseInitialPriceForm; a free initial price carries no term).
+func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
+	if j.InitialTerm != nil {
+		if *j.InitialTerm < model.TermMonthly || *j.InitialTerm > model.TermOneTime {
+			errs["initial_term"] = "initial_term must be between 1 and 7"
+		} else {
+			srv.InitialTerm = sql.NullInt64{Int64: int64(*j.InitialTerm), Valid: true}
+		}
+	}
+	if j.InitialPrice == nil {
+		srv.InitialTerm = sql.NullInt64{} // a term alone means nothing
+		return
+	}
+	if !validInitialPrice(*j.InitialPrice) {
+		errs["initial_price"] = "initial_price must be 0 (free) or a positive number"
+		return
+	}
+	srv.InitialPrice = sql.NullFloat64{Float64: *j.InitialPrice, Valid: true}
+	if *j.InitialPrice == 0 {
+		srv.InitialTerm = sql.NullInt64{}
+	}
 }
 
 // nullStrIf wraps a non-blank string as a valid NullString (trimmed, like

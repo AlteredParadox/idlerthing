@@ -78,9 +78,15 @@ type Server struct {
 	HasYabs       bool
 	WasPromo      bool
 	Transferrable bool
-	OwnedSince    sql.NullString
-	CreatedAt     string
-	UpdatedAt     string
+	Keep          bool
+	// InitialPrice is the first-purchase price in the pricing's currency:
+	// NULL = same as the current price, 0 = free. InitialTerm NULL = same
+	// term as the current price.
+	InitialPrice sql.NullFloat64
+	InitialTerm  sql.NullInt64
+	OwnedSince   sql.NullString
+	CreatedAt    string
+	UpdatedAt    string
 }
 
 // ServerDisk mirrors the server_disks table.
@@ -99,7 +105,7 @@ type ServerStore struct {
 const serverColumns = `id, hostname, server_type, os_id, provider_id, location_id,
 	ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
 	ssh_port, active, show_public, has_yabs, was_promo, transferrable,
-	owned_since, created_at, updated_at`
+	keep, initial_price, initial_term, owned_since, created_at, updated_at`
 
 // listColumns is serverColumns with each column prefixed "s." for the
 // joined list query, where bare names would be ambiguous.
@@ -107,11 +113,12 @@ var listColumns = prefixedColumns("s", serverColumns)
 
 func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	var s Server
-	var active, showPublic, hasYabs, wasPromo, transferrable int
+	var active, showPublic, hasYabs, wasPromo, transferrable, keep int
 	err := row.Scan(&s.ID, &s.Hostname, &s.ServerType, &s.OsID, &s.ProviderID,
 		&s.LocationID, &s.RamAsMB, &s.CPU, &s.CPUModel, &s.BandwidthAsMB, &s.LinkSpeed,
 		&s.NetworkType, &s.Ns1, &s.Ns2, &s.SSHPort, &active, &showPublic, &hasYabs,
-		&wasPromo, &transferrable, &s.OwnedSince, &s.CreatedAt, &s.UpdatedAt)
+		&wasPromo, &transferrable, &keep, &s.InitialPrice, &s.InitialTerm,
+		&s.OwnedSince, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +127,7 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	s.HasYabs = hasYabs != 0
 	s.WasPromo = wasPromo != 0
 	s.Transferrable = transferrable != 0
+	s.Keep = keep != 0
 	return &s, nil
 }
 
@@ -134,12 +142,14 @@ func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO servers (hostname, server_type, os_id, provider_id, location_id,
 			ram_as_mb, cpu, cpu_model, bandwidth_as_mb, link_speed, network_type, ns1, ns2,
-			ssh_port, active, show_public, was_promo, transferrable, owned_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ssh_port, active, show_public, was_promo, transferrable, keep,
+			initial_price, initial_term, owned_since)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.Hostname, s.ServerType, s.OsID, s.ProviderID, s.LocationID,
 		s.RamAsMB, s.CPU, s.CPUModel, s.BandwidthAsMB, s.LinkSpeed, s.NetworkType,
 		s.Ns1, s.Ns2, s.SSHPort, boolToInt(s.Active), boolToInt(s.ShowPublic),
-		boolToInt(s.WasPromo), boolToInt(s.Transferrable), s.OwnedSince)
+		boolToInt(s.WasPromo), boolToInt(s.Transferrable), boolToInt(s.Keep),
+		s.InitialPrice, s.InitialTerm, s.OwnedSince)
 	if err != nil {
 		return 0, fmt.Errorf("insert server: %w", err)
 	}
@@ -206,13 +216,15 @@ func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk
 		UPDATE servers SET hostname = ?, server_type = ?, os_id = ?, provider_id = ?,
 			location_id = ?, ram_as_mb = ?, cpu = ?, cpu_model = ?, bandwidth_as_mb = ?,
 			link_speed = ?, network_type = ?, ns1 = ?, ns2 = ?, ssh_port = ?,
-			active = ?, show_public = ?, was_promo = ?, transferrable = ?,
+			active = ?, show_public = ?, was_promo = ?, transferrable = ?, keep = ?,
+			initial_price = ?, initial_term = ?,
 			owned_since = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
 		s.Hostname, s.ServerType, s.OsID, s.ProviderID, s.LocationID,
 		s.RamAsMB, s.CPU, s.CPUModel, s.BandwidthAsMB, s.LinkSpeed, s.NetworkType,
 		s.Ns1, s.Ns2, s.SSHPort, boolToInt(s.Active), boolToInt(s.ShowPublic),
-		boolToInt(s.WasPromo), boolToInt(s.Transferrable), s.OwnedSince, s.ID)
+		boolToInt(s.WasPromo), boolToInt(s.Transferrable), boolToInt(s.Keep),
+		s.InitialPrice, s.InitialTerm, s.OwnedSince, s.ID)
 	if err != nil {
 		return fmt.Errorf("update server: %w", err)
 	}
@@ -297,6 +309,11 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	"provider": "prov_name COLLATE NOCASE",
 	"price":    "pr.price",
 	"due":      "pr.next_due_date",
+	// Unset initial price follows the current price; free (0) sorts as $0.
+	"initial_price": "COALESCE(s.initial_price, pr.price)",
+	"keep":          "s.keep",
+	// price_yr is absent on purpose: it needs exchange rates, so the web
+	// layer sorts it in Go (see SortByPriceYr there).
 }
 
 // orderClause applies dir to EVERY component of a whitelisted sort
@@ -370,7 +387,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 	var out []ServerListItem
 	for rows.Next() {
 		var it ServerListItem
-		var active, showPublic, hasYabs, wasPromo, transferrable int
+		var active, showPublic, hasYabs, wasPromo, transferrable, keep int
 		var currency sql.NullString
 		var price sql.NullFloat64
 		var term sql.NullInt64
@@ -378,7 +395,8 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 		err := rows.Scan(&it.ID, &it.Hostname, &it.ServerType, &it.OsID, &it.ProviderID,
 			&it.LocationID, &it.RamAsMB, &it.CPU, &it.CPUModel, &it.BandwidthAsMB, &it.LinkSpeed,
 			&it.NetworkType, &it.Ns1, &it.Ns2, &it.SSHPort, &active, &showPublic, &hasYabs,
-			&wasPromo, &transferrable, &it.OwnedSince, &it.CreatedAt, &it.UpdatedAt,
+			&wasPromo, &transferrable, &keep, &it.InitialPrice, &it.InitialTerm,
+			&it.OwnedSince, &it.CreatedAt, &it.UpdatedAt,
 			&it.OSName, &it.ProviderName, &it.LocationName, &it.DiskMB, &it.DiskMedia,
 			&currency, &price, &term, &due)
 		if err != nil {
@@ -389,6 +407,7 @@ func (st *ServerStore) List(ctx context.Context, opts ListOptions) ([]ServerList
 		it.HasYabs = hasYabs != 0
 		it.WasPromo = wasPromo != 0
 		it.Transferrable = transferrable != 0
+		it.Keep = keep != 0
 		if currency.Valid {
 			it.Pricing = &Pricing{
 				ServiceID:   it.ID,

@@ -92,9 +92,9 @@ func TestServerKeepAndInitialPriceForm(t *testing.T) {
 			t.Fatalf("list missing %q", want)
 		}
 	}
-	// Free (0) < copied price ($10) < $30.
+	// By real cost: Free ($0) < $30/yr ($2.50/mo) < copied $10/mo.
 	iFree, iSame, iOwn := strings.Index(body, "keep-free"), strings.Index(body, "keep-same"), strings.Index(body, "keep-own")
-	if !(iFree < iSame && iSame < iOwn) {
+	if !(iFree < iOwn && iOwn < iSame) {
 		t.Fatalf("initial price sort order wrong: free=%d same=%d own=%d", iFree, iSame, iOwn)
 	}
 

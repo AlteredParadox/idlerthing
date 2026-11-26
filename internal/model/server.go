@@ -410,8 +410,10 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	// An initial price is NULL only on a never-priced server; free sorts as 0.
 	"initial_price": "COALESCE(s.initial_price, pr.price)",
 	"keep":          "s.keep",
-	// price_yr is absent on purpose: it needs exchange rates, so the web
-	// layer sorts it in Go (see SortByPriceYr there).
+	// price and initial_price are only a first pass: the web list
+	// re-sorts them by USD cost, which needs exchange rates. price_yr is
+	// absent on purpose for the same reason (see sortByCost in
+	// internal/web/servers.go).
 }
 
 // orderClause applies dir to EVERY component of a whitelisted sort

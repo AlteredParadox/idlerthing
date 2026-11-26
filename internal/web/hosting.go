@@ -92,6 +92,7 @@ func (s *Server) hostingSection(cfg *hostingConfig) *section {
 			if err != nil {
 				return nil, err
 			}
+			sortListByPrice(s, r, opts, items, func(it *model.HostingListItem) *model.Pricing { return it.Pricing })
 			return s.hostingRows(cfg.base, items, s.dueSoonDays(r)), nil
 		},
 		Counts: cfg.store.StatusCounts,

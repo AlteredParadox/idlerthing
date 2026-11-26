@@ -50,6 +50,7 @@ func (s *Server) miscSection() *section {
 			if err != nil {
 				return nil, err
 			}
+			sortListByPrice(s, r, opts, items, func(it *model.MiscListItem) *model.Pricing { return it.Pricing })
 			dueSoon := s.dueSoonDays(r)
 			var rows []listRow
 			for _, it := range items {

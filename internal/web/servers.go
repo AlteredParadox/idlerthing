@@ -694,7 +694,7 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 
 // parseInitialPriceForm parses the optional initial-price fields. "Free"
 // wins over a typed amount and carries no term or currency. A blank part is
-// filled from the pricing on save (model.fillInitialFromPricing); a blank
+// filled from the pricing on save (model.normalizeInitial); a blank
 // amount drops any chosen term and currency with it, so the whole price is
 // copied.
 func parseInitialPriceForm(r *http.Request, errs map[string]string) (sql.NullFloat64, sql.NullInt64, sql.NullString) {
@@ -739,7 +739,8 @@ func validInitialPrice(f float64) bool {
 	return f == 0 || validPrice(f)
 }
 
-// checkInitialPrice enforces the rule shared by the form and the API: a
+// checkInitialPrice is the form's inline version of the store rule
+// (model.ErrInitialNoCurrency), which the API reports instead: a
 // non-free initial amount needs a currency, either its own or the price's
 // (which saving copies in).
 func checkInitialPrice(srv *model.Server, p *model.Pricing, errs map[string]string) {

@@ -280,10 +280,6 @@ func TestAPIServerKeepDefaultsAndInitialValidation(t *testing.T) {
 		t.Fatal("negative initial price must be rejected")
 	}
 	five := 5.0
-	j = &serverJSON{Hostname: "api-03", InitialPrice: &five}
-	if _, _, _, errs := j.toModel(); errs["initial_price"] == "" {
-		t.Fatal("initial price without pricing or its own currency must be rejected")
-	}
 	eur, bad := "EUR", "XYZ"
 	j = &serverJSON{Hostname: "api-04", InitialPrice: &five, InitialCurrency: &eur}
 	if srv, _, _, errs := j.toModel(); len(errs) != 0 || srv.InitialCurrency.String != "EUR" {
@@ -366,5 +362,91 @@ func TestAPIServerPutKeepsOmittedNewFields(t *testing.T) {
 	got = serverByHost(t, st, "put-01")
 	if !got.Keep || got.InitialPrice.Float64 != 5 || got.InitialTerm.Int64 != model.TermMonthly {
 		t.Fatalf("explicit keep/null should replace: %+v", got)
+	}
+}
+
+// A positive initial price with no currency and no pricing is a 422 on
+// both POST and PUT (the store enforces it after the PUT merge).
+func TestAPIServerInitialNoCurrency(t *testing.T) {
+	ts, database := newTestServer(t)
+	token := setAPIToken(t, database)
+	do := func(method, path, body string) int {
+		t.Helper()
+		req, _ := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if c := do("POST", "/api/servers", `{"hostname": "nc-01", "initial_price": 5}`); c != http.StatusUnprocessableEntity {
+		t.Fatalf("POST: %d", c)
+	}
+	if c := do("POST", "/api/servers", `{"hostname": "nc-02", "pricing": {"currency": "USD", "price": 5, "term": 1}}`); c != http.StatusCreated {
+		t.Fatalf("POST priced: %d", c)
+	}
+	// Stored USD copy, then an explicit null currency and no pricing: no
+	// currency left to use.
+	if c := do("PUT", "/api/servers/1", `{"hostname": "nc-02", "initial_currency": null}`); c != http.StatusUnprocessableEntity {
+		t.Fatalf("PUT: %d", c)
+	}
+}
+
+// A legacy PUT (no initial_* fields) against a server whose stored initial
+// currency came from an import and isn't in the dropdown still succeeds:
+// stored history isn't re-validated as new input.
+func TestAPIServerPutKeepsImportedCurrency(t *testing.T) {
+	ts, database := newTestServer(t)
+	token := setAPIToken(t, database)
+	st := &model.ServerStore{DB: database}
+	id, err := st.Create(context.Background(), &model.Server{Hostname: "chf-01", ServerType: model.TypeKVM, Active: true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE servers SET initial_price = 40, initial_term = 4, initial_currency = 'CHF' WHERE id = ?", id); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("PUT", ts.URL+"/api/servers/"+strconv.FormatInt(id, 10),
+		strings.NewReader(`{"hostname": "chf-01", "server_type": 1}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("legacy PUT: %d", resp.StatusCode)
+	}
+	if got := serverByHost(t, st, "chf-01"); got.InitialCurrency.String != "CHF" || got.InitialPrice.Float64 != 40 {
+		t.Fatalf("imported initial price changed: %+v", got)
+	}
+}
+
+// UpdateFields merges unset fields from the row as it is at write time, so
+// a change committed after the caller last read the server survives.
+func TestUpdateFieldsMergesLiveRow(t *testing.T) {
+	_, database := newTestServer(t)
+	ctx := context.Background()
+	st := &model.ServerStore{DB: database}
+	id, err := st.Create(ctx, &model.Server{Hostname: "race-01", ServerType: model.TypeKVM, Active: true, Keep: true}, nil,
+		&model.Pricing{Currency: "USD", Price: 5, Term: model.TermMonthly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := serverByHost(t, st, "race-01") // a client's earlier read: Keep=true
+	// Someone else unticks Keep and sets an initial price.
+	if _, err := database.Exec("UPDATE servers SET keep = 0, initial_price = 3 WHERE id = ?", id); err != nil {
+		t.Fatal(err)
+	}
+	stale.Hostname = "race-renamed"
+	if err := st.UpdateFields(ctx, stale, nil, &model.Pricing{Currency: "USD", Price: 5, Term: model.TermMonthly},
+		model.ServerFieldsSet{}); err != nil {
+		t.Fatal(err)
+	}
+	got := serverByHost(t, st, "race-renamed")
+	if got.Keep || got.InitialPrice.Float64 != 3 {
+		t.Fatalf("stale copy overwrote the live keep/initial price: %+v", got)
 	}
 }

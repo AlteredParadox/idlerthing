@@ -871,6 +871,12 @@ func importMyServer(ctx context.Context, tx *sql.Tx, rec MyServer, delta *MySumm
 			nullStr(rec.Pricing.NextDueDate)); err != nil {
 			return err
 		}
+		// Freeze the imported price as the initial price, as saving does.
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE servers SET initial_price = ?, initial_term = ?, initial_currency = ? WHERE id = ?",
+			rec.Pricing.Price, rec.Pricing.Term, rec.Pricing.Currency, serverID); err != nil {
+			return err
+		}
 		delta.Pricings++
 	}
 	return nil

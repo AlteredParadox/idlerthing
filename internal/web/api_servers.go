@@ -64,27 +64,16 @@ type serverJSON struct {
 	present map[string]bool
 }
 
-// keepOmittedOnUpdate fills the fields added after the API's first release
-// (keep, initial_price, initial_term, initial_currency) from the stored server when the PUT
-// body leaves them out, so a client that predates them can't silently reset
-// Keep or wipe the initial price. An explicit value — including false or
-// null — still replaces the stored one.
-func (j *serverJSON) keepOmittedOnUpdate(cur *model.Server) {
-	if !j.present["keep"] {
-		keep := cur.Keep
-		j.Keep = &keep
-	}
-	if !j.present["initial_price"] && cur.InitialPrice.Valid {
-		v := cur.InitialPrice.Float64
-		j.InitialPrice = &v
-	}
-	if !j.present["initial_term"] && cur.InitialTerm.Valid {
-		t := int(cur.InitialTerm.Int64)
-		j.InitialTerm = &t
-	}
-	if !j.present["initial_currency"] && cur.InitialCurrency.Valid {
-		c := cur.InitialCurrency.String
-		j.InitialCurrency = &c
+// fieldsSet reports which of keep / initial_price / initial_term /
+// initial_currency the request carried (null counts as carried). On PUT the
+// store keeps the stored value of every other one, merged inside its write
+// transaction, so a client that predates them can't reset them.
+func (j *serverJSON) fieldsSet() model.ServerFieldsSet {
+	return model.ServerFieldsSet{
+		Keep:            j.present["keep"],
+		InitialPrice:    j.present["initial_price"],
+		InitialTerm:     j.present["initial_term"],
+		InitialCurrency: j.present["initial_currency"],
 	}
 }
 
@@ -106,9 +95,7 @@ func (j *serverJSON) toModel() (*model.Server, []model.ServerDisk, *model.Pricin
 	srv := j.serverFields(errs)
 	j.checkBounds(errs)
 	j.initialToModel(srv, errs)
-	pricing := j.pricingToModel(errs)
-	checkInitialPrice(srv, pricing, errs)
-	return srv, j.disksToModel(), pricing, errs
+	return srv, j.disksToModel(), j.pricingToModel(errs), errs
 }
 
 // serverFields maps the scalar fields and validates them.
@@ -144,9 +131,11 @@ func (j *serverJSON) serverFields(errs map[string]string) *model.Server {
 	return srv
 }
 
-// initialToModel maps and validates the initial-price fields (same rules
-// as parseInitialPriceForm: a free price carries no term or currency, and a
-// missing amount drops them so the whole price is copied on save).
+// initialToModel maps and validates the initial-price fields the request
+// carried. Only explicit input is validated: a stored value merged in on PUT
+// (possibly an imported currency outside the dropdown) is history, kept as
+// is. Normalizing (free → no term or currency, blank → copy the price) and
+// the currency rule happen in the store, after that merge.
 func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
 	if j.InitialTerm != nil {
 		if *j.InitialTerm < model.TermMonthly || *j.InitialTerm > model.TermOneTime {
@@ -160,18 +149,20 @@ func (j *serverJSON) initialToModel(srv *model.Server, errs map[string]string) {
 			errs["initial_currency"] = "initial_currency must be one of " + strings.Join(currencies, ", ")
 		}
 	}
-	if j.InitialPrice == nil {
-		srv.InitialTerm, srv.InitialCurrency = sql.NullInt64{}, sql.NullString{}
-		return
+	if j.InitialPrice != nil {
+		if !validInitialPrice(*j.InitialPrice) {
+			errs["initial_price"] = "initial_price must be 0 (free) or a positive number"
+			return
+		}
+		srv.InitialPrice = sql.NullFloat64{Float64: *j.InitialPrice, Valid: true}
 	}
-	if !validInitialPrice(*j.InitialPrice) {
-		errs["initial_price"] = "initial_price must be 0 (free) or a positive number"
-		return
-	}
-	srv.InitialPrice = sql.NullFloat64{Float64: *j.InitialPrice, Valid: true}
-	if *j.InitialPrice == 0 {
-		srv.InitialTerm, srv.InitialCurrency = sql.NullInt64{}, sql.NullString{}
-	}
+}
+
+// writeInitialCurrencyError reports model.ErrInitialNoCurrency as a field
+// validation failure.
+func writeInitialCurrencyError(w http.ResponseWriter) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "validation failed",
+		"fields": map[string]string{"initial_price": "initial_price needs initial_currency, or pricing to copy it from"}})
 }
 
 // nullStrIf wraps a non-blank string as a valid NullString (trimmed, like
@@ -411,6 +402,10 @@ func (s *Server) handleAPIServerCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := s.servers.Create(r.Context(), srv, disks, pricing)
+	if errors.Is(err, model.ErrInitialNoCurrency) {
+		writeInitialCurrencyError(w)
+		return
+	}
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
 		return
@@ -435,15 +430,6 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cur, _, _, err := s.servers.Get(r.Context(), id)
-	if err == sql.ErrNoRows {
-		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
-		return
-	} else if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
-		return
-	}
-	j.keepOmittedOnUpdate(cur)
 	srv, disks, pricing, errs := j.toModel()
 	if err := s.checkCatalogRefs(r.Context(), srv, errs); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
@@ -454,8 +440,11 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	srv.ID = id
-	if err := s.servers.Update(r.Context(), srv, disks, pricing); err == sql.ErrNoRows {
+	if err := s.servers.UpdateFields(r.Context(), srv, disks, pricing, j.fieldsSet()); err == sql.ErrNoRows {
 		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
+		return
+	} else if errors.Is(err, model.ErrInitialNoCurrency) {
+		writeInitialCurrencyError(w)
 		return
 	} else if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)

@@ -19,6 +19,7 @@ package model
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -81,7 +82,7 @@ type Server struct {
 	Keep          bool
 	// InitialPrice / InitialTerm / InitialCurrency record the first-purchase
 	// price; a 0 amount is free and carries no term or currency. Saving
-	// fills any blank part from the current pricing (fillInitialFromPricing)
+	// fills any blank part from the current pricing (normalizeInitial)
 	// so it stays frozen through later pricing changes. NULL amount remains
 	// only while the server has never had pricing.
 	InitialPrice    sql.NullFloat64
@@ -135,31 +136,55 @@ func scanServer(row interface{ Scan(...any) error }) (*Server, error) {
 	return &s, nil
 }
 
-// fillInitialFromPricing fills each blank part of the initial price from the
-// current pricing, freezing what the server cost when it was first priced.
-// A free (0) initial price keeps no term or currency.
-func fillInitialFromPricing(s *Server, p *Pricing) {
-	if s.InitialPrice.Valid && s.InitialPrice.Float64 == 0 {
+// ErrInitialNoCurrency rejects a positive initial price that has no
+// currency of its own and no pricing to copy one from.
+var ErrInitialNoCurrency = errors.New("initial price has no currency")
+
+// normalizeInitial settles the initial price before a write. A free (0) one
+// carries no term or currency; a blank amount drops any term or currency so
+// the whole current price is copied; each remaining blank part is filled
+// from the current pricing, freezing what the server cost when first priced.
+func normalizeInitial(s *Server, p *Pricing) error {
+	switch {
+	case s.InitialPrice.Valid && s.InitialPrice.Float64 == 0:
 		s.InitialTerm, s.InitialCurrency = sql.NullInt64{}, sql.NullString{}
-		return
+		return nil
+	case !s.InitialPrice.Valid:
+		s.InitialTerm, s.InitialCurrency = sql.NullInt64{}, sql.NullString{}
 	}
-	if p == nil || p.Currency == "" {
-		return
+	if p != nil && p.Currency != "" {
+		if !s.InitialPrice.Valid {
+			s.InitialPrice = sql.NullFloat64{Float64: p.Price, Valid: true}
+		}
+		if !s.InitialTerm.Valid {
+			s.InitialTerm = sql.NullInt64{Int64: int64(p.Term), Valid: true}
+		}
+		if !s.InitialCurrency.Valid {
+			s.InitialCurrency = sql.NullString{String: p.Currency, Valid: true}
+		}
 	}
-	if !s.InitialPrice.Valid {
-		s.InitialPrice = sql.NullFloat64{Float64: p.Price, Valid: true}
+	if s.InitialPrice.Valid && s.InitialPrice.Float64 > 0 && !s.InitialCurrency.Valid {
+		return ErrInitialNoCurrency
 	}
-	if !s.InitialTerm.Valid {
-		s.InitialTerm = sql.NullInt64{Int64: int64(p.Term), Valid: true}
-	}
-	if !s.InitialCurrency.Valid {
-		s.InitialCurrency = sql.NullString{String: p.Currency, Valid: true}
-	}
+	return nil
 }
+
+// ServerFieldsSet says which of the fields added after the API's first
+// release a write supplied. An unset field keeps its stored value; the
+// merge happens inside the write transaction so a concurrent edit can't be
+// overwritten with a stale copy.
+type ServerFieldsSet struct {
+	Keep, InitialPrice, InitialTerm, InitialCurrency bool
+}
+
+// AllServerFields marks every field as supplied (a full replacement).
+var AllServerFields = ServerFieldsSet{Keep: true, InitialPrice: true, InitialTerm: true, InitialCurrency: true}
 
 // Create inserts a server plus its disks and optional pricing in one transaction.
 func (st *ServerStore) Create(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing) (int64, error) {
-	fillInitialFromPricing(s, pricing)
+	if err := normalizeInitial(s, pricing); err != nil {
+		return 0, err
+	}
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -233,7 +258,13 @@ func (st *ServerStore) Disks(ctx context.Context, serverID int64) ([]ServerDisk,
 
 // Update replaces a server's fields, disks, and pricing in one transaction.
 func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing) error {
-	fillInitialFromPricing(s, pricing)
+	return st.UpdateFields(ctx, s, disks, pricing, AllServerFields)
+}
+
+// UpdateFields is Update where the fields not marked in set keep their
+// stored values. The base UPDATE runs first so the transaction holds the
+// write lock before the stored values are read and merged.
+func (st *ServerStore) UpdateFields(ctx context.Context, s *Server, disks []ServerDisk, pricing *Pricing, set ServerFieldsSet) error {
 	tx, err := st.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -244,20 +275,48 @@ func (st *ServerStore) Update(ctx context.Context, s *Server, disks []ServerDisk
 		UPDATE servers SET hostname = ?, server_type = ?, os_id = ?, provider_id = ?,
 			location_id = ?, ram_as_mb = ?, cpu = ?, cpu_model = ?, bandwidth_as_mb = ?,
 			link_speed = ?, network_type = ?, ns1 = ?, ns2 = ?, ssh_port = ?,
-			active = ?, show_public = ?, was_promo = ?, transferrable = ?, keep = ?,
-			initial_price = ?, initial_term = ?, initial_currency = ?,
+			active = ?, show_public = ?, was_promo = ?, transferrable = ?,
 			owned_since = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`,
 		s.Hostname, s.ServerType, s.OsID, s.ProviderID, s.LocationID,
 		s.RamAsMB, s.CPU, s.CPUModel, s.BandwidthAsMB, s.LinkSpeed, s.NetworkType,
 		s.Ns1, s.Ns2, s.SSHPort, boolToInt(s.Active), boolToInt(s.ShowPublic),
-		boolToInt(s.WasPromo), boolToInt(s.Transferrable), boolToInt(s.Keep),
-		s.InitialPrice, s.InitialTerm, s.InitialCurrency, s.OwnedSince, s.ID)
+		boolToInt(s.WasPromo), boolToInt(s.Transferrable), s.OwnedSince, s.ID)
 	if err != nil {
 		return fmt.Errorf("update server: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
+	}
+	if set != AllServerFields {
+		var keep int
+		var cur Server
+		if err := tx.QueryRowContext(ctx,
+			"SELECT keep, initial_price, initial_term, initial_currency FROM servers WHERE id = ?", s.ID).
+			Scan(&keep, &cur.InitialPrice, &cur.InitialTerm, &cur.InitialCurrency); err != nil {
+			return err
+		}
+		if !set.Keep {
+			s.Keep = keep != 0
+		}
+		if !set.InitialPrice {
+			s.InitialPrice = cur.InitialPrice
+		}
+		if !set.InitialTerm {
+			s.InitialTerm = cur.InitialTerm
+		}
+		if !set.InitialCurrency {
+			s.InitialCurrency = cur.InitialCurrency
+		}
+	}
+	if err := normalizeInitial(s, pricing); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE servers SET keep = ?, initial_price = ?, initial_term = ?, initial_currency = ?
+		WHERE id = ?`,
+		boolToInt(s.Keep), s.InitialPrice, s.InitialTerm, s.InitialCurrency, s.ID); err != nil {
+		return fmt.Errorf("update server: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM server_disks WHERE server_id = ?", s.ID); err != nil {

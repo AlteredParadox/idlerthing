@@ -450,3 +450,57 @@ func TestUpdateFieldsMergesLiveRow(t *testing.T) {
 		t.Fatalf("stale copy overwrote the live keep/initial price: %+v", got)
 	}
 }
+
+// An imported initial currency outside the dropdown (CHF) is offered on the
+// edit form and survives saving an unrelated change, even when the renewal
+// price is in another currency. A new value outside the list is still
+// refused.
+func TestServerFormKeepsImportedInitialCurrency(t *testing.T) {
+	ts, database := newTestServer(t)
+	client := authedClient(t, ts)
+	st := &model.ServerStore{DB: database}
+	createFullServer(t, client, ts, "chf-form", nil) // USD 10/mo
+	srv := serverByHost(t, st, "chf-form")
+	if _, err := database.Exec("UPDATE servers SET initial_price = 40, initial_term = 4, initial_currency = 'CHF' WHERE id = ?", srv.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/servers/" + strconv.FormatInt(srv.ID, 10)
+	resp, err := client.Get(ts.URL + path + "/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if !strings.Contains(body, `<option value="CHF" selected>CHF</option>`) {
+		t.Fatal("edit form should offer and select the stored CHF")
+	}
+
+	// What the browser posts back: CHF selected, hostname changed.
+	vals := url.Values{"hostname": {"chf-renamed"}, "server_type": {"1"}, "active": {"on"},
+		"price": {"10"}, "currency": {"USD"}, "term": {"1"},
+		"initial_price": {"40"}, "initial_term": {"4"}, "initial_currency": {"CHF"}}
+	resp = postForm(t, client, ts, path+"/update", vals)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("update: %d", resp.StatusCode)
+	}
+	if got := serverByHost(t, st, "chf-renamed"); got.InitialCurrency.String != "CHF" || got.InitialPrice.Float64 != 40 {
+		t.Fatalf("CHF initial price relabelled: %+v", got)
+	}
+
+	// Another unlisted code is not accepted as new input: it falls back to
+	// "same as price".
+	vals.Set("initial_currency", "SEK")
+	resp = postForm(t, client, ts, path+"/update", vals)
+	resp.Body.Close()
+	if got := serverByHost(t, st, "chf-renamed"); got.InitialCurrency.String != "USD" {
+		t.Fatalf("unlisted new currency should not be stored: %+v", got)
+	}
+
+	// Updating a server that doesn't exist is a 404.
+	resp = postForm(t, client, ts, "/servers/999/update", vals)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing server update: %d", resp.StatusCode)
+	}
+}

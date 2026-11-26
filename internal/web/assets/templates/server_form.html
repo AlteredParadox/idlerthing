@@ -232,6 +232,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           {{range $v.Currencies}}
           <option value="{{.}}" {{if $s.InitialCurrency.Valid}}{{if eq $s.InitialCurrency.String .}}selected{{end}}{{end}}>{{.}}</option>
           {{end}}
+          {{with $v.ExtraCurrency}}<option value="{{.}}" selected>{{.}}</option>{{end}}
         </select>
       </label>
       <div class="field">

@@ -505,6 +505,9 @@ type serverFormView struct {
 	NetworkTypes []string
 	DiskMedia    []string
 	Errors       map[string]string
+	// ExtraCurrency is a stored initial currency outside Currencies (from
+	// an import), offered on the form so saving doesn't drop it.
+	ExtraCurrency string
 }
 
 // handleServerNew renders GET /servers/new.
@@ -548,6 +551,9 @@ func (s *Server) renderServerForm(w http.ResponseWriter, r *http.Request, view s
 		view.OSes, _ = s.catalogs.List(r.Context(), model.Catalogs["os"])
 	}
 	view.Currencies = currencies
+	if c := view.Server.InitialCurrency; c.Valid && !knownCurrency(c.String).Valid {
+		view.ExtraCurrency = c.String
+	}
 	view.NetworkTypes = networkTypes
 	view.DiskMedia = diskMediaTypes
 
@@ -562,7 +568,7 @@ func (s *Server) renderServerForm(w http.ResponseWriter, r *http.Request, view s
 
 // handleServerCreate handles POST /servers.
 func (s *Server) handleServerCreate(w http.ResponseWriter, r *http.Request) {
-	srv, disks, pricing, errs := parseServerForm(r)
+	srv, disks, pricing, errs := parseServerForm(r, "")
 	if len(errs) > 0 {
 		s.renderServerForm(w, r, serverFormView{
 			Action: routeServers, Server: srv, Disks: disks, Pricing: pricing, Errors: errs,
@@ -586,7 +592,18 @@ func (s *Server) handleServerUpdate(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	srv, disks, pricing, errs := parseServerForm(r)
+	// The stored initial currency may be one an import brought in that the
+	// dropdown doesn't list; the form offers it on edit, so accept it back.
+	cur, _, _, err := s.servers.Get(r.Context(), id)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, errMsgServerErr, http.StatusInternalServerError)
+		return
+	}
+	srv, disks, pricing, errs := parseServerForm(r, cur.InitialCurrency.String)
 	srv.ID = id
 	if len(errs) > 0 {
 		s.renderServerForm(w, r, serverFormView{
@@ -635,7 +652,9 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request) {
 
 // parseServerForm parses + validates the server form. Returned errors are
 // keyed by field name for inline display.
-func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model.Pricing, map[string]string) {
+// storedCurrency is the server's current initial currency (edit only): it is
+// accepted back even when the dropdown wouldn't offer it for a new value.
+func parseServerForm(r *http.Request, storedCurrency string) (*model.Server, []model.ServerDisk, *model.Pricing, map[string]string) {
 	errs := map[string]string{}
 	srv := &model.Server{
 		Hostname:      strings.TrimSpace(r.FormValue("hostname")),
@@ -687,7 +706,7 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 	}
 
 	pricing := parsePricingForm(r, errs)
-	srv.InitialPrice, srv.InitialTerm, srv.InitialCurrency = parseInitialPriceForm(r, errs)
+	srv.InitialPrice, srv.InitialTerm, srv.InitialCurrency = parseInitialPriceForm(r, errs, storedCurrency)
 	checkInitialPrice(srv, pricing, errs)
 	return srv, disks, pricing, errs
 }
@@ -697,7 +716,7 @@ func parseServerForm(r *http.Request) (*model.Server, []model.ServerDisk, *model
 // filled from the pricing on save (model.normalizeInitial); a blank
 // amount drops any chosen term and currency with it, so the whole price is
 // copied.
-func parseInitialPriceForm(r *http.Request, errs map[string]string) (sql.NullFloat64, sql.NullInt64, sql.NullString) {
+func parseInitialPriceForm(r *http.Request, errs map[string]string, storedCurrency string) (sql.NullFloat64, sql.NullInt64, sql.NullString) {
 	none := func() (sql.NullFloat64, sql.NullInt64, sql.NullString) {
 		return sql.NullFloat64{}, sql.NullInt64{}, sql.NullString{}
 	}
@@ -720,7 +739,11 @@ func parseInitialPriceForm(r *http.Request, errs map[string]string) (sql.NullFlo
 	if t := intFormValue(r, "initial_term", 0); t >= model.TermMonthly && t <= model.TermOneTime {
 		term = sql.NullInt64{Int64: int64(t), Valid: true}
 	}
-	return sql.NullFloat64{Float64: price, Valid: true}, term, knownCurrency(r.FormValue("initial_currency"))
+	currency := knownCurrency(r.FormValue("initial_currency"))
+	if v := r.FormValue("initial_currency"); !currency.Valid && v != "" && v == storedCurrency {
+		currency = sql.NullString{String: v, Valid: true}
+	}
+	return sql.NullFloat64{Float64: price, Valid: true}, term, currency
 }
 
 // knownCurrency returns a supported currency code, or NULL ("same as the

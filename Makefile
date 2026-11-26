@@ -4,7 +4,7 @@ BINARY := idlerthing
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 export VERSION
 
-.PHONY: build run test vet notices notices-check license-headers license-check clean
+.PHONY: build run test vet notices notices-check license-headers license-check docker clean
 
 # `notices` runs FIRST: THIRD_PARTY_LICENSES.md is embedded into the binary
 # (notices.go), so regenerating it here means what ships always matches what
@@ -50,6 +50,11 @@ license-headers:
 # Cheap and deterministic (no network, no build), so this one DOES gate CI.
 license-check:
 	@./scripts/license-headers.sh --check
+
+# Build the container image as idlerthing:local, stamped with the same
+# VERSION as a native build. Needs only Docker — Go runs inside the image.
+docker:
+	docker build -t idlerthing:local --build-arg VERSION=$${VERSION} .
 
 clean:
 	rm -f $(BINARY)

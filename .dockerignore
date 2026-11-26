@@ -1,0 +1,36 @@
+# Keep the build context small and free of local state. The Dockerfile COPYs
+# explicit paths anyway; this is the second line of defence (and keeps the
+# context upload fast).
+
+.git
+.github
+
+# Local build output
+/idlerthing
+*.test
+
+# Local runtime state and secrets — never send these to a builder. Recursive
+# (**/) so nested copies are excluded too, not only ones at the root.
+**/data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db.secret
+**/.env
+**/*.key
+**/*.pem
+**/*.bak
+*.log
+
+# Not needed to build the binary
+ai_examples/
+docs/
+deploy/
+scripts/
+tmp-seed/
+
+# Editor / OS cruft
+*.swp
+*.swo
+*~
+.DS_Store

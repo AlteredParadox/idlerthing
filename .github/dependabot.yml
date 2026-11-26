@@ -45,3 +45,20 @@ updates:
       github-actions-security:
         applies-to: security-updates
         patterns: ['*']
+
+  # The Dockerfile's base images (golang builder, alpine runtime). Majors
+  # arrive one PR each, like the other ecosystems. A green `check` never
+  # builds the image, so after merging one of these run the release dry run:
+  #   gh workflow run release.yml --ref main
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        applies-to: version-updates
+        update-types: ['minor', 'patch']
+        patterns: ['*']
+      docker-security:
+        applies-to: security-updates
+        patterns: ['*']

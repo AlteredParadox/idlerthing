@@ -1,0 +1,44 @@
+# fail2ban jail for the Docker/compose deployment.
+#
+# fail2ban runs on the HOST, not in a container: it needs the real firewall.
+# The filter is shared with the systemd deployment — the compose file's
+# journald log driver tags entries SYSLOG_IDENTIFIER=idlerthing, which is
+# exactly what the filter's prefix expects.
+#
+# Install:
+#   deploy/fail2ban/idlerthing.conf -> /etc/fail2ban/filter.d/idlerthing.conf   (shared filter)
+#   this file                       -> /etc/fail2ban/jail.d/idlerthing-docker.conf
+#   systemctl restart fail2ban
+#
+# Prereqs (both are the defaults in deploy/docker/docker-compose.yml):
+#   * container_name: idlerthing + the journald log driver, so the
+#     journalmatch below finds the container's lines;
+#   * IDLER_BEHIND_TLS_PROXY=1 with a reverse proxy ON THE HOST, so the logged
+#     address is the real client from X-Forwarded-For, not the Docker gateway
+#     address the proxy's own connections arrive from. Bans are only as good
+#     as that header: the README's Docker section lists what keeps it
+#     trustworthy (Docker Engine 28+, no untrusted containers on the network,
+#     a proxy that appends the final entry).
+#
+# Ban action: the same native nftables action as the systemd jail. That is
+# correct ONLY because clients connect to the host's reverse proxy (ports
+# 80/443 on the host, i.e. the INPUT path); idlerthing's own port is published
+# on 127.0.0.1 and never reachable from outside. If you instead publish
+# idlerthing's port publicly, Docker DNATs that traffic through its FORWARD
+# path, bypassing INPUT, and this action would not block it — ban in the
+# DOCKER-USER chain instead:
+#   action = iptables-allports[name=idlerthing, chain=DOCKER-USER, protocol=tcp]
+
+[idlerthing-docker]
+enabled  = true
+backend  = systemd
+filter   = idlerthing
+journalmatch = CONTAINER_NAME=idlerthing
+banaction = nftables-allports
+protocol  = tcp,udp
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+bantime.increment = true
+bantime.factor    = 2
+bantime.maxtime   = 1w

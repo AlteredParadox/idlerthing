@@ -74,6 +74,85 @@ relative to the unit's `WorkingDirectory`). See the comments in the unit file
 for memory limits, hardening notes, and the `CAP_NET_RAW` caveat for the
 in-app ping tool.
 
+## Docker
+
+Each release also publishes a multi-arch (`linux/amd64`, `linux/arm64`) image
+to `ghcr.io/alteredparadox/idlerthing`, tagged `X.Y.Z`, `X.Y` and `latest`. It
+is the same static binary on Alpine. It runs as uid 10001 and keeps the
+database and the generated YABS secret in the `/var/lib/idlerthing` volume.
+
+[`deploy/docker/docker-compose.yml`](deploy/docker/docker-compose.yml) runs it
+hardened: a read-only root, no capabilities and `no-new-privileges`. The port is
+published on `127.0.0.1:8080` only, for a reverse proxy on the host to front:
+
+```sh
+cd deploy/docker
+docker compose up -d
+docker compose logs idlerthing | grep 'admin password'   # first run only
+```
+
+The image sets `IDLER_ADDR=0.0.0.0:8080` (inside the container) and
+`IDLER_DB=/var/lib/idlerthing/data/idlerthing.db`. Other variables from
+[Configuration](#configuration) go in the compose `environment:` block, or in
+an optional `deploy/docker/idlerthing.env` (mode 0600) for secrets such as
+`IDLER_ADMIN_PASSWORD`. The subcommands work through `exec`:
+
+```sh
+docker compose exec idlerthing idlerthing version
+docker compose exec idlerthing idlerthing passwd     # generates and prints a new password
+docker compose exec -T idlerthing idlerthing passwd < password.txt   # or supply your own
+docker compose exec -T idlerthing idlerthing import /dev/stdin < backup.json
+```
+
+`import` reads the backup from standard input. `docker compose cp` into the
+container fails, because the root filesystem is read-only.
+
+Notes:
+
+- **Behind a proxy is the supported shape.** The compose file sets
+  `IDLER_BEHIND_TLS_PROXY=1`. The host proxy's connections to
+  `127.0.0.1:8080` arrive from the Docker gateway address, so the proxy's
+  `X-Forwarded-For` is the only source of the real client address. In this
+  mode idlerthing trusts the header's **last** address for login rate limiting
+  and fail2ban. That is safe only while the host proxy is the only thing that
+  can reach port 8080. That holds when all three of these are true:
+  - **Docker Engine 28.0 or newer.** Older engines let other hosts on the same
+    L2 segment reach loopback-published ports
+    ([Docker docs](https://docs.docker.com/engine/network/port-publishing/#publishing-ports)).
+    Check with `docker version`, or firewall the port yourself.
+  - **No untrusted containers on idlerthing's network.** Containers on the same
+    network bypass the published port. The compose file's network holds only
+    idlerthing; keep it that way.
+  - **The proxy appends or replaces the final `X-Forwarded-For` entry** with
+    the address it saw. Caddy's `reverse_proxy` does this by default, and so
+    does nginx with
+    `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`.
+
+  To serve plain HTTP on a LAN without a proxy, publish the port on the LAN
+  address and **remove** `IDLER_BEHIND_TLS_PROXY`. Otherwise any client could
+  forge the header, and session cookies would be `Secure`-only over HTTP.
+- **The ping tool works** without `CAP_NET_RAW`. Docker allows unprivileged
+  ICMP sockets by default (`net.ipv4.ping_group_range`), unlike the hardened
+  systemd unit.
+- **fail2ban** stays on the host. The compose file logs to journald with
+  `tag: idlerthing`, which the shared filter matches unchanged. Install
+  [`deploy/docker/fail2ban-jail.local`](deploy/docker/fail2ban-jail.local) in
+  place of the systemd jail (`sudo fail2ban-regex -m CONTAINER_NAME=idlerthing
+  systemd-journal /etc/fail2ban/filter.d/idlerthing.conf` checks it). Its
+  comments cover the `DOCKER-USER` case for a publicly published port.
+  On a host without journald (Docker Desktop, non-systemd distros), delete the
+  compose `logging:` block, because the container won't start with it.
+- **Backups:** the `idlerthing_data` volume holds the whole state. Use the
+  export/import below, or stop the container and copy the volume.
+- **Package visibility:** the release workflow checks that each image tag is
+  anonymously pullable before it cuts the Release. If GHCR ever creates the
+  package as private, the run stops there. Set the package to public once
+  (package settings → Change visibility), then re-run the failed jobs. The
+  re-push is idempotent.
+- **Build locally:** `make docker` builds `idlerthing:local`, stamped with
+  `git describe`. Run it with
+  `IDLERTHING_IMAGE=idlerthing:local docker compose up -d`.
+
 ## Banning brute-force logins (fail2ban)
 
 idlerthing logs authentication events to stderr — the systemd journal — in a

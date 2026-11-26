@@ -1,19 +1,28 @@
-# Build the release binaries and cut a GitHub Release on every version tag.
+# Build the release binaries and container image, and cut a GitHub Release on
+# every version tag.
 #
-# idlerthing ships as a single static binary installed to /usr/local/bin by
-# the systemd unit — there is no container — so the release artifacts are the
-# binaries themselves plus a SHA256SUMS file, not a GHCR image.
+# idlerthing ships two ways: as a single static binary installed to
+# /usr/local/bin by the systemd unit (linux/amd64 + arm64 binaries plus a
+# SHA256SUMS file), and as a multi-arch container image on GHCR
+# (ghcr.io/alteredparadox/idlerthing, tagged X.Y.Z, X.Y and latest).
 #
 # Trigger: pushing a `vX.Y.Z` tag. A manual `workflow_dispatch` run builds
-# every arch and uploads them as workflow artifacts WITHOUT creating a
-# Release — a cheap "does it still build and pass" check that also exercises
-# this workflow, which a tag push would otherwise be the first thing to run.
+# every binary arch (uploaded as workflow artifacts) and the image for every
+# platform WITHOUT pushing it or creating a Release — a cheap "does it still
+# build and pass" check that also exercises this workflow, which a tag push
+# would otherwise be the first thing to run. Run it after merging any
+# Dependabot bump to the docker/* actions or the Dockerfile base images:
+#
+#   gh workflow run release.yml --ref main
+#
 # Both paths gate on the same tests as ci.yml.
 #
-# Least privilege: only the tag-only `publish` job gets contents: write.
-# Actions are pinned to full commit SHAs (a mutable tag can be repointed at
-# malicious code); the trailing comment records the tag. Keep the comment at
-# the FULL version — Dependabot leaves a bare "# v7" stale as the SHA moves.
+# Least privilege: only the tag-only `image` job gets packages: write (and is
+# the only one that logs in to the registry), and only the tag-only `publish`
+# job gets contents: write. Actions are pinned to full commit SHAs (a mutable
+# tag can be repointed at malicious code); the trailing comment records the
+# tag. Keep the comment at the FULL version — Dependabot leaves a bare "# v7"
+# stale as the SHA moves.
 name: release
 
 on:
@@ -82,12 +91,122 @@ jobs:
           path: idlerthing-linux-${{ matrix.goarch }}
           if-no-files-found: error
 
+  # Manual dispatch only: prove the multi-arch image still builds, WITHOUT any
+  # registry access (read-only token, no login, no push). Keyed on the EVENT,
+  # not the ref: a dispatch can target a tag, and keying on ref_type alone
+  # would route a manual run into the package-write job below.
+  image-build:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The Go compile cross-compiles natively (the builder stage is pinned to
+      # the build platform); QEMU is only for the final stage's `apk add`.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=dev
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Tag PUSH only: build and publish the image. The ONLY job granted
+  # packages: write. It runs before `publish`, so a Release is never cut
+  # without its image — and a failed run is safe to re-run, because pushing
+  # the same tags again is idempotent where `gh release create` is not.
+  image:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # type=semver strips the leading v (0.6.0, 0.6) and, via the default
+      # latest=auto flavor, also tags `latest` for a non-prerelease tag. The
+      # OCI labels (source, revision, version) link the package to this repo,
+      # so it inherits the repo's public visibility.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/alteredparadox/idlerthing
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      # VERSION is the tag (vX.Y.Z), the same string the release binaries
+      # report and the ref /source pins to. It is passed as a build-arg value,
+      # never interpolated into a shell, so a crafted ref cannot inject
+      # commands.
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          # Supply-chain attestations on the published image.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The README and the Release notes promise an anonymous `docker pull`,
+      # and GitHub documents new packages as private by default. Linking via
+      # the OCI source label has made sibling packages public, but nothing
+      # here can set visibility, so verify it: fetch the exact tag's manifest
+      # with an anonymous token. On failure the Release is not cut. Make the
+      # package public (package settings -> Change visibility), then re-run
+      # the failed jobs; the push above is idempotent.
+      - name: Verify the image is anonymously pullable
+        env:
+          REPO: alteredparadox/idlerthing
+          TAG: ${{ steps.meta.outputs.version }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${REPO}:pull" | jq -r .token) || token=
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://ghcr.io/v2/${REPO}/manifests/${TAG}") || code=000
+            if [ "$code" = 200 ]; then
+              echo "ghcr.io/${REPO}:${TAG} is publicly pullable"
+              exit 0
+            fi
+            echo "attempt ${attempt}: anonymous manifest fetch returned HTTP ${code}"
+            sleep 10
+          done
+          echo "::error::ghcr.io/${REPO}:${TAG} is not anonymously pullable. Make the package public, then re-run the failed jobs."
+          exit 1
+
   # Tag PUSH only: this is the ONLY job granted contents: write. Requiring
   # event_name == 'push' keeps a manual dispatch — which can target a tag —
   # out of the publishing path entirely.
   publish:
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: build
+    needs: [build, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -108,12 +227,15 @@ jobs:
 
       # gh is preinstalled on the runner — no third-party action, so nothing
       # beyond GitHub itself ever sees the token. --generate-notes builds the
-      # changelog from the commits since the previous tag.
+      # changelog from the commits since the previous tag; --notes is
+      # prepended to it with the matching image.
       - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          notes=$(printf 'Container image (linux/amd64, linux/arm64):\n\n```\ndocker pull ghcr.io/alteredparadox/idlerthing:%s\n```\n' "${GITHUB_REF_NAME#v}")
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
+            --notes "$notes" \
             --generate-notes \
             dist/idlerthing-linux-* dist/SHA256SUMS

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -56,6 +57,30 @@ type serverJSON struct {
 	OwnedSince    string       `json:"owned_since"`
 	Disks         []diskJSON   `json:"disks"`
 	Pricing       *pricingJSON `json:"pricing"`
+
+	// present records which top-level keys the body carried (null counts),
+	// so an update can tell "omitted" from "cleared".
+	present map[string]bool
+}
+
+// keepOmittedOnUpdate fills the fields added after the API's first release
+// (keep, initial_price, initial_term) from the stored server when the PUT
+// body leaves them out, so a client that predates them can't silently reset
+// Keep or wipe the initial price. An explicit value — including false or
+// null — still replaces the stored one.
+func (j *serverJSON) keepOmittedOnUpdate(cur *model.Server) {
+	if !j.present["keep"] {
+		keep := cur.Keep
+		j.Keep = &keep
+	}
+	if !j.present["initial_price"] && cur.InitialPrice.Valid {
+		v := cur.InitialPrice.Float64
+		j.InitialPrice = &v
+	}
+	if !j.present["initial_term"] && cur.InitialTerm.Valid {
+		t := int(cur.InitialTerm.Int64)
+		j.InitialTerm = &t
+	}
 }
 
 type diskJSON struct {
@@ -281,7 +306,7 @@ func ptrToRef(p *int64) sql.NullInt64 {
 // decodeServerJSON reads the request body as a serverJSON (1 MB cap).
 func decodeServerJSON(w http.ResponseWriter, r *http.Request) (*serverJSON, bool) {
 	var j serverJSON
-	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&j)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
@@ -290,6 +315,18 @@ func decodeServerJSON(w http.ResponseWriter, r *http.Request) (*serverJSON, bool
 			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
 		}
 		return nil, false
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(body, &j); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
+		return nil, false
+	}
+	// A body that decodes into the struct is an object (or null, which
+	// leaves keys nil and every field omitted).
+	_ = json.Unmarshal(body, &keys)
+	j.present = make(map[string]bool, len(keys))
+	for k := range keys {
+		j.present[k] = true
 	}
 	return &j, true
 }
@@ -387,6 +424,15 @@ func (s *Server) handleAPIServerUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	cur, _, _, err := s.servers.Get(r.Context(), id)
+	if err == sql.ErrNoRows {
+		writeAPIError(w, http.StatusNotFound, errMsgNotFound)
+		return
+	} else if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)
+		return
+	}
+	j.keepOmittedOnUpdate(cur)
 	srv, disks, pricing, errs := j.toModel()
 	if err := s.checkCatalogRefs(r.Context(), srv, errs); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errMsgInternal)

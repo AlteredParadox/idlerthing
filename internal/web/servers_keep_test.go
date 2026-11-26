@@ -267,3 +267,45 @@ func TestServerInitialPriceSortDesc(t *testing.T) {
 		}
 	}
 }
+
+// A PUT that omits keep / initial_price / initial_term (a client that
+// predates them) keeps the stored values; explicit false / null replace them.
+func TestAPIServerPutKeepsOmittedNewFields(t *testing.T) {
+	ts, database := newTestServer(t)
+	token := setAPIToken(t, database)
+	st := &model.ServerStore{DB: database}
+	id, err := st.Create(context.Background(), &model.Server{Hostname: "put-01", ServerType: model.TypeKVM,
+		Active: true, Keep: false,
+		InitialPrice: sql.NullFloat64{Float64: 25, Valid: true},
+		InitialTerm:  sql.NullInt64{Int64: model.TermAnnual, Valid: true}}, nil,
+		&model.Pricing{Currency: "USD", Price: 5, Term: model.TermMonthly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(body string) {
+		t.Helper()
+		req, _ := http.NewRequest("PUT", ts.URL+"/api/servers/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT %s: %d", body, resp.StatusCode)
+		}
+	}
+	pricing := `"pricing": {"currency": "USD", "price": 5, "term": 1}`
+
+	put(`{"hostname": "put-01", "server_type": 1, ` + pricing + `}`)
+	got := serverByHost(t, st, "put-01")
+	if got.Keep || got.InitialPrice.Float64 != 25 || got.InitialTerm.Int64 != model.TermAnnual {
+		t.Fatalf("omitted fields should be kept: %+v", got)
+	}
+
+	put(`{"hostname": "put-01", "server_type": 1, "keep": true, "initial_price": null, ` + pricing + `}`)
+	got = serverByHost(t, st, "put-01")
+	if !got.Keep || got.InitialPrice.Valid || got.InitialTerm.Valid {
+		t.Fatalf("explicit keep/null should replace (null price drops the stored term too): %+v", got)
+	}
+}

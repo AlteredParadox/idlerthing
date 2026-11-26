@@ -35,7 +35,7 @@ func TestImportClearsOrphanInitialPrice(t *testing.T) {
 		{"server":{"id":2,"hostname":"bad-currency","server_type":1,"active":true,"initial_price":20},
 		 "pricing":{"currency":"US-D","price":5,"term":1}},
 		{"server":{"hostname":"no-id","server_type":1,"active":true,"initial_price":20}},
-		{"server":{"id":3,"hostname":"free","server_type":1,"active":true,"initial_price":0}},
+		{"server":{"id":3,"hostname":"free","server_type":1,"active":true,"initial_price":0,"initial_term":4,"initial_currency":"EUR"}},
 		{"server":{"id":4,"hostname":"inline","server_type":1,"active":true,"initial_price":20},
 		 "pricing":{"currency":"EUR","price":5,"term":1}},
 		{"server":{"id":5,"hostname":"top-level","server_type":1,"active":true,"initial_price":20}},

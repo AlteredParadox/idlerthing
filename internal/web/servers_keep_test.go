@@ -504,3 +504,50 @@ func TestServerFormKeepsImportedInitialCurrency(t *testing.T) {
 		t.Fatalf("missing server update: %d", resp.StatusCode)
 	}
 }
+
+func TestAPIServerInitialTermAndBadJSON(t *testing.T) {
+	bad, good := 9, 4
+	j := &serverJSON{Hostname: "t-01", InitialTerm: &bad}
+	if _, _, _, errs := j.toModel(); errs["initial_term"] == "" {
+		t.Fatal("initial_term 9 must be rejected")
+	}
+	j = &serverJSON{Hostname: "t-02", InitialTerm: &good}
+	if srv, _, _, errs := j.toModel(); len(errs) != 0 || srv.InitialTerm.Int64 != 4 {
+		t.Fatalf("initial_term 4 should map: %v", errs)
+	}
+
+	ts, database := newTestServer(t)
+	token := setAPIToken(t, database)
+	req, _ := http.NewRequest("POST", ts.URL+"/api/servers", strings.NewReader(`{"hostname": "x", "initial_price": "five"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("mistyped JSON: %d", resp.StatusCode)
+	}
+}
+
+func TestServerFormInitialPriceInputs(t *testing.T) {
+	ts, database := newTestServer(t)
+	client := authedClient(t, ts)
+	st := &model.ServerStore{DB: database}
+
+	// A typed 0 is the same as ticking Free: no term or currency kept.
+	createFullServer(t, client, ts, "zero-01", url.Values{"initial_price": {"0"}, "initial_term": {"4"}, "initial_currency": {"EUR"}})
+	if got := serverByHost(t, st, "zero-01"); !got.InitialPrice.Valid || got.InitialPrice.Float64 != 0 ||
+		got.InitialTerm.Valid || got.InitialCurrency.Valid {
+		t.Fatalf("typed 0 should be free: %+v", got)
+	}
+
+	// Not a number: inline error, nothing saved.
+	vals := url.Values{"hostname": {"nan-01"}, "server_type": {"1"}, "initial_price": {"abc"}}
+	resp := postForm(t, client, ts, "/servers", vals)
+	body := readBody(t, resp)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusSeeOther || !strings.Contains(body, "Initial price must be a number") {
+		t.Fatalf("non-numeric initial price should fail validation (status %d)", resp.StatusCode)
+	}
+}

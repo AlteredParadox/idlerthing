@@ -412,8 +412,9 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	"keep":          "s.keep",
 	// Blank values sort last in both directions (orderClause keeps
 	// NULLS LAST after the DESC it adds).
-	"cpu_model":    "NULLIF(s.cpu_model, '') COLLATE NOCASE NULLS LAST",
-	"link_speed":   "s.link_speed NULLS LAST",
+	"cpu_model": "NULLIF(s.cpu_model, '') COLLATE NOCASE NULLS LAST",
+	// A stored 0 (or less) shows as "—" like NULL, so it sorts as blank.
+	"link_speed":   "CASE WHEN s.link_speed > 0 THEN s.link_speed END NULLS LAST",
 	"since":        "NULLIF(s.owned_since, '') NULLS LAST",
 	"active":       "s.active",
 	"promo":        "s.was_promo",

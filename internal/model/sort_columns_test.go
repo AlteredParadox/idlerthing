@@ -42,14 +42,14 @@ func TestServerListNewSortColumns(t *testing.T) {
 		if since != "" {
 			s.OwnedSince = sql.NullString{String: since, Valid: true}
 		}
-		if link > 0 {
+		if link >= 0 {
 			s.LinkSpeed = sql.NullInt64{Int64: link, Valid: true}
 		}
 		if _, err := st.Create(ctx, s, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	mk("a-blank", "", "", 0, false)
+	mk("a-blank", "", "", -1, false) // -1: no link speed stored
 	mk("b-old", "2020-01-01", "AMD EPYC", 1000, true)
 	mk("c-new", "2024-06-01", "Intel Xeon", 10000, false)
 
@@ -70,6 +70,14 @@ func TestServerListNewSortColumns(t *testing.T) {
 		}
 		if got := order(key, "desc"); !reflect.DeepEqual(got, []string{"c-new", "b-old", "a-blank"}) {
 			t.Fatalf("%s desc: %v", key, got)
+		}
+	}
+	// A stored 0 Mbps shows as "—", so it sorts with the blanks.
+	mk("d-zero", "", "", 0, false)
+	for _, dir := range []string{"asc", "desc"} {
+		got := order("link_speed", dir)
+		if len(got) != 4 || got[2] == "b-old" || got[2] == "c-new" || got[3] == "b-old" || got[3] == "c-new" {
+			t.Fatalf("link_speed %s: 0 Mbps must sort with the blanks, last: %v", dir, got)
 		}
 	}
 	if got := order("promo", "desc"); got[0] != "b-old" {

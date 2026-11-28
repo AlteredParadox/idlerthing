@@ -410,9 +410,19 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 	// An initial price is NULL only on a never-priced server; free sorts as 0.
 	"initial_price": "COALESCE(s.initial_price, pr.price)",
 	"keep":          "s.keep",
+	// Blank values sort last in both directions (orderClause keeps
+	// NULLS LAST after the DESC it adds).
+	"cpu_model":    "NULLIF(s.cpu_model, '') COLLATE NOCASE NULLS LAST",
+	"link_speed":   "s.link_speed NULLS LAST",
+	"since":        "NULLIF(s.owned_since, '') NULLS LAST",
+	"active":       "s.active",
+	"promo":        "s.was_promo",
+	"public":       "s.show_public",
+	"transferable": "s.transferrable",
 	// price and initial_price are only a first pass: the web list
-	// re-sorts them by USD cost, which needs exchange rates. price_yr is
-	// absent on purpose for the same reason (see sortByCost in
+	// re-sorts them by USD cost, which needs exchange rates. price_yr and
+	// uptime are absent on purpose: they need exchange rates and live
+	// metrics, so the web list sorts them (see sortTiered in
 	// internal/web/servers.go).
 }
 
@@ -420,13 +430,18 @@ var sortColumns = map[string]string{"hostname": "s.hostname COLLATE NOCASE",
 // expression. A single trailing DESC on "x IS NULL, x" reverses only the
 // last column, so unlimited (NULL) bandwidth stayed pinned LAST in both
 // directions; per-component it sorts first when the user asks for
-// largest-first, which is what "unlimited" means.
+// largest-first, which is what "unlimited" means. A component ending in
+// NULLS LAST keeps it after the DESC, so its blanks stay last both ways.
 func orderClause(expr, dir string) string {
 	if dir != "desc" {
 		return expr
 	}
 	parts := splitTopLevel(expr)
 	for i, p := range parts {
+		if base, ok := strings.CutSuffix(p, " NULLS LAST"); ok {
+			parts[i] = base + " DESC NULLS LAST"
+			continue
+		}
 		parts[i] = p + " DESC"
 	}
 	return strings.Join(parts, ", ")

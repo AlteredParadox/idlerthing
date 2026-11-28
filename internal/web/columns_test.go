@@ -99,14 +99,14 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 	if !strings.Contains(body, "Columns 20/25") {
 		t.Fatal("chooser should read 20/25 by default")
 	}
-	if strings.Contains(body, ">CPU Model<") || strings.Contains(body, ">Link Speed<") ||
-		strings.Contains(body, "sort=price_yr") || strings.Contains(body, ">Since<") ||
-		strings.Contains(body, ">Uptime<") {
+	if strings.Contains(body, "sort=cpu_model") || strings.Contains(body, "sort=link_speed") ||
+		strings.Contains(body, "sort=price_yr") || strings.Contains(body, "sort=since") ||
+		strings.Contains(body, "sort=uptime") {
 		t.Fatal("new columns must be hidden by default")
 	}
 	if strings.Contains(body, "AMD EPYC 7543P") {
 		// cpu_model appears only as cell-sub in the CPU cell — allowed; header must be absent
-		if strings.Contains(body, ">CPU Model<") {
+		if strings.Contains(body, "sort=cpu_model") {
 			t.Fatal("cpu_model column must be hidden by default")
 		}
 	}
@@ -116,10 +116,10 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 		"link_speed", "net", "location", "provider", "price", "due"}
 	applyCols(t, client, ts, visible)
 	body = get()
-	if !strings.Contains(body, ">CPU Model<") {
+	if !strings.Contains(body, "sort=cpu_model") {
 		t.Fatal("cpu_model column should appear after enabling")
 	}
-	if !strings.Contains(body, ">Link Speed<") || !strings.Contains(body, "1 Gbps") {
+	if !strings.Contains(body, "sort=link_speed") || !strings.Contains(body, "1 Gbps") {
 		t.Fatal("link_speed column should appear with 1 Gbps")
 	}
 	if !strings.Contains(body, "Columns 14/25") {
@@ -141,7 +141,9 @@ func TestColumnsDefaultHiddenAndChooser(t *testing.T) {
 	if !strings.Contains(body, "Columns 25/25") {
 		t.Fatal("unhide-all should stick (25/25)")
 	}
-	for _, h := range []string{">Since<", ">Uptime<", "sort=price_yr", "sort=initial_price", "sort=keep"} {
+	for _, h := range []string{"sort=price_yr", "sort=initial_price", "sort=keep",
+		"sort=cpu_model", "sort=link_speed", "sort=net", "sort=since", "sort=uptime",
+		"sort=active", "sort=promo", "sort=public", "sort=transferable"} {
 		if !strings.Contains(body, h) {
 			t.Fatalf("all columns enabled: missing %s", h)
 		}
@@ -317,7 +319,12 @@ func TestServerFlagLabelsAndNotesColumns(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("list hx=%v: HTTP %d", hx, resp.StatusCode)
 		}
-		for _, label := range []string{"Active", "Promo", "Public", "Transferable", "Labels", "Notes"} {
+		for _, key := range []string{"active", "promo", "public", "transferable"} {
+			if !strings.Contains(body, "sort="+key) {
+				t.Fatalf("hx=%v: missing sortable %s column", hx, key)
+			}
+		}
+		for _, label := range []string{"Labels", "Notes"} {
 			if !strings.Contains(body, "<th>"+label+"</th>") {
 				t.Fatalf("hx=%v: missing %s column", hx, label)
 			}

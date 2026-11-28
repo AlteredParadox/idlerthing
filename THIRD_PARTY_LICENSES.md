@@ -855,7 +855,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## modernc.org/sqlite@v1.62.0
+## modernc.org/sqlite@v1.63.0
 
 ### AUTHORS
 
@@ -885,6 +885,7 @@ Jan Mercl <0xjnml@gmail.com>
 Josh Bleecher Snyder <josharian@gmail.com>
 Josh Klein <josh.klein@outlook.com>
 Logan Snow <logansnow@protonmail.com>
+Michael Haddon <michael@politepixels.io>
 Michael Hoffmann <mhoffm@posteo.de>
 Michael Rykov <mrykov@gmail.com>
 Morgan Bazalgette <morgan@howl.moe>

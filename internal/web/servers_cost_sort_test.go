@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"idlerthing/internal/model"
+	"idlerthing/internal/prom"
 )
 
 func costItem(id int64, host string, p *model.Pricing) model.ServerListItem {
@@ -61,13 +62,13 @@ func TestSortByCostPrice(t *testing.T) {
 		}
 	}
 	items := build()
-	sortByCost(items, "asc", priceKey(rates))
+	sortTiered(items, "asc", priceKey(rates))
 	want := []string{"yearly-60", "eur-3", "monthly-10", "once-eur-20", "once-100", "none", "chf-1"}
 	if got := hosts(items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("asc:\n got %v\nwant %v", got, want)
 	}
 	items = build()
-	sortByCost(items, "desc", priceKey(rates))
+	sortTiered(items, "desc", priceKey(rates))
 	want = []string{"monthly-10", "eur-3", "yearly-60", "once-100", "once-eur-20", "none", "chf-1"}
 	if got := hosts(items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("desc:\n got %v\nwant %v", got, want)
@@ -75,7 +76,7 @@ func TestSortByCostPrice(t *testing.T) {
 
 	// Without rates (not fetched yet) USD rows still order; others go last.
 	items = build()
-	sortByCost(items, "asc", priceKey(nil))
+	sortTiered(items, "asc", priceKey(nil))
 	want = []string{"yearly-60", "monthly-10", "once-100", "none", "eur-3", "once-eur-20", "chf-1"}
 	if got := hosts(items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("nil rates:\n got %v\nwant %v", got, want)
@@ -104,7 +105,7 @@ func TestSortByCostInitialPrice(t *testing.T) {
 		withInitial(5, "once-50", 50, model.TermOneTime, "USD"),
 		withInitial(6, "defaults-7", 7, 0, ""), // shown as $7.00/mo
 	}
-	sortByCost(items, "asc", func(it *model.ServerListItem) costKey { return initialCostKey(it, rates) })
+	sortTiered(items, "asc", func(it *model.ServerListItem) costKey { return initialCostKey(it, rates) })
 	want := []string{"free", "yearly-eur-30", "defaults-7", "monthly-10", "once-50", "unset"}
 	if got := hosts(items); !reflect.DeepEqual(got, want) {
 		t.Fatalf("asc:\n got %v\nwant %v", got, want)
@@ -211,5 +212,37 @@ func TestSectionPriceSortByCost(t *testing.T) {
 				t.Fatalf("%s %s: wrong order (yearly=%d monthly=%d none=%d)", c.base, dir, y, m, n)
 			}
 		}
+	}
+}
+
+// Uptime sorts by live 30-day uptime; servers without it stay last.
+func TestSortTieredUptime(t *testing.T) {
+	m := &prom.Metrics{ByNodename: map[string]*prom.HostMetrics{
+		"up-99": {Found: true, Uptime30d: 99.9, Uptime30dValid: true},
+		"up-90": {Found: true, Uptime30d: 90, Uptime30dValid: true},
+		"up-nv": {Found: true},
+	}}
+	build := func() []model.ServerListItem {
+		return []model.ServerListItem{
+			costItem(1, "unknown", nil), costItem(2, "up-nv", nil),
+			costItem(3, "up-99", nil), costItem(4, "up-90", nil),
+		}
+	}
+	key := func(it *model.ServerListItem) costKey { return uptimeKey(m, it.Hostname) }
+	items := build()
+	sortTiered(items, "asc", key)
+	if got := hosts(items); !reflect.DeepEqual(got, []string{"up-90", "up-99", "unknown", "up-nv"}) {
+		t.Fatalf("asc: %v", got)
+	}
+	items = build()
+	sortTiered(items, "desc", key)
+	if got := hosts(items); !reflect.DeepEqual(got, []string{"up-99", "up-90", "unknown", "up-nv"}) {
+		t.Fatalf("desc: %v", got)
+	}
+	// No Prometheus configured: order is left alone.
+	items = build()
+	sortTiered(items, "desc", func(it *model.ServerListItem) costKey { return uptimeKey(nil, it.Hostname) })
+	if got := hosts(items); !reflect.DeepEqual(got, hosts(build())) {
+		t.Fatalf("nil metrics: %v", got)
 	}
 }

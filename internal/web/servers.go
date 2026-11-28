@@ -183,7 +183,10 @@ func (s *Server) handleServerList(w http.ResponseWriter, r *http.Request) {
 	metrics := s.liveMetrics(r)
 	rates, _ := s.rates.Get(r.Context())
 	if key, ok := serverCostSortKeys[opts.Sort]; ok {
-		sortByCost(items, opts.Dir, func(it *model.ServerListItem) costKey { return key(it, rates) })
+		sortTiered(items, opts.Dir, func(it *model.ServerListItem) costKey { return key(it, rates) })
+	}
+	if opts.Sort == "uptime" {
+		sortTiered(items, opts.Dir, func(it *model.ServerListItem) costKey { return uptimeKey(metrics, it.Hostname) })
 	}
 	for _, it := range items {
 		row := makeServerRow(it, dueSoon)
@@ -327,7 +330,7 @@ const (
 // costKey is where a row lands in a cost sort.
 type costKey struct {
 	tier int
-	usd  float64
+	val  float64 // USD for cost sorts; a percentage for uptime
 }
 
 // priceCostKey converts an amount in currency, billed every term, into a
@@ -402,8 +405,9 @@ var serverCostSortKeys = map[string]func(*model.ServerListItem, map[string]float
 	"price_yr":      priceYrCostKey,
 }
 
-// sortByCost re-sorts items stably by key (see the cost tiers above).
-func sortByCost[T any](items []T, dir string, key func(*T) costKey) {
+// sortTiered re-sorts items stably by key: tiers in fixed order, values
+// inside a tier in the chosen direction (see the cost tiers above).
+func sortTiered[T any](items []T, dir string, key func(*T) costKey) {
 	type keyed struct {
 		k  costKey
 		it T
@@ -418,13 +422,23 @@ func sortByCost[T any](items []T, dir string, key func(*T) costKey) {
 			return a.tier < b.tier
 		}
 		if dir == "desc" {
-			return a.usd > b.usd
+			return a.val > b.val
 		}
-		return a.usd < b.usd
+		return a.val < b.val
 	})
 	for i := range ks {
 		items[i] = ks[i].it
 	}
+}
+
+// uptimeKey is the Uptime column's sort key: the 30-day uptime from live
+// metrics, with servers that have none ("—") last in both directions.
+func uptimeKey(m *prom.Metrics, hostname string) costKey {
+	h := matchLive(m, hostname)
+	if h == nil || !h.Uptime30dValid {
+		return costKey{tier: tierUnknown}
+	}
+	return costKey{tierRecurring, h.Uptime30d}
 }
 
 // sortListByPrice applies the real-cost Price sort to a section list (the
@@ -435,7 +449,7 @@ func sortListByPrice[T any](s *Server, r *http.Request, opts model.ListOptions, 
 		return
 	}
 	rates, _ := s.rates.Get(r.Context())
-	sortByCost(items, opts.Dir, func(it *T) costKey { return pricingCostKey(pricingOf(it), rates) })
+	sortTiered(items, opts.Dir, func(it *T) costKey { return pricingCostKey(pricingOf(it), rates) })
 }
 
 func dash(s string) string {
